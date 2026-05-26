@@ -272,3 +272,32 @@ def test_lava_water_reaction(full_env):
         for y in range(8):
             all_types.add(grid.get_type_id(x, y))
     assert rock_id in all_types or steam_id in all_types
+
+
+def test_integration_with_real_toml():
+    """Use the actual materials.toml to verify everything wires up."""
+    import random
+    from pathlib import Path
+    random.seed(123)
+    toml_path = str(Path(__file__).parent.parent / "data" / "materials.toml")
+    reg = MaterialRegistry(toml_path)
+    table = ReactionTable(toml_path, reg)
+    grid = CellGrid(16, 16, reg, table)
+
+    sand_id = reg.get_by_name("sand").type_id
+    water_id = reg.get_by_name("water").type_id
+    wall_id = reg.get_by_name("wall").type_id
+
+    for x in range(16):
+        grid.set_cell(x, 15, wall_id)
+
+    for y in range(5):
+        grid.set_cell(8, y, sand_id)
+
+    for x in range(4, 12):
+        grid.set_cell(x, 14, water_id)
+
+    for _ in range(100):
+        grid.update()
+
+    assert grid.get_type_id(8, 0) == AIR
