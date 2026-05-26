@@ -8,6 +8,13 @@ density = 10.0
 color = [128, 128, 128]
 tags = ["solid"]
 
+[materials.rock]
+cell_type = "solid"
+density = 9.0
+color = [100, 100, 100]
+color_variance = 8
+tags = ["solid"]
+
 [materials.wood]
 cell_type = "solid"
 density = 8.0
