@@ -3,6 +3,7 @@ from __future__ import annotations
 from core.cell import AIR
 from core.grid import CellGrid
 from core.material import MaterialRegistry
+from core.ops import apply_brush
 
 
 MATERIAL_KEYS = [
@@ -18,12 +19,15 @@ MATERIAL_KEYS = [
 
 
 class InputHandler:
-    def __init__(self, registry: MaterialRegistry, scale: int = 4) -> None:
+    def __init__(
+        self, registry: MaterialRegistry, scale: int = 4, recorder=None
+    ) -> None:
         self.registry = registry
         self.scale = scale
         self.selected_material = "sand"
         self.brush_size = 3
         self.paused = False
+        self.recorder = recorder  # replay.Recorder | None（D7 录制钩子）
 
     def handle_events(self, grid: CellGrid) -> bool:
         import pygame
@@ -62,11 +66,8 @@ class InputHandler:
             else:
                 type_id = AIR
 
-            r = self.brush_size // 2
-            for dy in range(-r, r + 1):
-                for dx in range(-r, r + 1):
-                    px, py = gx + dx, gy + dy
-                    if grid.in_bounds(px, py):
-                        grid.set_cell(px, py, type_id)
+            apply_brush(grid, gx, gy, type_id, self.brush_size)
+            if self.recorder is not None:
+                self.recorder.log_paint(grid.frame_count, gx, gy, type_id, self.brush_size)
 
         return True
