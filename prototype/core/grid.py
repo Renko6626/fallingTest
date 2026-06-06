@@ -1,10 +1,13 @@
 from __future__ import annotations
 
-import random
+import random  # TODO(M0 Task 4): _check_reactions 换 keyed RNG 后删除
+import zlib
+from array import array
 
 from core.cell import AIR, STRIDE, TYPE_ID, VELOCITY, LIFETIME, FLAGS, FLAG_DIRTY
 from core.material import MaterialRegistry
 from core.reaction import ReactionTable, SELF_MARKER
+from core.rng import SALT_REACTION, frame_seed, rng_u32
 
 
 class CellGrid:
@@ -14,12 +17,15 @@ class CellGrid:
         height: int,
         registry: MaterialRegistry,
         reaction_table: ReactionTable,
+        seed: int = 0,
     ) -> None:
         self.width = width
         self.height = height
         self.registry = registry
         self.reaction_table = reaction_table
         self.frame_count = 0
+        self.seed = seed
+        self._fseed = frame_seed(seed, 0)
         self.cells: list[int] = [0] * (width * height * STRIDE)
 
     def _base(self, x: int, y: int) -> int:
@@ -51,8 +57,15 @@ class CellGrid:
     def get_type_id_array(self) -> list[int]:
         return [self.cells[i * STRIDE + TYPE_ID] for i in range(self.width * self.height)]
 
+    def state_hash(self) -> int:
+        """世界状态 CRC32（确定性契约 D5）。同机确定；跨平台字节序口径 C# 期再钉。"""
+        return zlib.crc32(array("i", self.cells).tobytes())
+
     def update(self) -> None:
         from core.rules import try_move  # lazy import to avoid circular dependency
+
+        # 0. Per-frame RNG seed（确定性契约 D2）
+        self._fseed = frame_seed(self.seed, self.frame_count)
 
         # 1. Clear dirty flags
         for i in range(self.width * self.height):

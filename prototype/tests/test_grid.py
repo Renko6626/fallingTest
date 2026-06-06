@@ -274,6 +274,23 @@ def test_lava_water_reaction(full_env):
     assert rock_id in all_types or steam_id in all_types
 
 
+def test_state_hash_changes_and_repeats(grid):
+    h0 = grid.state_hash()
+    assert grid.state_hash() == h0          # 无变化 → 不变
+    sand_id = grid.registry.get_by_name("sand").type_id
+    grid.set_cell(2, 2, sand_id)
+    h1 = grid.state_hash()
+    assert h1 != h0                          # 有变化 → 变
+
+
+def test_grid_seed_and_fseed(grid):
+    assert grid.seed == 0                    # 默认 seed
+    grid.update()                            # frame 0：与 __init__ 预置同值
+    f0 = grid._fseed
+    grid.update()                            # frame 1：fseed 重算
+    assert grid._fseed != f0
+
+
 def test_integration_with_real_toml():
     """Use the actual materials.toml to verify everything wires up."""
     import random
