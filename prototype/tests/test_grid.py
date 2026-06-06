@@ -177,8 +177,6 @@ def full_env(tmp_path):
 
 
 def test_sand_falls_to_bottom(full_env):
-    import random
-    random.seed(42)
     reg, table = full_env
     grid = CellGrid(8, 8, reg, table)
     sand_id = reg.get_by_name("sand").type_id
@@ -190,8 +188,6 @@ def test_sand_falls_to_bottom(full_env):
 
 
 def test_sand_stacks(full_env):
-    import random
-    random.seed(42)
     reg, table = full_env
     grid = CellGrid(8, 8, reg, table)
     sand_id = reg.get_by_name("sand").type_id
@@ -211,8 +207,6 @@ def test_sand_stacks(full_env):
 
 
 def test_oil_floats_on_water(full_env):
-    import random
-    random.seed(42)
     reg, table = full_env
     # Use a 3-wide grid: walls at x=0 and x=2, bottom wall at y=4
     # This creates a single-cell-wide column at x=1
@@ -236,8 +230,6 @@ def test_oil_floats_on_water(full_env):
 
 
 def test_lifetime_expires(full_env):
-    import random
-    random.seed(42)
     reg, table = full_env
     grid = CellGrid(4, 4, reg, table)
     fire_id = reg.get_by_name("fire").type_id
@@ -252,8 +244,6 @@ def test_lifetime_expires(full_env):
 
 
 def test_lava_water_reaction(full_env):
-    import random
-    random.seed(42)
     reg, table = full_env
     grid = CellGrid(8, 8, reg, table)
     lava_id = reg.get_by_name("lava").type_id
@@ -293,9 +283,7 @@ def test_grid_seed_and_fseed(grid):
 
 def test_integration_with_real_toml():
     """Use the actual materials.toml to verify everything wires up."""
-    import random
     from pathlib import Path
-    random.seed(123)
     toml_path = str(Path(__file__).parent.parent / "data" / "materials.toml")
     reg = MaterialRegistry(toml_path)
     table = ReactionTable(toml_path, reg)

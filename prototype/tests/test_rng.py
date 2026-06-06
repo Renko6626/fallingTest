@@ -61,3 +61,15 @@ def test_golden_values():
     assert GOLDEN, "金值未生成——按计划 Step 1.5 填入"
     for (pos, seed), expected in GOLDEN.items():
         assert squirrel5(pos, seed) == expected
+
+
+def test_no_global_random_in_sim_modules():
+    """D2 防回归：sim 模块禁止全局 random 顺序流。"""
+    import inspect
+
+    import core.grid
+    import core.rules
+
+    for mod in (core.grid, core.rules):
+        src = inspect.getsource(mod)
+        assert "import random" not in src, f"{mod.__name__} 不得使用全局 random（D2）"

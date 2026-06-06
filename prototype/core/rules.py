@@ -1,10 +1,20 @@
 from __future__ import annotations
 
-import random
 from typing import Optional
 
-from core.cell import AIR, TYPE_ID, VELOCITY, STRIDE
+from core.cell import AIR, VELOCITY
 from core.grid import CellGrid
+from core.rng import (
+    SALT_DIAG,
+    SALT_ENERGY_DIR,
+    SALT_ENERGY_LINGER,
+    order2,
+    perm3,
+    rng_chance,
+    threshold_u32,
+)
+
+ENERGY_LINGER_THRESHOLD = threshold_u32(0.4)
 
 
 def try_move(grid: CellGrid, x: int, y: int) -> Optional[tuple[int, int]]:
@@ -28,7 +38,7 @@ def try_move(grid: CellGrid, x: int, y: int) -> Optional[tuple[int, int]]:
     return None
 
 
-def _can_move_to(grid: CellGrid, x: int, y: int, self_density: float, heavier_sinks: bool) -> bool:
+def _can_move_to(grid: CellGrid, x: int, y: int, self_density: int, heavier_sinks: bool) -> bool:
     if not grid.in_bounds(x, y):
         return False
     target_id = grid.get_type_id(x, y)
@@ -43,26 +53,26 @@ def _can_move_to(grid: CellGrid, x: int, y: int, self_density: float, heavier_si
         return target_mat.density > self_density
 
 
-def _move_powder(grid: CellGrid, x: int, y: int, density: float) -> Optional[tuple[int, int]]:
+def _move_powder(grid: CellGrid, x: int, y: int, density: int) -> Optional[tuple[int, int]]:
     if _can_move_to(grid, x, y + 1, density, heavier_sinks=True):
         return (x, y + 1)
 
-    diags = [(x - 1, y + 1), (x + 1, y + 1)]
-    random.shuffle(diags)
-    for dx, dy in diags:
+    diags = ((x - 1, y + 1), (x + 1, y + 1))
+    for i in order2(grid._fseed, 0, x, y, SALT_DIAG):
+        dx, dy = diags[i]
         if _can_move_to(grid, dx, dy, density, heavier_sinks=True):
             return (dx, dy)
 
     return None
 
 
-def _move_liquid(grid: CellGrid, x: int, y: int, density: float) -> Optional[tuple[int, int]]:
+def _move_liquid(grid: CellGrid, x: int, y: int, density: int) -> Optional[tuple[int, int]]:
     if _can_move_to(grid, x, y + 1, density, heavier_sinks=True):
         return (x, y + 1)
 
-    diags = [(x - 1, y + 1), (x + 1, y + 1)]
-    random.shuffle(diags)
-    for dx, dy in diags:
+    diags = ((x - 1, y + 1), (x + 1, y + 1))
+    for i in order2(grid._fseed, 0, x, y, SALT_DIAG):
+        dx, dy = diags[i]
         if _can_move_to(grid, dx, dy, density, heavier_sinks=True):
             return (dx, dy)
 
@@ -77,13 +87,13 @@ def _move_liquid(grid: CellGrid, x: int, y: int, density: float) -> Optional[tup
     return None
 
 
-def _move_gas(grid: CellGrid, x: int, y: int, density: float) -> Optional[tuple[int, int]]:
+def _move_gas(grid: CellGrid, x: int, y: int, density: int) -> Optional[tuple[int, int]]:
     if _can_move_to(grid, x, y - 1, density, heavier_sinks=False):
         return (x, y - 1)
 
-    diags = [(x - 1, y - 1), (x + 1, y - 1)]
-    random.shuffle(diags)
-    for dx, dy in diags:
+    diags = ((x - 1, y - 1), (x + 1, y - 1))
+    for i in order2(grid._fseed, 0, x, y, SALT_DIAG):
+        dx, dy = diags[i]
         if _can_move_to(grid, dx, dy, density, heavier_sinks=False):
             return (dx, dy)
 
@@ -100,11 +110,11 @@ def _move_gas(grid: CellGrid, x: int, y: int, density: float) -> Optional[tuple[
 
 def _move_energy(grid: CellGrid, x: int, y: int) -> Optional[tuple[int, int]]:
     # 40% chance to stay in place — lets fire linger near fuel and spread
-    if random.random() < 0.4:
+    if rng_chance(grid._fseed, 0, x, y, SALT_ENERGY_LINGER, ENERGY_LINGER_THRESHOLD):
         return None
-    candidates = [(x, y - 1), (x - 1, y - 1), (x + 1, y - 1)]
-    random.shuffle(candidates)
-    for cx, cy in candidates:
+    candidates = ((x, y - 1), (x - 1, y - 1), (x + 1, y - 1))
+    for i in perm3(grid._fseed, 0, x, y, SALT_ENERGY_DIR):
+        cx, cy = candidates[i]
         if grid.in_bounds(cx, cy) and grid.get_type_id(cx, cy) == AIR:
             return (cx, cy)
     return None

@@ -1,4 +1,3 @@
-import random
 import pytest
 from core.material import MaterialRegistry
 from core.reaction import ReactionTable
@@ -58,7 +57,6 @@ def make_grid(env, w=8, h=8):
 
 
 def test_solid_does_not_move(env):
-    random.seed(0)
     reg, _ = env
     grid = make_grid(env)
     wall_id = reg.get_by_name("wall").type_id
@@ -69,7 +67,6 @@ def test_solid_does_not_move(env):
 
 
 def test_powder_falls_down(env):
-    random.seed(0)
     reg, _ = env
     grid = make_grid(env)
     sand_id = reg.get_by_name("sand").type_id
@@ -80,7 +77,6 @@ def test_powder_falls_down(env):
 
 
 def test_powder_falls_diagonal_when_blocked(env):
-    random.seed(0)
     reg, _ = env
     grid = make_grid(env)
     sand_id = reg.get_by_name("sand").type_id
@@ -88,20 +84,13 @@ def test_powder_falls_diagonal_when_blocked(env):
     grid.set_cell(3, 3, sand_id)
     grid.set_cell(3, 4, wall_id)
     from core.rules import try_move
-    result = None
-    for seed in range(100):
-        random.seed(seed)
-        r = try_move(grid, 3, 3)
-        if r is not None:
-            result = r
-            break
+    result = try_move(grid, 3, 3)  # counter RNG：固定 (seed, frame, x, y) → 确定性结果
     assert result is not None
     assert result[1] == 4
     assert result[0] in (2, 4)
 
 
 def test_powder_stops_at_bottom(env):
-    random.seed(0)
     reg, _ = env
     grid = make_grid(env)
     sand_id = reg.get_by_name("sand").type_id
@@ -121,20 +110,13 @@ def test_liquid_spreads_horizontally(env):
     grid.set_cell(2, 7, wall_id)
     grid.set_cell(4, 7, wall_id)
     from core.rules import try_move
-    moved = False
-    for seed in range(100):
-        random.seed(seed)
-        grid.set_cell(3, 6, water_id)
-        r = try_move(grid, 3, 6)
-        if r is not None and r[1] == 6:
-            moved = True
-            assert r[0] in (2, 4)
-            break
-    assert moved
+    r = try_move(grid, 3, 6)  # 下与斜下全被墙挡 → 必走横向（方向记忆确定）
+    assert r is not None
+    assert r[1] == 6
+    assert r[0] in (2, 4)
 
 
 def test_gas_rises(env):
-    random.seed(0)
     reg, _ = env
     grid = make_grid(env)
     steam_id = reg.get_by_name("steam").type_id
@@ -146,7 +128,6 @@ def test_gas_rises(env):
 
 
 def test_density_swap_heavy_sinks(env):
-    random.seed(0)
     reg, _ = env
     grid = make_grid(env)
     sand_id = reg.get_by_name("sand").type_id
