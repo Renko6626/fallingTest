@@ -8,6 +8,12 @@
 ## 2026-06-07
 
 ### Added
+- **M0.5 单线程 4-pass/chunk 调度器完成**（提案 §5 M0.5 行；fresh evidence：69 passed / 缝隙守恒 / 产物盖戳红绿验证 / replay 仍确定 / M0 hash 序列按预期作废）：
+  - `prototype/core/chunks.py`：正方形写域 `[chunk−32, chunk+96)²` + 4-pass parity 纯几何，含"同 pass 写域两两不相交"穷举单测。
+  - `prototype/core/grid.py`：update() 重写为所有权制 pass→chunk 扫描；STRIDE 4→5 加 `UPDATED_AT` 世代戳（swap 双方盖戳、`set_cell(stamp=)` 显式参数——决策②）；**删 FLAG_DIRTY/FLAG_STATIC 与每帧清 flag pass**（决策①）；`_check_reactions` 读域夹断 + 产物盖戳；RNG pass_id 接线。
+  - `prototype/tests/test_chunks.py` + `test_chunked_semantics.py`（192×128 多 chunk）：材质计数守恒（缝隙无源汇）、沙柱跨水平缝、水过垂直缝、多 chunk 污染测试、产物同帧不动（**红绿验证**：去掉盖戳必红）、写域拒绝直测。
+  - 性能意外向好：128² **27.1 FPS，较 M0 后 +18%**（删 O(N) 清 flag pass 收益 > 调度开销），基本回到 M0 前水平；192² 14.0 FPS 数据点入档（决策③）。
+- `docs/superpowers/specs/2026-06-07-m05-chunked-scheduler-design.md` + `plans/2026-06-07-m05-chunked-scheduler-plan.md`；提案 §2.3 row 5 同步决策②偏离（观察契约不变）。
 - **M0 确定性地基完成**（提案 §5 M0 行，验收四件套全过——fresh evidence：56 passed / 污染测试过 / replay CLI 两遍逐字一致 / benchmark 入档）：
   - `prototype/core/rng.py`：SquirrelNoise5 counter RNG，完整 7 元 key（素数折叠 + 每帧预计算 frame_seed），金值锚定 + "sim 模块禁 import random" 防回归断言。
   - `prototype/core/ops.py` + `prototype/replay.py`：apply_brush 共用写入路径；JSONL demo 录制/headless 回放（header 嵌 materials.toml sha256，不匹配拒绝）；`main.py --seed/--record`。

@@ -1,7 +1,7 @@
 > 文档路径：`docs/sessions/2026-06-07-m0-implementation.md`
 > 最近更新：2026-06-07 (UTC+8)
 
-# Session 2026-06-07：M0 确定性地基实施
+# Session 2026-06-07：M0 + M0.5 实施
 
 ## 1. 本次做了什么
 
@@ -24,9 +24,13 @@
 - `test_grid_seed_and_fseed` 首版语义错（fseed 在 update 开头按当前帧算，首帧与 init 预置同值）→ 改两次 update 断言，amend。
 - replay headless 检查从"源码含 pygame 字符串"改为 `sys.modules` 判据（docstring 误伤）。
 
+## 2b. M0.5 同日完成（4-pass chunk 调度器）
+
+同流程（brainstorm 三决策获批 → spec → plan → execute → verify）。验收：69 passed；**缝隙守恒**（192×128 多 chunk，逐材质计数不变）；产物盖戳**红绿验证**（去掉 stamp 必红）；replay 在新调度器下仍确定；M0 hash 序列按预期作废（pass_id 接线 + 语义切换）。性能意外向好：128² 27.1 FPS（**较 M0 +18%**，删 O(N) 清 flag pass 收益 > 调度开销）；192² 14.0 FPS。三决策落地：①删 FLAG_DIRTY/FLAG_STATIC ②`set_cell(stamp=)` 显式参数（提案 §2.3 row 5 已同步偏离记录）③benchmark 双尺寸。
+
 ## 3. 未收尾 / 下一步
 
 1. [ ] **用户手测冒烟**（可选）：`cd prototype && ../venv/bin/python main.py --seed 1 --record /tmp/demo.jsonl`——画沙倒水退出，再 `PYTHONPATH=prototype venv/bin/python prototype/replay.py /tmp/demo.jsonl --extra-frames 60` 看 hash。
-2. [ ] **M0.5**（~2.5–3 天）：Python 单线程 4-pass/chunk 调度——正方形写域 `[chunk−32, chunk+96)²` + 读域夹断 + 所有权制 + 世代戳（set_cell 继承帧戳），测试网格 ≥192×192；hash 基线将重建（语义切换，提案推论 2）。
-3. [ ] M0.5 后按队列：dispersion rate → velocity 积分（8.8 定点）→ fire 实施（spec v2）→ 粉末 inertia → 粒子双轨+爆炸 → benchmark 对比。
-4. [ ] 遗留小项：`demo.gif`/`demo_fire.gif`/`prototype/demo_fire.py`/`demo_gif.py` 仍未跟踪（建议 demo 脚本入库、gif 进 .gitignore）；CLAUDE.md §5.1 velocity 行待速度积分时再更新实现状态。
+2. [ ] **玩法队列开跑**（在 M0.5 语义上实施，deep-dive §6 收益论证 + 提案 §5 顺序）：dispersion rate（半天）→ velocity 积分（8.8 定点，注意写域契约从此真正吃力）→ fire 实施（spec v2 已就绪，burn pass pass_id=4）→ 粉末 inertia → 粒子双轨+爆炸（打击感里程碑 demo）→ 每步 benchmark 对比。
+3. [ ] M1（Phase 2 C#）时复用 M0.5 语义做"1/2/4/8 线程同 hash" CI。
+4. [ ] 遗留小项：`demo.gif`/`demo_fire.gif`/`prototype/demo_fire.py`/`demo_gif.py` 仍未跟踪（建议 demo 脚本入库、gif 进 .gitignore）；CLAUDE.md §5.1 velocity 行待速度积分时更新。
