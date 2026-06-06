@@ -1,6 +1,12 @@
 > 文档路径：`docs/superpowers/specs/2026-05-26-fire-system-design.md`
 > 运行时版本：Python 3.11+
-> 最近更新：2026-05-26 (UTC+8)
+> 最近更新：2026-06-06 (UTC+8)
+
+> **2026-06-06 裁决（用户拍板）**：调研证实 Noita 无温度场（`docs/reference/noita-deep-dive.md` §2.3、§5.3）。本 spec 按 **"Noita 式优先"** 方向修订执行：
+> - 保留：`fire_hp` 消耗 / `requires_oxygen` 表面燃烧 / `burn_to` 燃尽转化（已与 Noita 一致），建议补 `fire_hp=-1` 永燃与烟参数化（`on_fire_smoke_material` + `generates_smoke`）。
+> - 改造：点燃判定改为 火源 `temperature_of_fire` ≥ 邻居 `autoignition_temp` 的**静态比较** + 随机方向采样 + 概率（随机数走确定性契约 D2 的 counter RNG）。
+> - 降级：§3 的 TEMPERATURE 字段与 §5 温度场+热传导整章 → 可选实验分支（需先设计休眠条件并过 benchmark）。
+> - 时序：排在 M0 确定性地基之后实施（`docs/proposals/2026-06-06-deterministic-parallel-and-netcode.md` §5）。旧反应表火焰调参已留档于 commit `b99b2ec`。
 
 # 火焰系统重设计：Noita 风格 HP 消耗 + 热传导 + 表面燃烧
 

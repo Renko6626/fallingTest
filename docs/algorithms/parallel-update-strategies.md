@@ -1,6 +1,6 @@
 > 文档路径：`docs/algorithms/parallel-update-strategies.md`
 > 运行时版本：通用（Phase 2 Godot+C# 适用）
-> 最近更新：2026-05-26 (UTC+8)
+> 最近更新：2026-06-06 (UTC+8)
 
 # 像素更新并行化策略
 
@@ -36,13 +36,17 @@ Pass 1:          Pass 2:          Pass 3:          Pass 4:
 （■ = 本 pass 更新的 chunk，□ = 不动）
 ```
 
-每个 chunk 允许像素移动到边界外 **32px 缓冲区**，但不能更远。因为同一 pass 中被更新的 chunk 之间至少隔一个 chunk（64px），而像素最多移动 32px，所以**写入区域不重叠 → 无竞争 → 无需锁或原子操作**。
+每个被更新 chunk 的**写域 = 本 chunk 64×64 + 四个正方向各 32px 的十字形**（Petri 原话："the pixels inside the chunks are allowed to move within that 64×64 area **plus 32 pixels in each cardinal direction**"——不含对角扩展）。同一 pass 中被选 chunk 之间隔一个 chunk（64px 缝隙），两侧写域 32+32 恰好相接不重叠 → **写竞争为零 → 无需锁或原子操作**。等效结论：单帧像素位移上限 32px（"We guarantee that no pixel can be moved more than 32 pixels away"）。
+
+> 2026-06-06 已对 80.lv / macuyiko 原文逐字核验上述两句（见 `docs/reference/noita-deep-dive.md` §7 抽查记录）。
+> **确定性 caveat**：写域相接处的**读**是否越界（A chunk 边缘像素的邻居检查读到 C chunk 正在写的格子）Noita 未公开——若越界则存在 benign race，结果依赖线程时序。要做位级确定性并行，需显式"域边夹断"规则（边缘交互推迟到该缝隙所属 chunk 被激活的 pass 处理），详见 `docs/proposals/2026-06-06-deterministic-parallel-and-netcode.md`。
 
 ### 关键约束
 
 - **每帧像素最大位移 ≤ 32px**（硬保证，Noita 的核心不变量）
 - 每个 chunk 维护 **dirty rect**，只更新有变化的区域
 - chunk 远离玩家时可降频或休眠
+- **双层 chunk 结构**：64×64 是模拟 chunk；**流式/落盘单位是 512×512**（内存驻留约 12 个，社区 datamine）——两者不要混用
 
 ### 伪代码
 
@@ -79,6 +83,8 @@ for pass_id in [0, 1, 2, 3]:
 ---
 
 ## 3. 方案二：Margolus 邻域 Block CA（GPU 并行）
+
+> 注意：**这不是 Noita 的方案**（Noita 用 §2 的棋盘格 chunk，已核验）。Margolus 是学术/GPU 路线。其附带优点：2×2 块不重叠 + 纯 LUT → **天然位级确定性**，对联机同步友好（见确定性提案）。
 
 ### 来源
 
