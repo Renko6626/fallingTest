@@ -2,98 +2,161 @@
 > 运行时版本：Python 3.11+
 > 最近更新：2026-06-06 (UTC+8)
 
-> **2026-06-06 裁决（用户拍板）**：调研证实 Noita 无温度场（`docs/reference/noita-deep-dive.md` §2.3、§5.3）。本 spec 按 **"Noita 式优先"** 方向修订执行：
-> - 保留：`fire_hp` 消耗 / `requires_oxygen` 表面燃烧 / `burn_to` 燃尽转化（已与 Noita 一致），建议补 `fire_hp=-1` 永燃与烟参数化（`on_fire_smoke_material` + `generates_smoke`）。
-> - 改造：点燃判定改为 火源 `temperature_of_fire` ≥ 邻居 `autoignition_temp` 的**静态比较** + 随机方向采样 + 概率（随机数走确定性契约 D2 的 counter RNG）。
-> - 降级：§3 的 TEMPERATURE 字段与 §5 温度场+热传导整章 → 可选实验分支（需先设计休眠条件并过 benchmark）。
-> - 时序：排在 M0 确定性地基之后实施（`docs/proposals/2026-06-06-deterministic-parallel-and-netcode.md` §5）。旧反应表火焰调参已留档于 commit `b99b2ec`。
+# 火焰系统设计 v2：Noita 式 fire_hp 燃烧 + 静态温度比较（主线）
 
-# 火焰系统重设计：Noita 风格 HP 消耗 + 热传导 + 表面燃烧
+> **修订说明（2026-06-06，v1 → v2）**：调研证实 Noita **没有**每像素温度场与热传导（`docs/reference/noita-deep-dive.md` §2.3、§5.3），v1 的"温度场 + 传导"主线按用户裁决整体降级为本文**附录 A（实验分支）**；v1 完整原文见 git 历史（`git show f6c8917:docs/superpowers/specs/2026-05-26-fire-system-design.md`），旧反应表火焰的调参留档于 commit `b99b2ec`。
+> 本版主线 = Noita 式；**所有随机判定走确定性契约**（`docs/proposals/2026-06-06-deterministic-parallel-and-netcode.md` D1/D2，下称"提案"）。
+> **实施时序**：M0（counter RNG / hash / demo 回放）→ M0.5（单线程 4-pass 语义原型）之后实施本 spec。
+
+---
 
 ## 1. 动机
 
-当前火焰实现是"反应表直接替换材质"——fire 接触 wood 时通过概率反应把 wood 变成 fire。问题：
+旧反应表火焰（`materials.toml` 的 `fire+[flammable]` 概率替换）的问题不变：
 
 - 火焰生成后立刻上浮远离燃料，无法持续蔓延
 - 没有从外向内的燃烧效果，大块木头瞬间消失
-- 概率参数难以调平衡——太高则爆燃，太低则灭火
-- 不支持不同材质不同燃烧速度（wood 和 oil 行为相同）
+- 概率参数难调平衡——太高爆燃，太低灭火
+- 不支持不同材质不同燃烧速度
 
-Noita 的做法：材质自身有 `fire_hp`（耐火血量），被火逐帧削减；燃烧通过温度传播驱动而非反应表；`requires_oxygen` 实现表面燃烧。
+**v1 的误判修正**：v1 写"Noita 的做法是燃烧通过温度传播驱动"——调研证伪。Noita 的真实机制是：材质静态常量比较（火源 `temperature_of_fire` ≥ 邻居 `autoignition_temperature`）+ 每帧随机方向采样 + `fire_hp` 消耗，**无温度场、无传导**；连 lava 点火/固化都走反应表。v2 对齐该机制。
 
 ## 2. 目标与范围
 
-| 做 | 不做 |
+| 做（主线） | 不做（主线） |
 |---|---|
-| 每像素温度场 + 完整热传导 | 烟雾粒子系统（复用现有 steam） |
-| fire_hp 消耗 + 材质转化（wood→ash） | 爆炸力学（冲击波、抛射） |
-| 表面燃烧（requires_oxygen） | 对流传热（热气流上升加速热传播） |
-| 燃烧颜色混合 + 生成火焰像素 | 温度影响材质物理属性（如熔化） |
-| 水蒸发复用温度系统 | 冰冻/凝固机制 |
-
----
+| `fire_hp` 消耗 + 燃尽转化（wood→ash）；`-1` 永燃 | 每像素温度场 / 热传导 → **附录 A 实验分支** |
+| 静态点燃判定：源 `temperature_of_fire` ≥ 邻居 `autoignition_temp` | 对流、熔化等温度衍生效果 |
+| `requires_oxygen` 表面燃烧 | 烟雾专用材质（暂复用 steam；字段已预留） |
+| 灭火：缺氧 / `extinguisher` 接触 | 爆炸力学 |
+| 水蒸发：复用"水被烧穿"机制，零额外系统 | stains 系统（Phase 3） |
+| 燃烧颜色混合渲染 | 温度影响物理属性 |
+| 全部随机走 counter RNG（完整 key，提案 D2） | |
 
 ## 3. 像素属性扩展
 
-### 3.1 cell.py
-
-STRIDE 从 4 扩展到 6：
+STRIDE 4 → 5（v1 的 TEMPERATURE 字段**不进主线**）：
 
 ```python
-TYPE_ID     = 0
-VELOCITY    = 1
-LIFETIME    = 2
-FLAGS       = 3
-TEMPERATURE = 4   # 新增：当前温度（int，0-1000）
-FIRE_HP     = 5   # 新增：剩余耐火血量
-STRIDE      = 6
+TYPE_ID  = 0
+VELOCITY = 1
+LIFETIME = 2
+FLAGS    = 3
+FIRE_HP  = 4   # 新增：剩余耐燃血量（运行时副本，set_cell 时初始化为材质 fire_hp）
+STRIDE   = 5
 
-FLAG_DIRTY    = 0b001
-FLAG_STATIC   = 0b010
-FLAG_BURNING  = 0b100  # 新增：正在燃烧
+FLAG_DIRTY   = 0b001
+FLAG_STATIC  = 0b010
+FLAG_BURNING = 0b100   # 新增：正在燃烧
 ```
 
-### 3.2 MaterialDef 新增字段
+### MaterialDef 新增字段
+
+| 字段 | 类型 | 默认 | 语义 |
+|---|---|---|---|
+| `fire_hp` | int | 0 | 耐燃血量；0 = 不可燃；**-1 = 永燃**（Noita 同款语义） |
+| `autoignition_temp` | int | 1000 | 点燃阈值（静态常量，0–1000 自定标度） |
+| `temperature_of_fire` | int | 0 | 作为热源时辐射的"火温"（燃烧中的像素，或 fire/lava 这类天然热源） |
+| `burn_rate` | int | 1 | 燃烧中每帧 `fire_hp` 减量 |
+| `burn_to` | str | `"air"` | 燃尽转化目标材质 |
+| `generates_fire` | float | 0.0 | 燃烧时在邻居 air 生成 fire 像素的概率 |
+| `requires_oxygen` | bool | false | 燃烧是否需接触 air |
+| `generates_smoke` / `smoke_material` | float / str | 0 / `"steam"` | 烟参数化（对应 Noita `generates_smoke` + `on_fire_smoke_material`）；**首版不实现，字段预留** |
+
+**概率字段的确定性加载（提案 D1）**：TOML 中仍以 float 书写（保可读性），`MaterialRegistry` 加载时一次性量化为 u32 阈值——`threshold = min(round(p × 2**32), 2**32 - 1)`（2 的幂缩放无精度损失），运行时判定一律 `rng_u32(...) < threshold`。
+
+## 4. 点燃与燃烧机制（主线）
+
+### 4.1 概念
+
+- **热源** = 带 `FLAG_BURNING` 的像素 ∪ `temperature_of_fire > 0` 的材质像素（fire、lava 无需点燃即天然辐射火温）。
+- **点燃判定（Noita 式）**：每帧每个热源**随机采样 1 个方向**（counter RNG，salt=`FIRE_DIR`），若该邻居满足：`fire_hp ≠ 0`（可燃）且 `源.temperature_of_fire ≥ 邻居.autoignition_temp` 且（`不需氧` 或 `邻居接触 air`）→ 点燃（置 `FLAG_BURNING`）。**"每帧只采样 1/4 方向"本身就是蔓延速率的概率闸**（对应 Noita 原话 "look in a random direction to see if it can ignite that pixel"）。
+- 点燃是即时判定，无热量累积——`temperature_of_fire` / `autoignition_temp` 只是比较用常量。
+
+### 4.2 蔓延行为由数值编码（设计注记）
+
+| 配置 | 推导出的行为 |
+|---|---|
+| wood：燃烧火温 80 < wood 阈值 150 | **燃烧的木头不能直接点燃相邻木头**——蔓延必须经由它喷出的 fire 像素（火温 200 ≥ 150）+ 氧气接触 → 火沿木头**表面**爬，无氧内部不烧（Noita 同款表面燃烧） |
+| oil：燃烧火温 120 ≥ oil 阈值 100，`requires_oxygen=false` | **油直接相邻闪燃**，包括水下油层——油池一点即轰（Noita 同款） |
+| water：阈值 100 ≤ fire 200 / lava 300，`fire_hp=1`，`burn_to="steam"` | 水被火/岩浆"点燃"后 1 帧烧穿成 steam——**蒸发复用燃烧机制，零额外系统** |
+| 燃烧火温 80（wood）< water 阈值 100 | 燃烧的木头不会把旁边的水烧开（只有明火/岩浆才行） |
+
+### 4.3 burn pass（确定性版）
 
 ```python
-@dataclass(frozen=True)
-class MaterialDef:
-    # 现有字段
-    name: str
-    type_id: int
-    cell_type: str
-    density: float
-    color: tuple[int, int, int]
-    color_variance: int
-    lifetime: int
-    tags: frozenset[str]
-    # 新增字段
-    fire_hp: int                  # 耐火血量，0=不可燃
-    autoignition_temp: int        # 自燃温度阈值
-    burn_rate: int                # 每帧 fire_hp 减少量
-    burn_to: str                  # 燃尽后变成的材质名
-    temperature_of_fire: int      # 燃烧时辐射的温度值
-    thermal_conductivity: float   # 热传导系数（0.0-1.0）
-    generates_fire: float         # 燃烧时在邻居 air 生成 fire 像素的概率
-    requires_oxygen: bool         # 是否需要接触空气才能燃烧
+SALT_FIRE_DIR, SALT_FLAME_POS, SALT_FLAME = 10, 11, 12  # decision_salt 注册表
+
+def _burn_pass(self):
+    fire_id = self.registry.get_by_name("fire").type_id
+    ignite_queue: list[tuple[int, int]] = []   # 延迟点燃
+    spawn_queue: list[tuple[int, int]] = []    # 延迟生成 fire 像素
+
+    for y in range(self.height):               # 固定遍历序（D3）；方向任选但锁死
+        for x in range(self.width):
+            base = self._base(x, y)
+            type_id = self.cells[base + TYPE_ID]
+            if type_id == AIR:
+                continue
+            mat = self.registry.get_by_id(type_id)
+            burning = self.cells[base + FLAGS] & FLAG_BURNING
+
+            # 1) 灭火检查（先于点燃，顺序固定）
+            if burning:
+                if mat.requires_oxygen and not self._has_air_neighbor(x, y):
+                    self.cells[base + FLAGS] &= ~FLAG_BURNING; burning = False
+                elif self._touching_tag(x, y, "extinguisher"):
+                    self.cells[base + FLAGS] &= ~FLAG_BURNING; burning = False
+
+            # 2) 热源点燃邻居：随机采样 1 个方向 → 入延迟队列
+            heat = mat.temperature_of_fire if (burning or mat.temperature_of_fire > 0) else 0
+            if heat > 0:
+                d = rng_choice(seed, tick, pass_id, x, y, SALT_FIRE_DIR, n=4)
+                nx, ny = NEIGHBORS4[d](x, y)
+                if self._can_ignite(nx, ny, heat):
+                    ignite_queue.append((nx, ny))
+
+            # 3) 燃烧推进
+            if burning:
+                if mat.fire_hp != -1:                       # -1 = 永燃
+                    hp = self.cells[base + FIRE_HP] - mat.burn_rate
+                    self.cells[base + FIRE_HP] = hp
+                    if hp <= 0:
+                        self.set_cell(x, y, self.registry.get_by_name(mat.burn_to).type_id)
+                        continue
+                if mat.generates_fire_threshold:            # 喷火苗 → 入延迟队列
+                    for i, (nx, ny) in enumerate(neighbors4_shuffled(seed, tick, pass_id, x, y, SALT_FLAME_POS)):
+                        if (self.in_bounds(nx, ny) and self.get_type_id(nx, ny) == AIR
+                            and rng_u32(seed, tick, pass_id, x, y, SALT_FLAME, attempt=i) < mat.generates_fire_threshold):
+                            spawn_queue.append((nx, ny)); break   # 每帧至多 1 个
+
+    # 4) pass 末尾统一应用（防帧内沿扫描方向的连锁偏置：
+    #    本帧被点燃的像素下一帧才成为热源；本帧生成的火苗下一帧才参与）
+    for x, y in ignite_queue:
+        self.cells[self._base(x, y) + FLAGS] |= FLAG_BURNING
+    for x, y in spawn_queue:
+        if self.get_type_id(x, y) == AIR:    # 可能已被先入队者占用，按队列序确定裁决
+            self.set_cell(x, y, fire_id)
 ```
 
-默认值：
+- RNG 全部用完整 key `(seed, tick, pass_id, x, y, salt, attempt)`（提案 D2；Phase 1 串行 pass_id=0）。
+- **延迟队列是刻意设计**：点燃/生成若在扫描中即时生效，先扫到的火会在同一帧内沿扫描方向连锁推进 → 方向性偏置（确定但难看）。队列化后每帧蔓延恰好一层，且队列按扫描序构建 → 仍然确定。
+- `_can_ignite(nx, ny, heat)`：`in_bounds` 且目标 `fire_hp ≠ 0` 且 `heat ≥ 目标.autoignition_temp` 且（`不需氧` 或 `_has_air_neighbor(nx, ny)`）。
+- `_touching_tag`：四邻居中存在带指定 tag 的材质（走 `registry.get_ids_by_tag`，数据驱动，不硬编码材质名）。**忽略与自身相同 type_id 的邻居——材质不能灭自己**：否则水池内部被点燃的水会被邻居水立刻扑灭，蒸发机制失效（倒置 bug：只有孤立水滴能蒸发）。已知代价：燃烧的油浮在水面会被下方水扑灭（Noita 中油膜可持续燃烧）——先接受，后续可用"浸没占比"规则细化。
 
-| 字段 | 默认值 |
-|------|--------|
-| `fire_hp` | 0 |
-| `autoignition_temp` | 1000 |
-| `burn_rate` | 1 |
-| `burn_to` | `"air"` |
-| `temperature_of_fire` | 0 |
-| `thermal_conductivity` | 0.1 |
-| `generates_fire` | 0.0 |
-| `requires_oxygen` | false |
+### 4.4 状态机
 
----
+```
+[正常] ──源火温≥阈值 且可燃 且(无需氧|邻air)──► [燃烧中] ──fire_hp≤0──► 变为 burn_to
+   ▲                                              │
+   └────── 缺氧 / extinguisher 接触 ◄─────────────┘   （已耗 fire_hp 不恢复）
+```
 
-## 4. materials.toml 完整定义
+对比 v1：没有"温度降到阈值以下熄灭"分支（无温度场）；灭火只有缺氧与灭火剂两条路。
+
+## 5. materials.toml v2（主线目标态）
+
+变更点：**density 整数化**（提案 D1，原 float ×10）；新增火属性与 ash；water 加 `extinguisher` tag；删除 3 条旧火焰反应。
 
 ```toml
 [meta]
@@ -102,22 +165,20 @@ default_grid_size = [128, 128]
 
 [materials.wall]
 cell_type = "solid"
-density = 10.0
+density = 100
 color = [128, 128, 128]
 tags = ["solid"]
-thermal_conductivity = 0.02
 
 [materials.rock]
 cell_type = "solid"
-density = 9.0
+density = 90
 color = [100, 100, 100]
 color_variance = 8
 tags = ["solid"]
-thermal_conductivity = 0.05
 
 [materials.wood]
 cell_type = "solid"
-density = 8.0
+density = 80
 color = [139, 90, 43]
 color_variance = 10
 tags = ["solid", "flammable"]
@@ -126,40 +187,36 @@ autoignition_temp = 150
 burn_rate = 1
 burn_to = "ash"
 temperature_of_fire = 80
-thermal_conductivity = 0.05
 generates_fire = 0.15
 requires_oxygen = true
 
 [materials.ash]
 cell_type = "powder"
-density = 2.0
+density = 20
 color = [60, 60, 60]
 color_variance = 5
 tags = ["powder"]
-thermal_conductivity = 0.05
 
 [materials.sand]
 cell_type = "powder"
-density = 6.0
+density = 60
 color = [194, 178, 128]
 color_variance = 15
 tags = ["powder"]
-thermal_conductivity = 0.08
 
 [materials.water]
 cell_type = "liquid"
-density = 1.0
+density = 10
 color = [48, 96, 255]
-tags = ["liquid", "water", "conductive"]
+tags = ["liquid", "water", "conductive", "extinguisher"]
 fire_hp = 1
 autoignition_temp = 100
 burn_to = "steam"
-thermal_conductivity = 0.4
 requires_oxygen = false
 
 [materials.oil]
 cell_type = "liquid"
-density = 0.8
+density = 8
 color = [80, 60, 30]
 tags = ["liquid", "flammable"]
 fire_hp = 60
@@ -167,322 +224,99 @@ autoignition_temp = 100
 burn_rate = 2
 burn_to = "air"
 temperature_of_fire = 120
-thermal_conductivity = 0.2
 generates_fire = 0.3
 requires_oxygen = false
 
 [materials.lava]
 cell_type = "liquid"
-density = 3.0
+density = 30
 color = [255, 96, 0]
 tags = ["liquid", "lava", "hot"]
 temperature_of_fire = 300
-thermal_conductivity = 0.3
 
 [materials.steam]
 cell_type = "gas"
-density = 0.1
+density = 1
 color = [200, 200, 255]
 lifetime = 300
 tags = ["gas"]
-thermal_conductivity = 0.6
 
 [materials.fire]
 cell_type = "energy"
-density = 0.0
+density = 0
 color = [255, 160, 40]
 color_variance = 40
 lifetime = 120
 tags = ["energy", "hot"]
 temperature_of_fire = 200
-thermal_conductivity = 0.8
 
-# --- 反应表（大幅精简） ---
+# --- 反应表（只剩纯化学反应，Noita 实证同款） ---
 
-# 保留：纯化学反应
 [[reactions]]
 input = ["lava", "water"]
 output = ["rock", "steam"]
 probability = 0.8
 
-# 删除旧火焰反应——全部由温度系统取代：
-# - fire+[flammable] → fire+fire（删除）
-# - [hot]+wood → _self+fire（删除）
-# - [hot]+water → _self+steam（删除，水蒸发改为温度驱动）
+# 删除（由燃烧系统取代）：
+# fire+[flammable]→fire+fire / [hot]+wood→_self+fire / [hot]+water→_self+steam
 ```
 
----
-
-## 5. 热传导系统
-
-### 5.1 算法
-
-在 `update()` 中作为独立 pass 执行。使用**增量缓冲**避免遍历顺序影响结果。
-
-```python
-DIFFUSION_RATE = 0.1       # 全局扩散速率
-NATURAL_COOLING = 1        # 每帧自然冷却量
-TEMP_MIN = 0
-TEMP_MAX = 1000
-
-def _thermal_pass(self):
-    n = self.width * self.height
-    temp_delta = [0.0] * n
-
-    for y in range(self.height):
-        for x in range(self.width):
-            idx = y * self.width + x
-            base = idx * STRIDE
-            type_id = self.cells[base + TYPE_ID]
-            
-            if type_id == AIR:
-                self.cells[base + TEMPERATURE] = 0
-                continue
-            
-            t_self = self.cells[base + TEMPERATURE]
-            mat = self.registry.get_by_id(type_id)
-            k_self = mat.thermal_conductivity
-            
-            for nx, ny in [(x,y-1), (x,y+1), (x-1,y), (x+1,y)]:
-                if not self.in_bounds(nx, ny):
-                    continue
-                n_idx = ny * self.width + nx
-                n_base = n_idx * STRIDE
-                n_type = self.cells[n_base + TYPE_ID]
-                
-                if n_type == AIR:
-                    t_neighbor = 0
-                    k_neighbor = 1.0  # air 导热极好（散热器）
-                else:
-                    t_neighbor = self.cells[n_base + TEMPERATURE]
-                    k_neighbor = self.registry.get_by_id(n_type).thermal_conductivity
-                
-                k_avg = (k_self + k_neighbor) / 2
-                delta = (t_neighbor - t_self) * k_avg * DIFFUSION_RATE
-                temp_delta[idx] += delta
-
-    # 一次性应用增量
-    for i in range(n):
-        base = i * STRIDE
-        type_id = self.cells[base + TYPE_ID]
-        if type_id == AIR:
-            continue
-        
-        # 热源：燃烧中或天然热源（lava/fire），温度钉在 temperature_of_fire
-        mat = self.registry.get_by_id(type_id)
-        if self.cells[base + FLAGS] & FLAG_BURNING or mat.temperature_of_fire > 0:
-            self.cells[base + TEMPERATURE] = mat.temperature_of_fire
-        else:
-            new_temp = self.cells[base + TEMPERATURE] + int(temp_delta[i])
-            new_temp -= NATURAL_COOLING
-            self.cells[base + TEMPERATURE] = max(TEMP_MIN, min(TEMP_MAX, new_temp))
-```
-
-### 5.2 温度来源
-
-| 来源 | 行为 |
-|------|------|
-| 燃烧中的像素（FLAG_BURNING） | 温度钉在 `temperature_of_fire` |
-| lava（`temperature_of_fire=300`） | 始终辐射 300°，永不衰减 |
-| fire 像素（`temperature_of_fire=200`） | 始终辐射 200°，直到 lifetime 耗尽 |
-| 其它材质 | 通过传导接收温度，自然冷却每帧 -1 |
-
-### 5.3 swap 同步
-
-像素移动时 swap 操作交换 STRIDE 内所有字段，temperature 和 fire_hp 自动跟随，无需额外处理。
-
----
-
-## 6. 燃烧系统
-
-### 6.1 状态机
+## 6. update() pass 顺序
 
 ```
-[正常] ──温度≥autoignition_temp──► [燃烧中] ──fire_hp=0──► [燃尽]
-   ▲      且 fire_hp > 0              │                      │
-   │      且 (无需O₂ 或 邻接air)       │                      ▼
-   │                                   │               变为 burn_to 材质
-   │      被包围（requires_oxygen）     │
-   └───────────── 熄灭 ◄──────────────┘
-```
-
-### 6.2 每帧逻辑
-
-```python
-def _burn_pass(self):
-    fire_type_id = self.registry.get_by_name("fire").type_id
-    
-    for y in range(self.height):
-        for x in range(self.width):
-            base = self._base(x, y)
-            type_id = self.cells[base + TYPE_ID]
-            if type_id == AIR:
-                continue
-            
-            mat = self.registry.get_by_id(type_id)
-            flags = self.cells[base + FLAGS]
-            fire_hp = self.cells[base + FIRE_HP]
-            temp = self.cells[base + TEMPERATURE]
-            
-            is_burning = flags & FLAG_BURNING
-            
-            # 1. 点燃检查
-            if not is_burning and fire_hp > 0 and temp >= mat.autoignition_temp:
-                if not mat.requires_oxygen or self._has_air_neighbor(x, y):
-                    self.cells[base + FLAGS] |= FLAG_BURNING
-                    is_burning = True
-            
-            # 2. 燃烧中处理
-            if is_burning:
-                # 2a. 熄灭检查：缺氧或温度不足
-                if mat.requires_oxygen and not self._has_air_neighbor(x, y):
-                    self.cells[base + FLAGS] &= ~FLAG_BURNING
-                    continue
-                if temp < mat.autoignition_temp:
-                    self.cells[base + FLAGS] &= ~FLAG_BURNING
-                    continue
-                
-                # 2b. 消耗 fire_hp
-                fire_hp -= mat.burn_rate
-                self.cells[base + FIRE_HP] = fire_hp
-                
-                # 2c. 生成火焰像素
-                if mat.generates_fire > 0:
-                    neighbors = [(x,y-1),(x,y+1),(x-1,y),(x+1,y)]
-                    random.shuffle(neighbors)
-                    for nx, ny in neighbors:
-                        if (self.in_bounds(nx, ny) 
-                            and self.get_type_id(nx, ny) == AIR
-                            and random.random() < mat.generates_fire):
-                            self.set_cell(nx, ny, fire_type_id)
-                            break  # 每帧最多生成 1 个
-                
-                # 2d. 燃尽转化
-                if fire_hp <= 0:
-                    convert_id = self.registry.get_by_name(mat.burn_to).type_id
-                    self.set_cell(x, y, convert_id)
-
-def _has_air_neighbor(self, x: int, y: int) -> bool:
-    for nx, ny in [(x,y-1),(x,y+1),(x-1,y),(x+1,y)]:
-        if self.in_bounds(nx, ny) and self.get_type_id(nx, ny) == AIR:
-            return True
-    return False
-```
-
-### 6.3 灭火机制
-
-| 触发条件 | 行为 |
-|---------|------|
-| requires_oxygen 且被包围 | 清除 FLAG_BURNING，停止消耗 fire_hp（但已消耗的不恢复） |
-| water 接触 | 通过热传导：水的 thermal_conductivity=0.4 快速吸热降温，温度降到 autoignition_temp 以下后火熄灭；水自身温度升高后蒸发为 steam |
-| 降温灭火 | 温度降到 autoignition_temp 以下时清除 FLAG_BURNING，停止消耗 fire_hp（但已消耗的不恢复）。需要外部持续降温（如大量水）才能实现，因为燃烧中的像素自身是热源 |
-
----
-
-## 7. 渲染变更
-
-### 7.1 燃烧颜色混合
-
-```python
-FIRE_COLOR = np.array([255, 100, 20], dtype=np.int16)
-
-def render_to_array(grid, color_lut, variance_matrix, burn_data):
-    # 现有渲染逻辑...得到 color_buffer
-    
-    if burn_data is not None:
-        flags_arr, fire_hp_arr, max_fire_hp_arr = burn_data
-        burning_mask = (flags_arr & FLAG_BURNING) != 0
-        
-        if np.any(burning_mask):
-            burn_ratio = np.where(
-                max_fire_hp_arr > 0,
-                1.0 - fire_hp_arr / max_fire_hp_arr,
-                0.0
-            )
-            blend = 0.3 + 0.7 * burn_ratio  # 0.3~1.0
-            
-            for c in range(3):
-                color_buffer[:, :, c] = np.where(
-                    burning_mask,
-                    (color_buffer[:, :, c] * (1 - blend) + FIRE_COLOR[c] * blend),
-                    color_buffer[:, :, c]
-                )
-    
-    return color_buffer
-```
-
-### 7.2 CellGrid 新增方法
-
-```python
-def get_burn_state_array(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """返回 (flags, fire_hp, max_fire_hp) 三个数组，用于渲染。"""
-    ...
-```
-
----
-
-## 8. update() 完整 pass 顺序
-
-```
-1. 清除 dirty flags
-2. 移动 pass（现有逻辑）
+1. 清 dirty flags
+2. 移动 pass（现有逻辑；random 已在 M0 换 counter RNG）
 3. 反应 pass（现有逻辑，反应表精简后只剩 lava+water）
-4. 热传导 pass（新增 — §5）
-5. 燃烧 pass（新增 — §6）
-6. lifetime 衰减（现有逻辑）
-7. frame_count++
+4. 燃烧 pass（新增 — §4.3，无温度场）
+5. lifetime 衰减
+6. frame_count++
 ```
 
----
+## 7. 渲染（沿用 v1 设计）
 
-## 9. 改动文件总览
+燃烧颜色混合：`burn_ratio = 1 − fire_hp / max_fire_hp`，`blend = 0.3 + 0.7 × burn_ratio`，向 `FIRE_COLOR = (255, 100, 20)` 插值；`CellGrid.get_burn_state_array()` 返回 `(flags, fire_hp, max_fire_hp)` 三数组供 numpy 向量化混合。
 
-| 文件 | 改动类型 | 内容 |
-|------|---------|------|
-| `core/cell.py` | 修改 | STRIDE 4→6, 新增 TEMPERATURE/FIRE_HP/FLAG_BURNING |
-| `core/material.py` | 修改 | MaterialDef 加 8 个字段, 解析 TOML 新属性 |
-| `core/grid.py` | 修改 | set_cell 初始化新字段, 新增 _thermal_pass/_burn_pass/_has_air_neighbor/get_burn_state_array, update() 加两个 pass |
-| `core/rules.py` | 不变 | — |
+## 8. 改动文件总览
+
+| 文件 | 改动 | 内容 |
+|---|---|---|
+| `core/cell.py` | 修改 | STRIDE 4→5、`FIRE_HP`、`FLAG_BURNING` |
+| `core/material.py` | 修改 | +7 字段；概率 u32 量化加载（D1） |
+| `core/grid.py` | 修改 | `set_cell` 初始化 FIRE_HP；`_burn_pass` / `_has_air_neighbor` / `_touching_tag` / `get_burn_state_array`；update() 加 burn pass |
+| `core/rules.py` | 不变 | fire 仍按 energy 运动（其随机在 M0 已换 counter RNG） |
 | `core/reaction.py` | 不变 | — |
-| `data/materials.toml` | 修改 | 所有材质加热属性, 新增 ash, 删除 3 条旧火焰反应 |
-| `render/pygame_renderer.py` | 修改 | render_to_array 追加燃烧颜色混合 |
-| `tests/test_thermal.py` | 新增 | 热传导 + 燃烧 + 集成测试 |
-| `tests/test_grid.py` | 修改 | 适配 STRIDE=6 |
-| `tests/test_materials.py` | 修改 | 适配新字段 |
-| `tests/test_renderer.py` | 修改 | 追加燃烧渲染测试 |
+| `data/materials.toml` | 修改 | §5 全文 |
+| `render/pygame_renderer.py` | 修改 | 燃烧颜色混合 |
+| `tests/test_fire.py` | 新增 | §9 |
+| `tests/test_grid.py` / `test_materials.py` | 修改 | 适配 STRIDE=5、新字段 |
+
+## 9. 测试策略
+
+counter RNG 使所有测试**天然确定**（固定 seed → 逐帧可断言，无 flaky）：
+
+- **点燃阈值**：火温 80 vs 阈值 150 不点燃；200 ≥ 150 点燃；恰好相等点燃（≥ 语义）
+- **requires_oxygen**：被实心包围的 wood 不点燃；表面点燃；烧出空腔后火向内推进
+- **fire_hp**：每帧按 burn_rate 递减；归零转 `burn_to`；`-1` 永燃不减
+- **灭火**：接触 `extinguisher` 清 FLAG_BURNING；缺氧熄灭；已耗 fire_hp 不恢复
+- **灭火不自灭**：水池内部被点燃的水不被邻居水扑灭（同 type_id 忽略），正常蒸发；burning wood 接触水被扑灭
+- **水蒸发**：fire 邻接 water → water 下帧变 steam（经燃烧机制，无需反应表）
+- **蔓延路径**：wood 只经火苗+氧气蔓延（直接相邻不点燃）；oil 直接相邻闪燃（含无氧环境）
+- **延迟队列**：同帧大面积火源只向外推进一层（无扫描方向连锁偏置）
+- **集成**：火烧木从外向内→ash；油池闪燃；lava 蒸发水 + lava+water→rock
+- **确定性**：同 seed 同 hash（接 M0 回归套件）；任一随机点改动测试即红
 
 ---
 
-## 10. 测试策略
+## 附录 A：温度场 + 热传导（实验分支，未实施）
 
-### test_thermal.py（新增）
+v1 主线设计整体降级至此，作为日后差异化实验——它能做 Noita 式近似不了的效果：**岩浆随时间冷却、热水渐沸、冰冻扩散、热传导穿墙预警**。
 
-**热传导基础**：
-- 高温像素向低温邻居扩散（确认温度变化方向正确）
-- air 温度始终为 0
-- `thermal_conductivity=0` 的材质不传热
-- 温度 clamp 在 0-1000
-- 自然冷却每帧 -1
+**开启前置条件**（三者缺一不开工）：
 
-**燃烧机制**：
-- 温度达到 `autoignition_temp` → FLAG_BURNING 置位
-- `requires_oxygen=true` 且无 air 邻居 → 不点燃
-- `requires_oxygen=true` 被包围 → 熄灭（清 FLAG_BURNING）
-- 燃烧中 fire_hp 每帧减少 `burn_rate`
-- `fire_hp=0` → 变为 `burn_to` 材质
-- 燃烧中温度钉在 `temperature_of_fire`
-- `generates_fire` 在邻居 air 格子概率生成 fire 像素
+1. 温度休眠条件设计：温差 < ε 即夹断为环境温度并停更，否则全场 diffusion 使 chunk 永不休眠，对冲 dirty rect 全部收益（提案 §6 风险 1 同源）；
+2. benchmark 过关（CLAUDE.md §5.3：新增系统必须跑基准）；
+3. 确定性合规：增量缓冲固定遍历序、整数温度、扩散系数定点化（D1/D3）。
 
-**集成场景**：
-- fire 接触 wood → wood 逐渐升温 → 自燃 → 从外向内烧 → 变 ash
-- oil 被火点燃 → 快速蔓延（低 autoignition, 高 generates_fire）
-- 水被加热到 100 → 蒸发为 steam
-- 大块 wood 中间像素不燃烧（requires_oxygen 效果验证）
+**要点存档**：STRIDE 追加 TEMPERATURE 字段；`DIFFUSION_RATE=0.1`、`NATURAL_COOLING=1`、`TEMP_MAX=1000`；增量缓冲两遍法（先算 delta 后统一应用）；热源钉温（燃烧中/天然热源温度钉在 `temperature_of_fire`）；air 作散热器（k=1.0）。完整算法、参数表与测试清单见 v1 原文：`git show f6c8917:docs/superpowers/specs/2026-05-26-fire-system-design.md`。
 
-### 现有测试适配
-
-- `test_grid.py`：所有 set_cell/swap 测试适配 STRIDE=6
-- `test_materials.py`：验证新字段加载和默认值
-- `test_renderer.py`：追加燃烧像素颜色混合验证
-
-测试在 8×8 网格上跑，固定随机种子确保确定性。
+另注：CLAUDE.md §5.2 的示例反应 `(Lava, t>300) → [Rock]`（按温度冷却固化）属于本附录范围——Noita 中不存在该机制（lava 固化全部由接触反应触发），是我们的自选差异化动作。
