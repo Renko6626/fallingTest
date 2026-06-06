@@ -5,6 +5,16 @@
 # 性能基线
 
 按 CLAUDE.md §5.3 约定记录。格式：`{width}x{height}, {active_ratio}% active, {fps} FPS`。
+**正式基准 = `prototype/benchmark.py`**（128×128、底墙+大沙块+水层 ≈34% 非空、200 帧、seed 42）——此后所有对比一律用它。
+
+## 2026-06-07 — M0 前后对比（正式基准脚本，同机同场景）
+
+| 版本 | 实测 | 备注 |
+|---|---|---|
+| M0 前（commit 061ede8） | `128x128, 34% active, 27.6 FPS`（36.2 ms/帧） | 全局 random + float 密度 |
+| **M0 后（counter RNG + crc32 hash + 整数化）** | `128x128, 34% active, 23.0 FPS`（43.5 ms/帧） | **回退 -17%（+7.3 ms/帧）**，在 20% 预算内 ✓（评审 m1 预测的量级一致；纯 Python 下 keyed 哈希贵于 C 实现的 random，C# 期反转） |
+
+注：下方 06-06 的 42 FPS provisional 来自评审的另一套即兴场景，活跃构成更轻，**不再作为对比基线**，仅留档。
 
 ## 2026-06-06 — M0 前基线（评审实测，provisional）
 
