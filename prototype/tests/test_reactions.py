@@ -1,7 +1,7 @@
 import pytest
-import random
 from core.material import MaterialRegistry
 from core.reaction import ReactionResult, ReactionTable
+from core.rng import threshold_u32
 
 
 @pytest.fixture
@@ -12,45 +12,45 @@ version = 1
 
 [materials.wall]
 cell_type = "solid"
-density = 10.0
+density = 100
 color = [128, 128, 128]
 tags = ["solid"]
 
 [materials.water]
 cell_type = "liquid"
-density = 1.0
+density = 10
 color = [48, 96, 255]
 tags = ["liquid", "water"]
 
 [materials.oil]
 cell_type = "liquid"
-density = 0.8
+density = 8
 color = [80, 60, 30]
 tags = ["liquid", "flammable"]
 
 [materials.lava]
 cell_type = "liquid"
-density = 3.0
+density = 30
 color = [255, 96, 0]
 tags = ["liquid", "lava", "hot"]
 
 [materials.steam]
 cell_type = "gas"
-density = 0.1
+density = 1
 color = [200, 200, 255]
 lifetime = 300
 tags = ["gas"]
 
 [materials.fire]
 cell_type = "energy"
-density = 0.0
+density = 0
 color = [255, 160, 40]
 lifetime = 60
 tags = ["energy", "hot"]
 
 [materials.rock]
 cell_type = "solid"
-density = 9.0
+density = 90
 color = [100, 100, 100]
 tags = ["solid"]
 
@@ -86,7 +86,7 @@ def test_direct_reaction_lookup(registry_with_reactions):
     r = results[0]
     assert r.output1 == reg.get_by_name("rock").type_id
     assert r.output2 == reg.get_by_name("steam").type_id
-    assert r.probability == 0.8
+    assert r.threshold == threshold_u32(0.8)
 
 
 def test_symmetric_lookup(registry_with_reactions):
@@ -128,9 +128,9 @@ def test_no_reaction(registry_with_reactions):
     assert results is None
 
 
-def test_probability_stored(registry_with_reactions):
+def test_threshold_stored(registry_with_reactions):
     reg, table = registry_with_reactions
     lava_id = reg.get_by_name("lava").type_id
     water_id = reg.get_by_name("water").type_id
     results = table.get(lava_id, water_id)
-    assert all(0.0 <= r.probability <= 1.0 for r in results)
+    assert all(0 <= r.threshold <= 0xFFFFFFFF for r in results)

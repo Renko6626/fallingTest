@@ -10,7 +10,7 @@ class MaterialDef:
     name: str
     type_id: int
     cell_type: str
-    density: float
+    density: int  # 整数密度等级（确定性契约 D1；标度 ≈ 旧 float ×10）
     color: tuple[int, int, int]
     color_variance: int
     lifetime: int
@@ -21,7 +21,7 @@ _AIR = MaterialDef(
     name="air",
     type_id=0,
     cell_type="solid",
-    density=0.0,
+    density=0,
     color=(0, 0, 0),
     color_variance=0,
     lifetime=0,
@@ -46,7 +46,7 @@ class MaterialRegistry:
                 name=name,
                 type_id=next_id,
                 cell_type=props["cell_type"],
-                density=props["density"],
+                density=int(round(float(props["density"]))),  # D1：兼容旧 float 写法
                 color=(color_raw[0], color_raw[1], color_raw[2]),
                 color_variance=props.get("color_variance", 0),
                 lifetime=props.get("lifetime", 0),

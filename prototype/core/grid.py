@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import random  # TODO(M0 Task 4): _check_reactions 换 keyed RNG 后删除
 import zlib
 from array import array
 
@@ -113,6 +112,7 @@ class CellGrid:
         if type_a == AIR:
             return
         neighbors = [(x, y - 1), (x, y + 1), (x - 1, y), (x + 1, y)]
+        draw = 0  # attempt 局部计数：同格同帧多次掷骰必须去相关（D2）
         for nx, ny in neighbors:
             if not self.in_bounds(nx, ny):
                 continue
@@ -123,7 +123,9 @@ class CellGrid:
             if results is None:
                 continue
             for result in results:
-                if random.random() < result.probability:
+                hit = rng_u32(self._fseed, 0, x, y, SALT_REACTION, attempt=draw) < result.threshold
+                draw += 1
+                if hit:
                     out1 = type_a if result.output1 == SELF_MARKER else result.output1
                     out2 = type_b if result.output2 == SELF_MARKER else result.output2
                     self.set_cell(x, y, out1)

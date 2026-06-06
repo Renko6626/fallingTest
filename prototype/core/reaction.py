@@ -4,6 +4,7 @@ import tomllib
 from dataclasses import dataclass
 
 from core.material import MaterialRegistry
+from core.rng import threshold_u32
 
 SELF_MARKER = -1
 
@@ -12,7 +13,7 @@ SELF_MARKER = -1
 class ReactionResult:
     output1: int
     output2: int
-    probability: float
+    threshold: int  # u32 阈值（确定性契约 D1）：rng_u32 < threshold 即触发
 
 
 class ReactionTable:
@@ -29,6 +30,7 @@ class ReactionTable:
 
             input1_ids = self._resolve(input_names[0], registry)
             input2_ids = self._resolve(input_names[1], registry)
+            threshold = threshold_u32(probability)
 
             for id1 in input1_ids:
                 for id2 in input2_ids:
@@ -37,8 +39,8 @@ class ReactionTable:
                     out1 = self._resolve_output(output_names[0], registry)
                     out2 = self._resolve_output(output_names[1], registry)
 
-                    forward = ReactionResult(out1, out2, probability)
-                    reverse = ReactionResult(out2, out1, probability)
+                    forward = ReactionResult(out1, out2, threshold)
+                    reverse = ReactionResult(out2, out1, threshold)
 
                     self._table.setdefault((id1, id2), []).append(forward)
                     self._table.setdefault((id2, id1), []).append(reverse)

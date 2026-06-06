@@ -4,59 +4,59 @@ default_grid_size = [128, 128]
 
 [materials.wall]
 cell_type = "solid"
-density = 10.0
+density = 100
 color = [128, 128, 128]
 tags = ["solid"]
 
 [materials.rock]
 cell_type = "solid"
-density = 9.0
+density = 90
 color = [100, 100, 100]
 color_variance = 8
 tags = ["solid"]
 
 [materials.wood]
 cell_type = "solid"
-density = 8.0
+density = 80
 color = [139, 90, 43]
 color_variance = 10
 tags = ["solid", "flammable"]
 
 [materials.sand]
 cell_type = "powder"
-density = 6.0
+density = 60
 color = [194, 178, 128]
 color_variance = 15
 tags = ["powder"]
 
 [materials.water]
 cell_type = "liquid"
-density = 1.0
+density = 10
 color = [48, 96, 255]
 tags = ["liquid", "water", "conductive"]
 
 [materials.oil]
 cell_type = "liquid"
-density = 0.8
+density = 8
 color = [80, 60, 30]
 tags = ["liquid", "flammable"]
 
 [materials.lava]
 cell_type = "liquid"
-density = 3.0
+density = 30
 color = [255, 96, 0]
 tags = ["liquid", "lava", "hot"]
 
 [materials.steam]
 cell_type = "gas"
-density = 0.1
+density = 1
 color = [200, 200, 255]
 lifetime = 300
 tags = ["gas"]
 
 [materials.fire]
 cell_type = "energy"
-density = 0.0
+density = 0
 color = [255, 160, 40]
 color_variance = 40
 lifetime = 120

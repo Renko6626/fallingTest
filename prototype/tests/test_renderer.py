@@ -14,13 +14,13 @@ version = 1
 
 [materials.wall]
 cell_type = "solid"
-density = 10.0
+density = 100
 color = [128, 128, 128]
 tags = ["solid"]
 
 [materials.sand]
 cell_type = "powder"
-density = 6.0
+density = 60
 color = [194, 178, 128]
 color_variance = 15
 tags = ["powder"]

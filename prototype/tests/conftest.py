@@ -8,19 +8,19 @@ version = 1
 
 [materials.wall]
 cell_type = "solid"
-density = 10.0
+density = 100
 color = [128, 128, 128]
 tags = ["solid"]
 
 [materials.sand]
 cell_type = "powder"
-density = 6.0
+density = 60
 color = [194, 178, 128]
 tags = ["powder"]
 
 [materials.water]
 cell_type = "liquid"
-density = 1.0
+density = 10
 color = [48, 96, 255]
 tags = ["liquid", "water"]
 """

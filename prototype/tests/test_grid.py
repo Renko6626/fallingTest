@@ -13,19 +13,19 @@ version = 1
 
 [materials.wall]
 cell_type = "solid"
-density = 10.0
+density = 100
 color = [128, 128, 128]
 tags = ["solid"]
 
 [materials.sand]
 cell_type = "powder"
-density = 6.0
+density = 60
 color = [194, 178, 128]
 tags = ["powder"]
 
 [materials.water]
 cell_type = "liquid"
-density = 1.0
+density = 10
 color = [48, 96, 255]
 tags = ["liquid", "water"]
 """
@@ -84,7 +84,7 @@ version = 1
 
 [materials.steam]
 cell_type = "gas"
-density = 0.1
+density = 1
 color = [200, 200, 255]
 lifetime = 300
 tags = ["gas"]
@@ -112,51 +112,51 @@ version = 1
 
 [materials.wall]
 cell_type = "solid"
-density = 10.0
+density = 100
 color = [128, 128, 128]
 tags = ["solid"]
 
 [materials.sand]
 cell_type = "powder"
-density = 6.0
+density = 60
 color = [194, 178, 128]
 tags = ["powder"]
 
 [materials.water]
 cell_type = "liquid"
-density = 1.0
+density = 10
 color = [48, 96, 255]
 tags = ["liquid", "water"]
 
 [materials.oil]
 cell_type = "liquid"
-density = 0.8
+density = 8
 color = [80, 60, 30]
 tags = ["liquid", "flammable"]
 
 [materials.lava]
 cell_type = "liquid"
-density = 3.0
+density = 30
 color = [255, 96, 0]
 tags = ["liquid", "lava", "hot"]
 
 [materials.steam]
 cell_type = "gas"
-density = 0.1
+density = 1
 color = [200, 200, 255]
 lifetime = 300
 tags = ["gas"]
 
 [materials.fire]
 cell_type = "energy"
-density = 0.0
+density = 0
 color = [255, 160, 40]
 lifetime = 3
 tags = ["energy", "hot"]
 
 [materials.rock]
 cell_type = "solid"
-density = 9.0
+density = 90
 color = [100, 100, 100]
 tags = ["solid"]
 
