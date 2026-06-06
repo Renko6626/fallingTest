@@ -35,10 +35,14 @@
 
 6/6 成立并采纳：①RNG key 升级 7 元组（修"确定但强相关"）；②插入 M0.5 单线程 4-pass 语义原型；③D1 整数化细则（density 整数、概率 u32 阈值）；④实体连续占位升级为提案 §4.3 一等规则（量化实体快照 = 地形 tick 输入）；⑤fire spec 全文重写 v2（自相矛盾消除，另补延迟点燃队列防扫描偏置）；⑥M0 队首为评审确认项。docs 第一批已入库 `10c35ee`。
 
+## 2e. opus 独立评审采纳（同日，第二轮评审）
+
+主会话验算后 23 条全部成立：**B1 冷油自燃**（热源加 `fire_hp==0` 门控）、**B2 十字写域角落死锁**（写域改正方形 `[chunk−32, chunk+96)²`，密铺+不相交穷举验证）、M1 陈旧点燃条目、M2 缝隙延迟口径（最坏跨帧）、M3 M0 验收谓词重写（污染测试为核心）、M4 占位快照走 reliable 命令流、M5 burn pass pass_id=4、M6 性能基线入档（`docs/perf/baseline.md`，42 FPS provisional）+ 10 minor + 5 nit。CLAUDE.md 同步更新（§5.1/§5.2 过时表述）。评审工作量复核：M0 ~3 天、M0.5 ~2.5–3 天；**总判断：M0 可开工**。
+
 ## 3. 未收尾 / 下一步（评审后定型的执行队列）
 
-1. [ ] **M0**（~2 天）：counter RNG（完整 key）替换全部 `random.*` + per-chunk/world hash + pytest 确定性回归 + demo 录制回放 + D1 加载层整数化（density 整数等级、概率 u32 阈值）。
-2. [ ] **M0.5**（~1–2 天）：Python 单线程 4-pass/chunk 调度原型——只锁语义（写/读域夹断、世代计数器、固定 pass 序），不并行。
+1. [ ] **M0**（~3 天，评审复核）：counter RNG（完整 key）替换 6 处 `random.*` + hash + demo 录制回放（头嵌 toml 哈希）+ D1 加载层整数化 + 性能基线复测。验收 = **污染测试**（帧间扰动全局 random，sim hash 不变）+ RNG 金值 + 回放逐帧等价 + benchmark 入档。
+2. [ ] **M0.5**（~2.5–3 天，评审复核）：Python 单线程 4-pass/chunk 调度原型——**正方形写域** + 读域夹断 + 所有权制 + 世代戳（移动时盖、set_cell 继承帧戳），测试网格 ≥192×192。
 3. [ ] Phase 1 玩法队列（在 M0.5 语义上实施）：dispersion rate → velocity 积分（8.8 定点）→ fire 实施（spec v2 已就绪）→ 粉末 inertia → 粒子双轨+爆炸（打击感里程碑 demo）→ benchmark + per-chunk dirty rect。
 4. [ ] 实施期按需补查：GDC 视频 9:20 多线程段落与 23–30min 粒子段落（线程池细节、粒子弹出阈值的唯一剩余来源）。
 5. [ ] 本轮评审采纳修订（proposal + fire spec v2 + 账本）尚未 git 提交——待用户确认。

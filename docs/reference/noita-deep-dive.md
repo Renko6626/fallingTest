@@ -365,6 +365,8 @@ body 像素位图 → Marching Squares（多轮廓，含洞）
 
 ## 6. Phase 1 行动队列建议（按性价比）
 
+> **过时标注（2026-06-06）**：本队列的优先顺序已被 `docs/proposals/2026-06-06-deterministic-parallel-and-netcode.md` §5/§7 取代——现行顺序为 **M0 → M0.5 → 本队列**。本节保留作各项收益的论证依据。
+
 1. **液体 dispersionRate**（半天）——成本最低收益立竿见影
 2. **竖直 velocity + 重力积分**（1 天，jason.today 方案）——"加速运动"本体
 3. **fire spec 修订为 Noita 式**（半天）→ 实施火系统

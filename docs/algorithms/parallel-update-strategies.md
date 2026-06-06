@@ -39,7 +39,8 @@ Pass 1:          Pass 2:          Pass 3:          Pass 4:
 每个被更新 chunk 的**写域 = 本 chunk 64×64 + 四个正方向各 32px 的十字形**（Petri 原话："the pixels inside the chunks are allowed to move within that 64×64 area **plus 32 pixels in each cardinal direction**"——不含对角扩展）。同一 pass 中被选 chunk 之间隔一个 chunk（64px 缝隙），两侧写域 32+32 恰好相接不重叠 → **写竞争为零 → 无需锁或原子操作**。等效结论：单帧像素位移上限 32px（"We guarantee that no pixel can be moved more than 32 pixels away"）。
 
 > 2026-06-06 已对 80.lv / macuyiko 原文逐字核验上述两句（见 `docs/reference/noita-deep-dive.md` §7 抽查记录）。
-> **确定性 caveat**：写域相接处的**读**是否越界（A chunk 边缘像素的邻居检查读到 C chunk 正在写的格子）Noita 未公开——若越界则存在 benign race，结果依赖线程时序。要做位级确定性并行，需显式"域边夹断"规则（边缘交互推迟到该缝隙所属 chunk 被激活的 pass 处理），详见 `docs/proposals/2026-06-06-deterministic-parallel-and-netcode.md`。
+> **确定性 caveat**：写域相接处的**读**是否越界（A chunk 边缘像素的邻居检查读到 C chunk 正在写的格子）Noita 未公开——若越界则存在 benign race，结果依赖线程时序。要做位级确定性并行，需显式"域边夹断"规则（边缘交互推迟到该缝隙归属 chunk 的 pass 处理，最坏落到下一帧对应 pass），详见 `docs/proposals/2026-06-06-deterministic-parallel-and-netcode.md`。
+> **工程偏离（2026-06-06 评审 B2）**：在"每 chunk 只扫描自己像素"的所有权语义下，照抄十字写域会在 chunk 角落产生**永久对角死锁**（如 (63,63)→(64,64) 不在任何会扫描该像素的 chunk 写域内），且每 pass 有 25% 面积（32×32 角块）无人可写。我们的实现采用**正方形写域 `[chunk−32, chunk+96)²`**——穷举验证同 pass 两两不相交且恰好密铺全平面，交换律保持。本节 Noita 原话保留作调研记录，工程以提案 §2.2 条件① 为准。
 
 ### 关键约束
 
@@ -206,7 +207,7 @@ graph TD
 
 | 阶段 | 方案 | 改动量 |
 |------|------|--------|
-| Phase 1 Python 原型 | 保持串行 | 无改动 |
+| Phase 1 Python 原型 | **M0.5 起切换为单线程 4-pass/chunk 调度**（语义与 Phase 2 对齐，见确定性提案 §5；2026-06-06 更新，取代原"保持串行"） | grid.update() 拆 pass，不并行 |
 | Phase 2 Godot+C# 初版 | **棋盘格 Chunk**（方案一） | grid.update() 拆成 4 pass + chunk 管理器 |
 | Phase 2+ 性能优化（如需） | **Margolus Block CA**（方案二） | 核心更新逻辑重写为 compute shader |
 
@@ -217,7 +218,7 @@ graph TD
 1. **新增 `ChunkManager`**：管理 chunk 数组、dirty rect、休眠状态
 2. **修改 `CellGrid.update()`**：从单次全量遍历改为 4 pass 循环，每 pass 调用 `ChunkManager.get_active_chunks(pass_id)`
 3. **修改 `rules.py`**：`try_move()` 的返回值需要限制在 32px 以内（当前最大位移就是 1px，所以实际上不需要改）
-4. **chunk 边界反应**：`_check_reactions()` 在 chunk 边界处需要读取相邻 chunk 的像素，但不写入——只在下一 pass 该 chunk 被激活时才处理
+4. **chunk 边界反应**：`_check_reactions()` 越出自家写域的邻居检查本 pass 跳过，由该缝隙归属 chunk 的 pass 结算（最坏落到下一帧对应 pass——确定性提案评审 M2 口径）
 
 ---
 

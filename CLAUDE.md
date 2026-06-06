@@ -197,7 +197,7 @@ docs/
 |------|------|------|
 | `type` | enum | 材质类型（Sand, Water, Wall, Fire...） |
 | `density` | float | 密度，决定沉浮关系 |
-| `velocity` | int | 水平方向偏好（-1/+1），减少振荡 |
+| `velocity` | int | 速度（目标：8.8 定点，确定性契约 D1）；当前实现暂为 ±1 横向方向记忆 |
 | `lifetime` | int | 剩余存活帧数（仅 Energy 类需要） |
 | `is_dirty` | bool | 本帧是否已被更新 |
 | `is_static` | bool | 静止优化标记——周围无变化时跳过更新 |
@@ -236,6 +236,8 @@ docs/
 (Water, Steam) → [Water]          # 水冷凝蒸汽
 ```
 **禁止**在更新循环里用 if-else 链硬编码反应逻辑——必须走查找表。
+
+> **2026-06-06 更新**：①上方示例反应已部分过时——燃烧**不走反应表**（专用 burn pass，见 fire spec v2；属查找表禁令的豁免系统，但其参数必须来自材质字段，不得硬编码材质名）；`(Fire,Wood)`/`(Fire,Oil)` 两条已删除；`(Lava,t>300)` 按温度冷却属实验分支（fire spec 附录 A），Noita 中不存在。反应表的唯一真源 = `prototype/data/materials.toml`。②密度已整数化（确定性契约 D1）：Solid 80–100、Powder 20–60、Liquid 8–30、Gas ≈1（上方类别表的 float 范围为旧标度）。③确定性契约 D1–D10 与并行语义见 `docs/proposals/2026-06-06-deterministic-parallel-and-netcode.md`；性能基线见 `docs/perf/baseline.md`。
 
 ### 5.3 性能约定
 
@@ -328,4 +330,4 @@ docs/
 
 ---
 
-_最后更新：2026-05-26 (UTC+8)_
+_最后更新：2026-06-06 (UTC+8)_

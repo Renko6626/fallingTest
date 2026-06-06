@@ -69,7 +69,7 @@ FLAG_BURNING = 0b100   # 新增：正在燃烧
 
 ### 4.1 概念
 
-- **热源** = 带 `FLAG_BURNING` 的像素 ∪ `temperature_of_fire > 0` 的材质像素（fire、lava 无需点燃即天然辐射火温）。
+- **热源** = 带 `FLAG_BURNING` 的像素 ∪ **天然热源**（`temperature_of_fire > 0` **且 `fire_hp == 0`** 的材质——即 fire、lava）。⚠️ `fire_hp ≠ 0` 的可燃物（wood/oil）**只有燃烧中才辐射火温**——若不加 `fire_hp==0` 门控，冷油池（120 > 自身阈值 100）会无火自燃并蒸干邻水（评审 B1）。
 - **点燃判定（Noita 式）**：每帧每个热源**随机采样 1 个方向**（counter RNG，salt=`FIRE_DIR`），若该邻居满足：`fire_hp ≠ 0`（可燃）且 `源.temperature_of_fire ≥ 邻居.autoignition_temp` 且（`不需氧` 或 `邻居接触 air`）→ 点燃（置 `FLAG_BURNING`）。**"每帧只采样 1/4 方向"本身就是蔓延速率的概率闸**（对应 Noita 原话 "look in a random direction to see if it can ignite that pixel"）。
 - 点燃是即时判定，无热量累积——`temperature_of_fire` / `autoignition_temp` 只是比较用常量。
 
@@ -80,7 +80,7 @@ FLAG_BURNING = 0b100   # 新增：正在燃烧
 | wood：燃烧火温 80 < wood 阈值 150 | **燃烧的木头不能直接点燃相邻木头**——蔓延必须经由它喷出的 fire 像素（火温 200 ≥ 150）+ 氧气接触 → 火沿木头**表面**爬，无氧内部不烧（Noita 同款表面燃烧） |
 | oil：燃烧火温 120 ≥ oil 阈值 100，`requires_oxygen=false` | **油直接相邻闪燃**，包括水下油层——油池一点即轰（Noita 同款） |
 | water：阈值 100 ≤ fire 200 / lava 300，`fire_hp=1`，`burn_to="steam"` | 水被火/岩浆"点燃"后 1 帧烧穿成 steam——**蒸发复用燃烧机制，零额外系统** |
-| 燃烧火温 80（wood）< water 阈值 100 | 燃烧的木头不会把旁边的水烧开（只有明火/岩浆才行） |
+| 燃烧火温 80（wood）< water 阈值 100 ≤ 燃烧油火温 120 | 燃烧的木头烧不开水；**燃烧的油能**（120≥100）——但贴水的油通常先被扑灭（灭火规则），仅对角/侧面构型可见（评审 m6，测试钉死该行为） |
 
 ### 4.3 burn pass（确定性版）
 
@@ -109,7 +109,9 @@ def _burn_pass(self):
                     self.cells[base + FLAGS] &= ~FLAG_BURNING; burning = False
 
             # 2) 热源点燃邻居：随机采样 1 个方向 → 入延迟队列
-            heat = mat.temperature_of_fire if (burning or mat.temperature_of_fire > 0) else 0
+            # 天然热源须 fire_hp==0（评审 B1：否则冷油自燃）
+            is_natural_source = mat.temperature_of_fire > 0 and mat.fire_hp == 0
+            heat = mat.temperature_of_fire if (burning or is_natural_source) else 0
             if heat > 0:
                 d = rng_choice(seed, tick, pass_id, x, y, SALT_FIRE_DIR, n=4)
                 nx, ny = NEIGHBORS4[d](x, y)
@@ -133,7 +135,9 @@ def _burn_pass(self):
     # 4) pass 末尾统一应用（防帧内沿扫描方向的连锁偏置：
     #    本帧被点燃的像素下一帧才成为热源；本帧生成的火苗下一帧才参与）
     for x, y in ignite_queue:
-        self.cells[self._base(x, y) + FLAGS] |= FLAG_BURNING
+        # apply 时复检：目标可能已在本帧燃尽转化（如 wood→ash），陈旧条目会点燃 ash 并湮灭成 air（评审 M1，与 spawn_queue 的 AIR 复查对称）
+        if self.registry.get_by_id(self.get_type_id(x, y)).fire_hp != 0:
+            self.cells[self._base(x, y) + FLAGS] |= FLAG_BURNING
     for x, y in spawn_queue:
         if self.get_type_id(x, y) == AIR:    # 可能已被先入队者占用，按队列序确定裁决
             self.set_cell(x, y, fire_id)
@@ -143,6 +147,7 @@ def _burn_pass(self):
 - **延迟队列是刻意设计**：点燃/生成若在扫描中即时生效，先扫到的火会在同一帧内沿扫描方向连锁推进 → 方向性偏置（确定但难看）。队列化后每帧蔓延恰好一层，且队列按扫描序构建 → 仍然确定。
 - `_can_ignite(nx, ny, heat)`：`in_bounds` 且目标 `fire_hp ≠ 0` 且 `heat ≥ 目标.autoignition_temp` 且（`不需氧` 或 `_has_air_neighbor(nx, ny)`）。
 - `_touching_tag`：四邻居中存在带指定 tag 的材质（走 `registry.get_ids_by_tag`，数据驱动，不硬编码材质名）。**忽略与自身相同 type_id 的邻居——材质不能灭自己**：否则水池内部被点燃的水会被邻居水立刻扑灭，蒸发机制失效（倒置 bug：只有孤立水滴能蒸发）。已知代价：燃烧的油浮在水面会被下方水扑灭（Noita 中油膜可持续燃烧）——先接受，后续可用"浸没占比"规则细化。
+- **pass_id 约定（评审 M5）**：Phase 1 的 burn pass 是全网格独立 pass，RNG key 的 `pass_id` 固定取 **4**（movement 棋盘格用 0–3；M0 串行期 movement 取 0）。**M1 并行化时 burn pass 按 chunk 拆入棋盘调度**：点燃采样的越界目标与 ignite/spawn 队列遵守与 movement 相同的写域/延迟规则，届时本节伪代码相应分块化（已记入提案 M1 范围）。
 
 ### 4.4 状态机
 
@@ -246,7 +251,7 @@ cell_type = "energy"
 density = 0
 color = [255, 160, 40]
 color_variance = 40
-lifetime = 120
+lifetime = 120   # 注：Noita flame≈5 帧；若大面积燃烧形成"两秒火云"，优先下调此值（评审 n4）
 tags = ["energy", "hot"]
 temperature_of_fire = 200
 
@@ -256,6 +261,13 @@ temperature_of_fire = 200
 input = ["lava", "water"]
 output = ["rock", "steam"]
 probability = 0.8
+
+# 必要补丁（评审 m5）：wood requires_oxygen=true，完全浸没岩浆时点燃判定永不触发（无 air 邻居）
+# ——Noita 同款解法是反应表条目（materials.xml dump 第 14569 行 [lava]+[burnable]→[lava]+fire）
+[[reactions]]
+input = ["lava", "[flammable]"]
+output = ["lava", "fire"]
+probability = 0.1
 
 # 删除（由燃烧系统取代）：
 # fire+[flammable]→fire+fire / [hot]+wood→_self+fire / [hot]+water→_self+steam
@@ -303,6 +315,11 @@ counter RNG 使所有测试**天然确定**（固定 seed → 逐帧可断言，
 - **蔓延路径**：wood 只经火苗+氧气蔓延（直接相邻不点燃）；oil 直接相邻闪燃（含无氧环境）
 - **延迟队列**：同帧大面积火源只向外推进一层（无扫描方向连锁偏置）
 - **集成**：火烧木从外向内→ash；油池闪燃；lava 蒸发水 + lava+water→rock
+- **冷油静置**（评审 B1 回归）：纯油池 + 邻接水，静置 N 帧不自燃、水不蒸发
+- **陈旧点燃条目**（评审 M1 回归）：hp 临界帧邻接双热源，燃尽产物 ash 存活不被点燃
+- **燃油烧水**（评审 m6 钉行为）：对角构型下燃烧油可蒸发水；贴水油先被扑灭
+- **lava 浸没木头**（评审 m5）：无 air 接触的 wood 经反应表 `lava+[flammable]→lava+fire` 点燃；lava+water 双机制（反应表 vs 点燃蒸发）的结果比例钉到具体场景
+- **灰烬闷熄**（评审 m10，已知特性）：平顶木块燃烧产生的 ash 堆积隔绝 air 可闷熄火——集成测试"火烧木从外向内"用**侧立面/斜面几何**，平顶闷熄单独立测试钉为特性
 - **确定性**：同 seed 同 hash（接 M0 回归套件）；任一随机点改动测试即红
 
 ---
