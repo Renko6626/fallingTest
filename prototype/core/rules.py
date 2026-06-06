@@ -99,6 +99,9 @@ def _move_gas(grid: CellGrid, x: int, y: int, density: float) -> Optional[tuple[
 
 
 def _move_energy(grid: CellGrid, x: int, y: int) -> Optional[tuple[int, int]]:
+    # 40% chance to stay in place — lets fire linger near fuel and spread
+    if random.random() < 0.4:
+        return None
     candidates = [(x, y - 1), (x - 1, y - 1), (x + 1, y - 1)]
     random.shuffle(candidates)
     for cx, cy in candidates:

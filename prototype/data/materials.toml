@@ -59,7 +59,7 @@ cell_type = "energy"
 density = 0.0
 color = [255, 160, 40]
 color_variance = 40
-lifetime = 60
+lifetime = 120
 tags = ["energy", "hot"]
 
 [[reactions]]
@@ -70,12 +70,12 @@ probability = 0.8
 [[reactions]]
 input = ["fire", "[flammable]"]
 output = ["fire", "fire"]
-probability = 0.05
+probability = 0.15
 
 [[reactions]]
 input = ["[hot]", "wood"]
 output = ["_self", "fire"]
-probability = 0.02
+probability = 0.08
 
 [[reactions]]
 input = ["[hot]", "water"]
