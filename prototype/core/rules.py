@@ -81,10 +81,13 @@ def _move_liquid(grid: CellGrid, x: int, y: int, density: int) -> Optional[tuple
 
     base = grid._base(x, y)
     vel = grid.cells[base + VELOCITY]
-    sides = [(x + vel, y), (x - vel, y)]
-    for sx, sy in sides:
-        if _can_move_to(grid, sx, sy, density, heavier_sinks=True):
-            return (sx, sy)
+    if _can_move_to(grid, x + vel, y, density, heavier_sinks=True):
+        return (x + vel, y)
+    if _can_move_to(grid, x - vel, y, density, heavier_sinks=True):
+        # 方向承诺：走了 -vel 侧就翻转方向记忆，否则下帧先试 +vel
+        # （= 刚腾出的空格）→ 原地打乒乓，液面永不摊平（2026-06-07 根因）
+        grid.cells[base + VELOCITY] = -vel
+        return (x - vel, y)
 
     grid.cells[base + VELOCITY] = -vel
     return None
@@ -102,10 +105,11 @@ def _move_gas(grid: CellGrid, x: int, y: int, density: int) -> Optional[tuple[in
 
     base = grid._base(x, y)
     vel = grid.cells[base + VELOCITY]
-    sides = [(x + vel, y), (x - vel, y)]
-    for sx, sy in sides:
-        if _can_move_to(grid, sx, sy, density, heavier_sinks=False):
-            return (sx, sy)
+    if _can_move_to(grid, x + vel, y, density, heavier_sinks=False):
+        return (x + vel, y)
+    if _can_move_to(grid, x - vel, y, density, heavier_sinks=False):
+        grid.cells[base + VELOCITY] = -vel  # 方向承诺（与液体同款修复）
+        return (x - vel, y)
 
     grid.cells[base + VELOCITY] = -vel
     return None
