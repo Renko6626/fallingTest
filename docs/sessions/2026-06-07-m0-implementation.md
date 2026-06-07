@@ -33,4 +33,4 @@
 1. [ ] **用户手测冒烟**（可选）：`cd prototype && ../venv/bin/python main.py --seed 1 --record /tmp/demo.jsonl`——画沙倒水退出，再 `PYTHONPATH=prototype venv/bin/python prototype/replay.py /tmp/demo.jsonl --extra-frames 60` 看 hash。
 2. [ ] **玩法队列开跑**（在 M0.5 语义上实施，deep-dive §6 收益论证 + 提案 §5 顺序）：dispersion rate（半天）→ velocity 积分（8.8 定点，注意写域契约从此真正吃力）→ fire 实施（spec v2 已就绪，burn pass pass_id=4）→ 粉末 inertia → 粒子双轨+爆炸（打击感里程碑 demo）→ 每步 benchmark 对比。
 3. [ ] M1（Phase 2 C#）时复用 M0.5 语义做"1/2/4/8 线程同 hash" CI。
-4. [ ] 遗留小项：`demo.gif`/`demo_fire.gif`/`prototype/demo_fire.py`/`demo_gif.py` 仍未跟踪（建议 demo 脚本入库、gif 进 .gitignore）；CLAUDE.md §5.1 velocity 行待速度积分时更新。
+4. [x] 遗留小项：demo 脚本（`prototype/demo_fire.py`/`demo_gif.py`）实际早已入库；gif 已进 `.gitignore`（`*.gif`，docs 规范禁二进制图片）。CLAUDE.md §5.1 velocity 行待速度积分时更新（保留）。
