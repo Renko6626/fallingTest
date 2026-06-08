@@ -34,18 +34,21 @@ cell_type = "liquid"
 density = 10
 color = [48, 96, 255]
 tags = ["liquid", "water", "conductive"]
+dispersion = 5
 
 [materials.oil]
 cell_type = "liquid"
 density = 8
 color = [80, 60, 30]
 tags = ["liquid", "flammable"]
+dispersion = 2
 
 [materials.lava]
 cell_type = "liquid"
 density = 30
 color = [255, 96, 0]
 tags = ["liquid", "lava", "hot"]
+dispersion = 1
 
 [materials.steam]
 cell_type = "gas"
@@ -53,6 +56,7 @@ density = 1
 color = [200, 200, 255]
 lifetime = 300
 tags = ["gas"]
+dispersion = 3
 
 [materials.fire]
 cell_type = "energy"

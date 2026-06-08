@@ -15,6 +15,7 @@ class MaterialDef:
     color_variance: int
     lifetime: int
     tags: frozenset[str]
+    dispersion: int = 1  # 横移一帧最多探测格数（液体/气体；spec 2026-06-07）
 
 
 _AIR = MaterialDef(
@@ -51,6 +52,7 @@ class MaterialRegistry:
                 color_variance=props.get("color_variance", 0),
                 lifetime=props.get("lifetime", 0),
                 tags=tags,
+                dispersion=int(props.get("dispersion", 1)),
             )
             self._by_name[name] = mat
             self._by_id[next_id] = mat

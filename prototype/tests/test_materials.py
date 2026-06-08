@@ -26,6 +26,7 @@ cell_type = "liquid"
 density = 10.0
 color = [48, 96, 255]
 tags = ["liquid", "water"]
+dispersion = 5
 """
 # 注：water 故意保留 float 写法——验证加载器 int(round()) 兼容（D1）
     f = tmp_path / "test_materials.toml"
@@ -95,3 +96,15 @@ def test_all_materials(registry):
     all_mats = registry.all()
     names = {m.name for m in all_mats}
     assert names == {"air", "wall", "sand", "water"}
+
+
+def test_dispersion_loaded(registry):
+    water = registry.get_by_name("water")
+    assert water.dispersion == 5
+    assert isinstance(water.dispersion, int)
+
+
+def test_default_dispersion(registry):
+    """未声明 dispersion 的材质缺省 1（= 现行为）。"""
+    wall = registry.get_by_name("wall")
+    assert wall.dispersion == 1
