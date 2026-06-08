@@ -33,7 +33,7 @@ def try_move(grid: CellGrid, x: int, y: int) -> Optional[tuple[int, int]]:
     elif cell_type == "liquid":
         return _move_liquid(grid, x, y, mat)
     elif cell_type == "gas":
-        return _move_gas(grid, x, y, mat.density)
+        return _move_gas(grid, x, y, mat)
     elif cell_type == "energy":
         return _move_energy(grid, x, y)
     return None
@@ -112,7 +112,8 @@ def _move_liquid(grid: CellGrid, x: int, y: int, mat: MaterialDef) -> Optional[t
     return _probe_side(grid, x, y, density, mat.dispersion, heavier_sinks=True)
 
 
-def _move_gas(grid: CellGrid, x: int, y: int, density: int) -> Optional[tuple[int, int]]:
+def _move_gas(grid: CellGrid, x: int, y: int, mat: MaterialDef) -> Optional[tuple[int, int]]:
+    density = mat.density
     if _can_move_to(grid, x, y - 1, density, heavier_sinks=False):
         return (x, y - 1)
 
@@ -122,16 +123,7 @@ def _move_gas(grid: CellGrid, x: int, y: int, density: int) -> Optional[tuple[in
         if _can_move_to(grid, dx, dy, density, heavier_sinks=False):
             return (dx, dy)
 
-    base = grid._base(x, y)
-    vel = grid.cells[base + VELOCITY]
-    if _can_move_to(grid, x + vel, y, density, heavier_sinks=False):
-        return (x + vel, y)
-    if _can_move_to(grid, x - vel, y, density, heavier_sinks=False):
-        grid.cells[base + VELOCITY] = -vel  # 方向承诺（与液体同款修复）
-        return (x - vel, y)
-
-    grid.cells[base + VELOCITY] = -vel
-    return None
+    return _probe_side(grid, x, y, density, mat.dispersion, heavier_sinks=False)
 
 
 def _move_energy(grid: CellGrid, x: int, y: int) -> Optional[tuple[int, int]]:

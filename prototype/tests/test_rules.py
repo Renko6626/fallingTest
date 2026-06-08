@@ -163,21 +163,22 @@ def test_liquid_side_move_commits_direction(env):
 
 
 def test_gas_side_move_commits_direction(env):
-    """同款 bug 的气体镜像：横移后必须沿同方向继续。"""
+    """气体侧移走 -vel 后必须翻转方向记忆（液体同款不变量）；dispersion 引入后
+    一帧横移多格，故直接断言源格 VELOCITY 翻转。"""
     reg, _ = env
     grid = make_grid(env)
     steam_id = reg.get_by_name("steam").type_id
     wall_id = reg.get_by_name("wall").type_id
     for x in range(8):
-        grid.set_cell(x, 0, wall_id)  # 天花板
-        grid.set_cell(x, 2, wall_id)  # 下方封死，隔离斜上通道
-    grid.set_cell(5, 1, wall_id)      # 右侧堵死
-    grid.set_cell(4, 1, steam_id)
-
-    grid.update()
-    assert grid.get_type_id(3, 1) == steam_id
-    grid.update()
-    assert grid.get_type_id(2, 1) == steam_id, "气体侧移后方向未承诺：像素打乒乓"
+        grid.set_cell(x, 0, wall_id)  # 天花板：上/斜上全堵
+        grid.set_cell(x, 2, wall_id)  # 下方封死
+    grid.set_cell(5, 1, wall_id)      # 右侧堵死 → 只能走左（-vel）
+    grid.set_cell(4, 1, steam_id)     # vel 初始 +1
+    from core.rules import try_move
+    from core.cell import VELOCITY
+    r = try_move(grid, 4, 1)
+    assert r is not None and r[0] < 4, "应向左横移"
+    assert grid.cells[grid._base(4, 1) + VELOCITY] == -1, "侧移后方向未承诺"
 
 
 def test_liquid_levels_out(env):
@@ -272,3 +273,16 @@ def test_density_swap_heavy_sinks(env):
     from core.rules import try_move
     result = try_move(grid, 3, 3)
     assert result == (3, 4)
+
+
+def test_gas_disperses_to_furthest_air(env):
+    """steam dispersion=3：天花板下右侧 3 格空 → 一帧落 x+3。"""
+    reg, table = env
+    grid = CellGrid(16, 8, reg, table)
+    steam_id = reg.get_by_name("steam").type_id
+    wall_id = reg.get_by_name("wall").type_id
+    for x in range(16):
+        grid.set_cell(x, 0, wall_id)  # 天花板：上/斜上全堵
+    grid.set_cell(3, 1, steam_id)
+    from core.rules import try_move
+    assert try_move(grid, 3, 1) == (6, 1)
