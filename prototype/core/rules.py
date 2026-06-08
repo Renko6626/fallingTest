@@ -62,8 +62,7 @@ def _probe_side(grid: CellGrid, x: int, y: int, density: int, dispersion: int, h
     首格可密度置换则走旧 ±1 路径（spec §2，2026-06-07）。
     纯确定（无 RNG）；在 write_rect 边界截断（写域契约）。"""
     base = grid._base(x, y)
-    vel = grid.cells[base + VELOCITY]
-    assert vel in (1, -1), f"方向记忆必须为 ±1，实际 {vel}（契约：set_cell 初始化为 1）"
+    vel = grid.cells[base + VELOCITY]  # 契约：始终 ±1（set_cell 初始化为 1，探测只写 ±1）；见 test_velocity_contract
     for direction in (vel, -vel):
         furthest = None
         for i in range(1, dispersion + 1):
@@ -75,6 +74,8 @@ def _probe_side(grid: CellGrid, x: int, y: int, density: int, dispersion: int, h
                 furthest = (tx, y)
                 continue
             if i == 1 and _can_move_to(grid, tx, y, density, heavier_sinks=heavier_sinks):
+                if direction == -vel:
+                    grid.cells[base + VELOCITY] = -vel  # -vel 置换也承诺方向（与旧 ±1 逐位等价）
                 return (tx, y)  # 密度置换（仅 i==1）：旧 ±1 兜底，落点非 AIR
             break
         if furthest is not None:

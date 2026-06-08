@@ -286,3 +286,23 @@ def test_gas_disperses_to_furthest_air(env):
     grid.set_cell(3, 1, steam_id)
     from core.rules import try_move
     assert try_move(grid, 3, 1) == (6, 1)
+
+
+def test_velocity_contract_set_cell_initializes_positive(env):
+    """方向记忆契约：set_cell 初始化 VELOCITY=1；侧移承诺只产生 ±1。
+    （取代 _probe_side 里的热路径 assert，见该函数注释。）"""
+    from core.cell import VELOCITY
+    reg, _ = env
+    grid = make_grid(env)
+    water_id = reg.get_by_name("water").type_id
+    wall_id = reg.get_by_name("wall").type_id
+    grid.set_cell(3, 3, water_id)
+    assert grid.cells[grid._base(3, 3) + VELOCITY] == 1  # 初始化为 +1
+    # 触发一次向左侧移（右侧堵死），确认承诺后仍是 ±1
+    for x in range(8):
+        grid.set_cell(x, 7, wall_id)
+    grid.set_cell(5, 6, wall_id)
+    grid.set_cell(4, 6, water_id)
+    from core.rules import try_move
+    try_move(grid, 4, 6)
+    assert grid.cells[grid._base(4, 6) + VELOCITY] in (1, -1)

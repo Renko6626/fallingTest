@@ -315,6 +315,8 @@ git commit -m "feat(dispersion): gas mirror wiring via shared probe"
 Run: `cd prototype && ../venv/bin/python -m pytest tests/test_rules.py::test_liquid_levels_out -q`
 Expected: PASS。若 FAIL：把帧数回调到最小可过值（150/200/250 试探），落账实测值。
 
+> **实测记录（2026-06-09）**：实际运行 100 帧（`range(100)`，spread=1）即收敛；测试使用 100 帧，断言消息同步为 `f"液面未摊平（100 帧，dispersion=5）：heights={heights}"`。Step 1 中的 200 帧为保守估算，shipped 值为 100。
+
 - [ ] **Step 3: 全量回归**
 
 Run: `cd prototype && ../venv/bin/python -m pytest tests/ -q`
