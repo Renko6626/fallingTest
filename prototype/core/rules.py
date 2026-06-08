@@ -4,6 +4,7 @@ from typing import Optional
 
 from core.cell import AIR, VELOCITY
 from core.grid import CellGrid
+from core.material import MaterialDef
 from core.rng import (
     SALT_DIAG,
     SALT_ENERGY_DIR,
@@ -30,7 +31,7 @@ def try_move(grid: CellGrid, x: int, y: int) -> Optional[tuple[int, int]]:
     elif cell_type == "powder":
         return _move_powder(grid, x, y, mat.density)
     elif cell_type == "liquid":
-        return _move_liquid(grid, x, y, mat.density)
+        return _move_liquid(grid, x, y, mat)
     elif cell_type == "gas":
         return _move_gas(grid, x, y, mat.density)
     elif cell_type == "energy":
@@ -56,6 +57,34 @@ def _can_move_to(grid: CellGrid, x: int, y: int, self_density: int, heavier_sink
         return target_mat.density > self_density
 
 
+def _probe_side(grid: CellGrid, x: int, y: int, density: int, dispersion: int, heavier_sinks: bool) -> Optional[tuple[int, int]]:
+    """沿方向记忆探测最多 dispersion 格，落最远连续 AIR；
+    首格可密度置换则走旧 ±1 路径（spec §2，2026-06-07）。
+    纯确定（无 RNG）；在 write_rect 边界截断（写域契约）。"""
+    base = grid._base(x, y)
+    vel = grid.cells[base + VELOCITY]
+    assert vel in (1, -1), f"方向记忆必须为 ±1，实际 {vel}（契约：set_cell 初始化为 1）"
+    for direction in (vel, -vel):
+        furthest = None
+        for i in range(1, dispersion + 1):
+            tx = x + direction * i
+            if not grid._write_rect.contains(tx, y):
+                break
+            target_id = grid.get_type_id(tx, y)
+            if target_id == AIR:
+                furthest = (tx, y)
+                continue
+            if i == 1 and _can_move_to(grid, tx, y, density, heavier_sinks=heavier_sinks):
+                return (tx, y)  # 密度置换（仅 i==1）：旧 ±1 兜底，落点非 AIR
+            break
+        if furthest is not None:
+            if direction == -vel:
+                grid.cells[base + VELOCITY] = -vel  # 方向承诺（2026-06-07 修复同款）
+            return furthest
+    grid.cells[base + VELOCITY] = -vel  # 两侧全堵也翻转：下帧换方向探，防冻结
+    return None
+
+
 def _move_powder(grid: CellGrid, x: int, y: int, density: int) -> Optional[tuple[int, int]]:
     if _can_move_to(grid, x, y + 1, density, heavier_sinks=True):
         return (x, y + 1)
@@ -69,7 +98,8 @@ def _move_powder(grid: CellGrid, x: int, y: int, density: int) -> Optional[tuple
     return None
 
 
-def _move_liquid(grid: CellGrid, x: int, y: int, density: int) -> Optional[tuple[int, int]]:
+def _move_liquid(grid: CellGrid, x: int, y: int, mat: MaterialDef) -> Optional[tuple[int, int]]:
+    density = mat.density
     if _can_move_to(grid, x, y + 1, density, heavier_sinks=True):
         return (x, y + 1)
 
@@ -79,18 +109,7 @@ def _move_liquid(grid: CellGrid, x: int, y: int, density: int) -> Optional[tuple
         if _can_move_to(grid, dx, dy, density, heavier_sinks=True):
             return (dx, dy)
 
-    base = grid._base(x, y)
-    vel = grid.cells[base + VELOCITY]
-    if _can_move_to(grid, x + vel, y, density, heavier_sinks=True):
-        return (x + vel, y)
-    if _can_move_to(grid, x - vel, y, density, heavier_sinks=True):
-        # 方向承诺：走了 -vel 侧就翻转方向记忆，否则下帧先试 +vel
-        # （= 刚腾出的空格）→ 原地打乒乓，液面永不摊平（2026-06-07 根因）
-        grid.cells[base + VELOCITY] = -vel
-        return (x - vel, y)
-
-    grid.cells[base + VELOCITY] = -vel
-    return None
+    return _probe_side(grid, x, y, density, mat.dispersion, heavier_sinks=True)
 
 
 def _move_gas(grid: CellGrid, x: int, y: int, density: int) -> Optional[tuple[int, int]]:

@@ -25,6 +25,14 @@ cell_type = "liquid"
 density = 10
 color = [48, 96, 255]
 tags = ["liquid", "water"]
+dispersion = 5
+
+[materials.oil]
+cell_type = "liquid"
+density = 8
+dispersion = 2
+color = [80, 60, 30]
+tags = ["liquid", "flammable"]
 
 [materials.steam]
 cell_type = "gas"
@@ -32,6 +40,7 @@ density = 1
 color = [200, 200, 255]
 lifetime = 300
 tags = ["gas"]
+dispersion = 3
 
 [materials.fire]
 cell_type = "energy"
@@ -112,8 +121,8 @@ def test_liquid_spreads_horizontally(env):
     from core.rules import try_move
     r = try_move(grid, 3, 6)  # 下与斜下全被墙挡 → 必走横向（方向记忆确定）
     assert r is not None
-    assert r[1] == 6
-    assert r[0] in (2, 4)
+    assert r[1] == 6          # 同一行
+    assert r[0] != 3          # 发生了横移（dispersion 下可达多格，不再钉 ±1 落点）
 
 
 def test_gas_rises(env):
@@ -135,21 +144,22 @@ def water_columns(grid, water_id):
 
 
 def test_liquid_side_move_commits_direction(env):
-    """侧移走了 -vel 方向时必须翻转方向记忆，否则像素在自己刚腾出的
-    格子间打乒乓（根因：水堆冻结成沙堆形，2026-06-07 调查）。"""
+    """侧移走 -vel 方向后必须翻转方向记忆（承诺），否则下一次决策先试 +vel
+    = 刚腾出的格子 → 打乒乓、液面冻结（2026-06-07 根因）。dispersion 引入后
+    水一帧横移多格，故此处直接断言方向承诺不变量（源格 VELOCITY 翻转）。"""
     reg, _ = env
     grid = make_grid(env)
     water_id = reg.get_by_name("water").type_id
     wall_id = reg.get_by_name("wall").type_id
     for x in range(8):
-        grid.set_cell(x, 7, wall_id)  # 地板
-    grid.set_cell(5, 6, wall_id)      # 右侧堵死
-    grid.set_cell(4, 6, water_id)     # vel 初始 +1，首帧只能走左
-
-    grid.update()  # (4,6) -> (3,6)
-    assert grid.get_type_id(3, 6) == water_id
-    grid.update()  # 修复后继续走左 (2,6)；bug 下弹回 (4,6)
-    assert grid.get_type_id(2, 6) == water_id, "侧移后方向未承诺：像素打乒乓"
+        grid.set_cell(x, 7, wall_id)  # 地板：下/斜下全堵
+    grid.set_cell(5, 6, wall_id)      # 右侧堵死 → 只能走左（-vel）
+    grid.set_cell(4, 6, water_id)     # vel 初始 +1
+    from core.rules import try_move
+    from core.cell import VELOCITY
+    r = try_move(grid, 4, 6)
+    assert r is not None and r[0] < 4, "应向左横移"
+    assert grid.cells[grid._base(4, 6) + VELOCITY] == -1, "侧移后方向未承诺"
 
 
 def test_gas_side_move_commits_direction(env):
@@ -193,6 +203,63 @@ def test_liquid_levels_out(env):
     assert sum(heights) == 96  # 守恒
     spread = max(heights) - min(heights)
     assert spread <= 2, f"液面未摊平：heights={heights}"
+
+
+def test_liquid_disperses_to_furthest_air(env):
+    """水 dispersion=5：右侧 5 格全空 → 一帧落到 x+5。"""
+    reg, table = env
+    grid = CellGrid(16, 8, reg, table)
+    water_id = reg.get_by_name("water").type_id
+    wall_id = reg.get_by_name("wall").type_id
+    for x in range(16):
+        grid.set_cell(x, 7, wall_id)  # 地板：下/斜下全堵
+    grid.set_cell(3, 6, water_id)     # vel 初始 +1
+    from core.rules import try_move
+    assert try_move(grid, 3, 6) == (8, 6)
+
+
+def test_liquid_probe_stops_at_obstacle(env):
+    """探测中途遇墙截停 → 落墙前最远空格。"""
+    reg, table = env
+    grid = CellGrid(16, 8, reg, table)
+    water_id = reg.get_by_name("water").type_id
+    wall_id = reg.get_by_name("wall").type_id
+    for x in range(16):
+        grid.set_cell(x, 7, wall_id)
+    grid.set_cell(6, 6, wall_id)      # x+3 是墙
+    grid.set_cell(3, 6, water_id)
+    from core.rules import try_move
+    assert try_move(grid, 3, 6) == (5, 6)
+
+
+def test_liquid_displacement_only_at_first_cell(env):
+    """首格是更轻液体 → 走 ±1 密度置换，不穿透。"""
+    reg, table = env
+    grid = CellGrid(16, 8, reg, table)
+    water_id = reg.get_by_name("water").type_id
+    oil_id = reg.get_by_name("oil").type_id
+    wall_id = reg.get_by_name("wall").type_id
+    for x in range(16):
+        grid.set_cell(x, 7, wall_id)
+    grid.set_cell(4, 6, oil_id)       # 右首格：油（密度 8 < 10）
+    grid.set_cell(3, 6, water_id)
+    from core.rules import try_move
+    assert try_move(grid, 3, 6) == (4, 6)  # 置换油，而非越过油落远处
+
+
+def test_liquid_probe_respects_write_rect(env):
+    """写域契约直测：探测在 write_rect 边界截断。"""
+    from core.chunks import Rect
+    reg, table = env
+    grid = CellGrid(16, 8, reg, table)
+    water_id = reg.get_by_name("water").type_id
+    wall_id = reg.get_by_name("wall").type_id
+    for x in range(16):
+        grid.set_cell(x, 7, wall_id)
+    grid.set_cell(3, 6, water_id)
+    grid._write_rect = Rect(0, 0, 6, 8)  # 人为收窄：x ≥ 6 不可写
+    from core.rules import try_move
+    assert try_move(grid, 3, 6) == (5, 6)  # 截断在域内最远空格
 
 
 def test_density_swap_heavy_sinks(env):
