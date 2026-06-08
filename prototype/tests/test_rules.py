@@ -197,13 +197,13 @@ def test_liquid_levels_out(env):
         for x in range(1, 9):
             grid.set_cell(x, y, water_id)
 
-    for _ in range(800):
+    for _ in range(100):
         grid.update()
 
     heights = water_columns(grid, water_id)[1:23]
     assert sum(heights) == 96  # 守恒
     spread = max(heights) - min(heights)
-    assert spread <= 2, f"液面未摊平：heights={heights}"
+    assert spread <= 2, f"液面未摊平（100 帧，dispersion=5）：heights={heights}"
 
 
 def test_liquid_disperses_to_furthest_air(env):
