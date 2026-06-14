@@ -10,7 +10,7 @@
 
 ## 0. 一句话结论
 
-> 多数关键决策有充分的工业/学术/社区先例支撑（确定性内核方向、写域几何、运动学、数据布局）；**联机架构是最薄弱、风险最高的一环**——最成熟同类产品主动放弃了我们计划的 lockstep 路线。
+> 多数关键决策有充分的工业/学术/社区先例支撑（确定性内核方向、写域几何、运动学、数据布局）；**联机架构风险主要来自"缺正面同类先例"而非"有反例"**——最成熟同类（Entangled Worlds）走状态同步是被闭源不确定引擎所迫，不构成对我们 lockstep 路线的反证；真正的硬约束是跨平台确定性的工程面（迭代顺序 R1、刚体浮点 R3）。
 
 ---
 
@@ -34,12 +34,13 @@
 - **对我们的直接威胁**：M1 C# 迁移按 chunk/entity 遍历时，若用 `Dictionary`/`HashSet` 即 desync——Python dict 插入有序会掩盖此 bug 到迁移才爆（正是 D3 已预警的 "迁 C# 即翻车"）。
 - **行动**：proposal §3 **D3 契约补强**——显式要求"任何进入 sim 的遍历必须有稳定排序（`SortedDictionary` / 显式 sort by 稳定 key），禁裸 `Dictionary`/`HashSet` 迭代"。已同步到 architecture.md §8 不变量速查。
 
-### R2 —【高风险】联机：lockstep 可能不是生产路径 ⭐
-最成熟同类先例 **Noita Entangled Worlds**（2024-05 创建，维护至 2026-06，v1.6.3，~1.2k★，216 releases）**主动放弃 lockstep 确定性重模拟**，改用**按-chunk 权威所有权转移 + RLE 像素状态同步**。
+### R2 —【中风险】联机：路线 B 缺同类正面先例（但**无真正反例**）
+最成熟同类 **Noita Entangled Worlds**（2024-05 创建，维护至 2026-06，v1.6.3，~1.2k★，216 releases）用**按-chunk 权威所有权转移 + RLE 像素状态同步**，而非 lockstep。
 - 证据（状态同步 3-0 / 存在性 2-1）：README 同步项含 "Pixels of the grid world"；架构为 authoritative-replication（"divides into chunks, RLE to transmit only changed pixels"，"only one client can modify a chunk at a time"），明确 "cannot achieve perfect physics sync... reasonable approximation"。
-- **这是对我们"地形 lockstep 命令流"（提案路线 B 地形层）的直接反数据点**——业界最成熟的 CA 联机产品拒绝了 lockstep。
-- ⚠️ 辩证：Entangled Worlds 选状态同步是**被迫的**（mod 改不了 Noita 不确定引擎，与我们自研引擎处境不同——这点 `noita-multiplayer-and-determinism.md` 已论证）；且其像素同步被多源描述 "far from perfect / many bugs"。所以它**既证 CA 地形联机可行，又反证 lockstep 不是唯一/必然路径**。不要把它当 lockstep 先例引用。
-- **行动**：proposal §4 加注此反数据点；**强化既有退路 C 的地位**（我们的退路 C = chunk diff 流，正是 Entangled Worlds 路线）；M2 spike 必须把"路线 B 地形 lockstep" vs "路线 C/Entangled 式权威所有权"作为头号对照实测项。
+- ⚠️ **关键限定（用户校正，2026-06-14）：Entangled Worlds 不构成对路线 B 的反证。** 它选状态同步是**被迫的**——Noita 是**闭源不确定引擎**，mod 无法往里注入确定性，所以它从一开始就**没有 lockstep 选项**，不是评估后否决了 lockstep。它的约束（改不了的引擎）与我们（自研、从 M0 起就按确定性契约设计）根本不同。把它当"lockstep 不可行"的反数据点是错误归因。
+- **它真正证明的两件事**：①**退路 C 的工程可行性**——按-chunk 权威所有权 + RLE 像素 diff 在生产环境能跑（虽 "far from perfect / many bugs"）；②CA 地形联机本身可行。**它不能证明也不能反证 lockstep**。
+- **路线 B 的真实状态**：仍缺"自研引擎做 falling-sand 自演化地形 lockstep"的**正面同类先例**——Factorio 是确定性 lockstep 但非自演化地形；Teardown 最接近（确定性命令流 + 体素）但"两层架构镜像我们"被判过度类比（1-2）。这是真实的不确定性，**靠 M2 实测解决，不靠 Entangled Worlds 背书或反证**。
+- **行动**：proposal §4 注记澄清——退路 C 工程可行性获 Entangled Worlds 验证；路线 B 仍是首选（确定性论证 §2 成立 + 自研引擎无闭源约束），M2 spike 实测确认。**不因 Entangled Worlds 而调整 B/C 优先级。**
 
 ### R3 —【中风险】刚体桥接的浮点确定性陷阱
 "离散网格 = 确定性容易"被低估：像素破坏导致刚体**分裂/关节重连**的后续逻辑仍依赖浮点。
@@ -79,7 +80,7 @@
 | # | 行动 | 落点 | 时机 |
 |---|---|---|---|
 | A1 | D3 契约补强：sim 遍历禁裸 Dictionary/HashSet，强制稳定排序 | proposal §3 + architecture §8 | **现在**（已落） |
-| A2 | 联机：标注 Entangled Worlds 反数据点，强化退路 C，M2 头号对照项 | proposal §4 | **现在**（已落注记）+ M2 |
+| A2 | 联机：澄清 Entangled Worlds 仅证退路 C 工程可行（非 lockstep 反证）；路线 B 仍首选，M2 实测确认 | proposal §4 | **现在**（已落注记）+ M2 |
 | A3 | 刚体可能成第三同步层 | proposal 开放问题 | M1/M2 评估 |
 | A4 | velocity 用 8.8 定点累加器，不用概率取整 | velocity spec | 下一个玩法项 |
 | A5 | C# 数据布局不预设 SoA，实测裁决 | M1 benchmark | M1 |

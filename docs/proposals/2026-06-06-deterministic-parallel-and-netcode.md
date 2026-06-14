@@ -151,7 +151,7 @@ flowchart LR
 - 不做的：rollback 地形（大世界 snapshot 不可行，调研报告 §4.3）；P2P 无仲裁（NAT/作弊/定序复杂度）。
 
 > **【2026-06-14 deep research 反数据点 R2 + R3】**（详见 `docs/reference/2026-06-14-tech-route-critical-review.md`）：
-> - **R2 联机最高风险**：最成熟同类先例 **Noita Entangled Worlds**（维护至 2026-06，216 releases）**主动放弃 lockstep**，改用按-chunk 权威所有权转移 + RLE 像素状态同步——即我们的**退路 C**。这是对路线 B 地形层 lockstep 的直接反数据点。辩证：它选状态同步是被迫的（mod 改不了 Noita 不确定引擎，与我们自研引擎不同 §4.2），且其像素同步 "far from perfect / many bugs"——故**既证 CA 地形联机可行，又反证 lockstep 非必然路径**。**裁决：M2 spike 把"路线 B 地形 lockstep" vs "退路 C / Entangled 式权威所有权"列为头号对照实测项；退路 C 地位从"兜底"上调为"平级候选"。**
+> - **R2 联机（用户校正，2026-06-14）**：最成熟同类 **Noita Entangled Worlds**（维护至 2026-06，216 releases）用按-chunk 权威所有权 + RLE 像素状态同步（= 我们的退路 C）。**但它不构成对路线 B 的反证**——Noita 是**闭源不确定引擎**，mod 无法注入确定性，它从一开始就**没有 lockstep 选项**（被迫，非否决；§4.2 已论证）。它真正证明的是**退路 C 工程可行**（生产环境能跑，虽 "far from perfect / many bugs"）。**裁决：路线 B 仍首选**（§2 确定性论证成立 + 自研引擎无闭源约束）；退路 C 维持"兜底"定位（工程可行性已获验证）；M2 spike 实测确认 B，**不因 Entangled Worlds 调整 B/C 优先级**。路线 B 的真实短板是缺"自研引擎 falling-sand 地形 lockstep"的正面同类先例，这靠 M2 实测补，非靠外部背书。
 > - **R3 刚体可能成第三同步层**：像素破坏触发刚体分裂/关节重连仍依赖几何浮点（Teardown 作者亲证），跨平台可能不位级确定。若做不到，刚体须降级为状态同步，使"地形/弹幕/刚体"成为**三层而非两层**同步——M1/M2 评估。
 
 ---
