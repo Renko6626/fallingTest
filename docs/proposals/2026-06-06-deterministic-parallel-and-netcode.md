@@ -92,7 +92,7 @@
 |---|---|---|
 | D1 | **sim 内核纯整数**。velocity 用定点（建议 8.8，即 int 值 = 真值×256）；**density 整数化**（int 等级，参照 Noita 的 int 1–50）；**概率以 u32 阈值参与判定**——TOML 仍可写 float（保可读性），加载器一次性量化 `threshold = min(round(p × 2^32), 2^32−1)`（2 的幂缩放无精度损失），判定用 `rng_u32 < threshold`；禁 float 进 CA 状态与比较 | cells 已是 `list[int]` ✅；density/probability 在 M0 加载层整数化；速度积分实施时（deep-dive §3.1）直接按定点设计 |
 | D2 | **counter-based RNG**（SquirrelNoise5 风格），完整 key=(seed, tick, pass_id, x, y, salt, attempt)（论证见 §2.2 条件②）；key 的 (x,y) 取**决策时刻该像素所在坐标**，attempt = 该 (坐标,salt) 在本 tick 本 pass 内的第 N 次取数（评审 m3）；禁全局顺序流 | ❌ `rules.py`/`grid.py` 共 6 处 `random.*` 需替换（M0 第一刀，评审已逐处核对无遗漏） |
-| D3 | **固定遍历顺序**；模拟结果禁止依赖 dict/set 枚举顺序（Python dict 虽插入有序，迁 C# `Dictionary` 即翻车——Factorio serpent/nil 案例同构） | 反应表查找是 keyed 单点查询 ✅；新代码注意 |
+| D3 | **固定遍历顺序**；模拟结果禁止依赖 dict/set 枚举顺序（Python dict 虽插入有序，迁 C# `Dictionary` 即翻车——Factorio serpent/nil 案例同构）。**【2026-06-14 deep research 补强 R1】** 任何进入 sim 的遍历（chunk/entity/contact 列表）必须有**稳定排序**（`SortedDictionary` 或显式 `sort by` 稳定 key），**禁裸 `Dictionary`/`HashSet` 迭代**——Box2D 作者亲证"contact array 顺序不同即非确定"；确定性 RNG 完美也救不了无序迭代 | 反应表查找是 keyed 单点查询 ✅；M1 C# 迁移 chunk/entity 遍历是头号风险点 |
 | D4 | **缓存只省工不改果**：is_static/dirty rect/chunk 休眠若影响结果，必须纳入 hash 或证明等价（Factorio "缓存 max speed 不入档" 案例） | 设计 dirty rect 时验证："全量更新 vs 跳过静止区"同 seed 同 hash |
 | D5 | **分层 state hash**：per-chunk → world（仅哈希 type_id+模拟态字段，不含渲染态）；CI 跑确定性回归：同 seed 1000 帧同 hash；M1 后加"1/2/4/8 线程同 hash" | M0 落地 |
 | D6 | **save→load→hash 等价**（late join 与回放的前提） | 序列化实现时即测 |
@@ -149,6 +149,10 @@ flowchart LR
 - **若 M2 spike 发现跨机确定性意外困难**（C# 浮点泄漏进 sim、第三方库不可控）→ 退路线 C：同一套 chunk/dirty-rect/RLE 基础设施直接复用为 diff 流（NEW 已证可行），实体层不变。损失带宽与 desync 长尾，保工程进度。
 - **若实体层确定性意外容易**（敌人 AI 简单、弹幕本就是确定性 pattern——东方弹幕的先天优势）→ 升路线 A：实体也进 lockstep，网络层进一步简化，replay 全免费。**弹幕 pattern 天然确定这一点，使 A 对本项目比对一般动作游戏现实得多**，M2 时一并评估。
 - 不做的：rollback 地形（大世界 snapshot 不可行，调研报告 §4.3）；P2P 无仲裁（NAT/作弊/定序复杂度）。
+
+> **【2026-06-14 deep research 反数据点 R2 + R3】**（详见 `docs/reference/2026-06-14-tech-route-critical-review.md`）：
+> - **R2 联机最高风险**：最成熟同类先例 **Noita Entangled Worlds**（维护至 2026-06，216 releases）**主动放弃 lockstep**，改用按-chunk 权威所有权转移 + RLE 像素状态同步——即我们的**退路 C**。这是对路线 B 地形层 lockstep 的直接反数据点。辩证：它选状态同步是被迫的（mod 改不了 Noita 不确定引擎，与我们自研引擎不同 §4.2），且其像素同步 "far from perfect / many bugs"——故**既证 CA 地形联机可行，又反证 lockstep 非必然路径**。**裁决：M2 spike 把"路线 B 地形 lockstep" vs "退路 C / Entangled 式权威所有权"列为头号对照实测项；退路 C 地位从"兜底"上调为"平级候选"。**
+> - **R3 刚体可能成第三同步层**：像素破坏触发刚体分裂/关节重连仍依赖几何浮点（Teardown 作者亲证），跨平台可能不位级确定。若做不到，刚体须降级为状态同步，使"地形/弹幕/刚体"成为**三层而非两层**同步——M1/M2 评估。
 
 ---
 

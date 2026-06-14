@@ -146,4 +146,5 @@ flowchart LR
 3. **写域契约**：移动目标必须在 `_write_rect` 内，越界 break（dispersion/velocity 探测靠它截断）。
 4. **纯整数 sim**：density 整数、概率 u32 阈值、velocity 定点；float 禁入 CA 状态与比较（D1）。
 5. **counter RNG**：sim 禁 `import random`（有防回归断言）；随机 = 坐标纯函数（D2）。
-6. **语义变更作废 hash**：任何改变模拟行为的改动都使既往 hash 序列作废（录放/同 seed 等价测试不受影响）。
+6. **稳定遍历顺序**：进入 sim 的遍历（chunk/entity/contact）必须稳定排序，**禁裸 `Dictionary`/`HashSet` 迭代**——确定性 RNG 救不了无序迭代（D3，2026-06-14 复核 R1，M1 C# 迁移头号风险）。
+7. **语义变更作废 hash**：任何改变模拟行为的改动都使既往 hash 序列作废（录放/同 seed 等价测试不受影响）。
