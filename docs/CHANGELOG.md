@@ -14,6 +14,7 @@
 - **R1 加载顺序确定性（A1 实施完成）**：`material.py` type_id 改按 `sorted(material names)` 分配（原按 toml 声明序），解耦 C# `Dictionary` 枚举序——消除跨平台 type_id 漂移 → state_hash 不一致的隐患。新增 `test_materials.py::test_type_id_assigned_by_sorted_name`（非字母序 fixture 红绿）+ `tests/test_load_order.py`（D3 capstone：真实 toml type_id 按 name 排序 + 双载 hash 一致）。83 passed。type_id 重排 → 既往 state_hash 序列作废（语义等价，录放/同 seed 等价测试不受影响）。A2（reaction 排序）经核对为非 live bug 已砍。commits `f3a9600`、`ef48c8d`。
 
 ### Added
+- `docs/reference/ep01-sandsim-comparison.md`：外部参考实现对照（GameEngineering/EP01_SandSim，C+OpenGL 教学 demo，main.c 3215 行通读）。结论：算法/确定性/数据驱动/并行我们全面更强（EP01 硬编码材质 + `rand()` 非确定 + 无 chunk）；EP01 唯一不可替代价值是**实机渲染参考**——bloom 后处理、整纹理上传+NEAREST、velocity 多格手感、fire 视觉分层。可落地借鉴项已并入路线（velocity 队列 #2、bloom/fire 视觉留 Phase 2）。
 - `docs/reference/2026-06-14-deterministic-physics-netcode-survey.md`：刚体/物理确定性联机方案专项调研（deep research，5 角度 / 23 源 / 25 条对抗式验证，23 confirmed / 2 killed）。结论：**Teardown 2026-03 混合架构（破坏走确定性命令流 + 刚体走状态同步）是与我们同构的直接商用先例**，"刚体走状态同步"是合理默认而非无奈；Box2D 3.1 默认已跨平台确定（无需定点，但需关 FMA + 确定接触顺序 + 无 rollback）、Quantum 全栈定点已出货 32 人物理。为 R3 三路线对比提供依据。
 - `docs/reference/2026-06-14-tech-route-critical-review.md`：技术路线批判性复核（deep research，5 角度 / 21 源 / 25 条对抗式验证，15 confirmed / 10 killed）。结论：多数决策有一手先例支撑（定点+counter RNG、正方形写域、运动学、单缓冲布局），**联机 lockstep 是最高风险**。
 - `docs/overview/architecture.md`：架构总览导航（三阶段 + M0–M3 里程碑 + Phase 1 玩法队列 + 最终架构两支柱 + 代码地图 + 文档指针 + 不变量速查）。新建 `docs/overview/` 目录。
