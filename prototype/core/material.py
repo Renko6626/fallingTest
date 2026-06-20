@@ -40,7 +40,9 @@ class MaterialRegistry:
         self._tag_index: dict[str, set[int]] = {}
 
         next_id = 1
-        for name, props in data.get("materials", {}).items():
+        materials = data.get("materials", {})
+        for name in sorted(materials.keys()):  # R1/D3：按 name 排序，解耦 toml/Dict 枚举序
+            props = materials[name]
             color_raw = props["color"]
             tags = frozenset(props.get("tags", []))
             mat = MaterialDef(

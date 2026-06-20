@@ -108,3 +108,28 @@ def test_default_dispersion(registry):
     """未声明 dispersion 的材质缺省 1（= 现行为）。"""
     wall = registry.get_by_name("wall")
     assert wall.dispersion == 1
+
+
+def test_type_id_assigned_by_sorted_name(tmp_path):
+    """type_id 按材质 name 排序分配，与 toml 声明顺序无关（R1 / D3）。
+    fixture 故意非字母序声明：zebra 在前、alpha 在后。"""
+    toml_content = """
+[meta]
+version = 1
+
+[materials.zebra]
+cell_type = "solid"
+density = 50
+color = [1, 1, 1]
+
+[materials.alpha]
+cell_type = "solid"
+density = 50
+color = [2, 2, 2]
+"""
+    f = tmp_path / "order.toml"
+    f.write_text(toml_content)
+    reg = MaterialRegistry(str(f))
+    # 按 name 排序：alpha 先得 1，zebra 得 2（与声明顺序相反）
+    assert reg.get_by_name("alpha").type_id == 1
+    assert reg.get_by_name("zebra").type_id == 2
