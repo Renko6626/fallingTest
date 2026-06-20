@@ -53,7 +53,7 @@ flowchart LR
 | # | 项 | 优先级 | 预估 | 状态 |
 |---|---|---|---|---|
 | 1 | 液体 dispersion rate | P0 | 半天 | ✅ |
-| 2 | velocity / 重力积分（一帧多格，≤32px 定点） | **P0** | 1 天 | ← 下一个 |
+| 2 | velocity / 重力积分（一帧多格，≤32px 定点） | **P0** | 1 天 | ← **下一个**（待 brainstorm） |
 | 3 | CA↔粒子双轨（水花/血溅/碎屑） | P0 | 2–3 天 | ⬜ |
 | 4 | fire 系统（spec v2 已就绪，Noita 式） | P1 | 半天+实施 | ⬜ |
 | 5 | 粉末 inertia / free-falling | P1 | 1 天 | ⬜ |
@@ -62,6 +62,11 @@ flowchart LR
 | 8 | chunk + per-chunk dirty rect（**不做 per-pixel static**） | P2 | benchmark 后 | ⬜ |
 
 > 出处：`docs/reference/noita-deep-dive.md` §5.2、§6。fire 设计见 `docs/superpowers/specs/2026-05-26-fire-system-design.md`（v2，Noita 式）。
+
+> **下一项（#2 velocity）已定的约束**（2026-06-14 确定性复核，实施前 brainstorm 时直接采纳）：
+> - **用 8.8 定点子像素累加器，不用概率取整**——后者依赖 RNG，对确定性联机内核引入额外 desync 面与 RNG 调用次数耦合（依据 `docs/reference/2026-06-14-tech-route-critical-review.md` §3）。
+> - **写域契约第一次真正承压**：一帧多格移动会逼近 chunk 的 32px margin。dispersion（≤5）远未触及，velocity 积分需确保单帧位移 ≤ margin，并在 `_can_move_to`/探测路径上验证写域 break 真正生效（`prototype/core/rules.py` 写域契约已预埋，见注释）。
+> - free-falling inertia：碰撞时 velocity 归零（jason.today 同款），落地静止像素的唤醒留给 #5 粉末 inertia。
 
 ## 5. 最终架构：两大支柱
 
