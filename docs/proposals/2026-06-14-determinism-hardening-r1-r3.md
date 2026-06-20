@@ -27,14 +27,16 @@
 
 sim **热路径**（`grid.update` / `try_move` / `_check_reactions`）全是 flat array + `range()` + keyed 单点查询（`reaction.get((a,b))` 不迭代）——**零顺序依赖，无需改动**。
 
-R1 的真实暴露面只在**加载期两处**：
+R1 的暴露面审计：
 
-| 位置 | 顺序依赖 | C# 翻车后果 |
+| 位置 | 顺序依赖 | 是否 live bug |
 |---|---|---|
-| `core/material.py:43` `for name, props in data["materials"].items()` | type_id 按 toml dict 插入序分配 | C# `Dictionary` 无序 → type_id 全乱 → 所有 state_hash 失效、反应表错位 |
-| `core/reaction.py:35` `for id1 in input1_ids`（input1_ids 是 **tag set**） | 多条反应匹配同一材质对时，`results` 的 append 顺序依赖 set 枚举序 | `PYTHONHASHSEED` 跨进程、C# `HashSet` 跨语言都不稳 → 反应表项顺序不同 → 同对多反应触发顺序不同 → desync |
+| `core/material.py:43` `for name, props in data["materials"].items()` | type_id 按 toml dict 插入序分配 | ✅ **真 bug**：type_id 进 `cells` → 进 `state_hash`；C# `Dictionary` 无序 → type_id 全变 → 跨平台 hash 不一致 |
+| `core/reaction.py:35` `for id1 in input1_ids`（input1_ids 是 **tag set**） | set 枚举序影响反应表 dict **插入顺序** | ❌ **非 live bug**（2026-06-14 核对降级，见下） |
 
-### 1.2 方案（全在加载期，不碰热路径）
+> **A2 降级说明（核对发现）**：`for id1 in input1_ids` 生成的 `(id1,id2)` 对**互不相同**，每个 `setdefault(key,[]).append()` 落在**不同 dict key**；而 ①反应表只经 `.get((a,b))` 单点查询（`grid.py:_check_reactions`），从不迭代；②`state_hash` 只哈希 `cells`、不哈希反应表；③每 key 的 list 顺序只取决于 `[[reactions]]` 数组序（有序稳定）。故 set 枚举序在当前设计下**无任何可观测后果**，原"results append 顺序依赖 set 枚举序 → desync"高估了（append 落不同 key、非同一 list）。**裁决（用户，2026-06-14）：A2 砍掉（YAGNI），不现在加 `sorted()`**——留待 C# 迁移时作为 D3 契约一部分自然处理（若届时反应表需迭代/序列化）。
+
+### 1.2 方案（只修 A1 真 bug，全在加载期）
 
 1. **`material.py`**：type_id 按 **`sorted(material names)`** 分配——material name 是稳定 key，与 toml 解析顺序无关。
    ```python
@@ -42,15 +44,10 @@ R1 的真实暴露面只在**加载期两处**：
        props = data["materials"][name]
        ...
    ```
-2. **`reaction.py`**：tag 展开按 type_id 升序——
-   ```python
-   for id1 in sorted(input1_ids):
-       for id2 in sorted(input2_ids):
-   ```
-3. **防回归测试**（`tests/test_determinism.py` 或新 `test_load_order.py`）：
-   - 用同一份材质/反应数据，构造两个 registry：第二个**故意打乱** toml 表的键顺序（或在 set 里以不同插入序塞 tag）。
-   - 断言两者：①每材质 name→type_id 映射逐一相等；②反应表 `(a,b)→[results]` 逐项相等（含 list 内顺序）；③用两者各跑同一场景 N 帧，`state_hash` 序列逐帧相等。
-   - 这把"加载顺序无关"从口径变成**红绿可验证契约**（去掉 sorted 必红）。
+2. **防回归测试**（新 `tests/test_load_order.py`）：
+   - **单元红绿**：fixture toml 以非字母序声明材质，断言 type_id 按 name 排序分配（去掉 sorted 必红）。
+   - **D3 capstone**：用真实 `materials.toml`，断言 ①type_id 序列 == 按 name 排序的顺序；②同一文件双载、`state_hash` 序列逐帧相等。
+   - 这把"加载顺序无关"从口径变成**红绿可验证契约**。
 
 ### 1.3 注意
 
@@ -108,8 +105,8 @@ Phase 2 刚体桥接（Marching Squares → Douglas-Peucker → 三角化 → Bo
 | # | 行动 | 落点 | 时机 |
 |---|---|---|---|
 | A1 | `material.py` type_id 按 name 排序分配 | 代码 | **现在**（Phase 1） |
-| A2 | `reaction.py` tag 展开按 id 排序 | 代码 | **现在** |
-| A3 | 加载顺序防回归测试（打乱键序 → hash/映射/反应表不变） | 测试 | **现在** |
+| ~~A2~~ | ~~`reaction.py` tag 展开按 id 排序~~ → **核对降级为非 live bug，砍掉（YAGNI）** | — | C# 迁移期 D3 处理 |
+| A3 | 加载顺序防回归测试（单元红绿 + D3 capstone：type_id 排序序 + 双载 hash 一致） | 测试 | **现在** |
 | A4 | R3 架构边界落档：刚体属实体层、不进地形 tick | architecture.md（已基本表述，补刚体明确句） | **现在**（文档） |
 | A5 | 刚体桥接按 R3-A 实现（状态同步 + 预测） | 代码 | Phase 2 / M1 |
 | A6 | M2 spike 评估是否升 R3-B（刚体进 lockstep） | spike | M2 |
