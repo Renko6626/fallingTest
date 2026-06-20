@@ -97,6 +97,7 @@ flowchart LR
 - **地形层**：各机同 tick 跑确定性 CA；扰动（挖掘/爆炸/放液体）封装成参数化命令由 host 定序广播 → **地形带宽 ≈0**。
 - **实体层**：传统状态同步 + 客户端预测 + 插值（东方 action 手感要求）。
 - **铁律**：实体写地形必须走命令、禁止直改；**量化边界 = 确定性边界**（进入地形 tick 的数据先量化为整数）；客户端只预测实体层、不预测地形写入。
+- **刚体归属（R3 决策，2026-06-14）**：Phase 2 的刚体（marching-squares→Box2D）**属实体层、不进地形 tick**——浮点跨平台不确定，故走状态同步 + 客户端预测（Teardown 式混合 R3-A）；刚体读地形用本地 lockstep 副本（各机一致），写地形走量化命令。详见 `docs/proposals/2026-06-14-determinism-hardening-r1-r3.md` 与 `docs/reference/2026-06-14-deterministic-physics-netcode-survey.md`。
 - **退路 / 升级**：M2 若跨机确定性困难 → 退**路线 C**（chunk diff 流，复用同套 RLE 基础设施）；若实体层确定性意外容易（**东方弹幕本就是确定性 pattern**）→ 升**路线 A**（实体也进 lockstep，replay 全免费）。
 
 > 出处：提案 §2（确定性论证）、§3（D1–D10）、§4（联机三路线对比 + 推荐 B）。背景调研：`docs/reference/noita-multiplayer-and-determinism.md`。

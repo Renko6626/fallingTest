@@ -15,6 +15,9 @@
 - `docs/reference/2026-06-14-tech-route-critical-review.md`：技术路线批判性复核（deep research，5 角度 / 21 源 / 25 条对抗式验证，15 confirmed / 10 killed）。结论：多数决策有一手先例支撑（定点+counter RNG、正方形写域、运动学、单缓冲布局），**联机 lockstep 是最高风险**。
 - `docs/overview/architecture.md`：架构总览导航（三阶段 + M0–M3 里程碑 + Phase 1 玩法队列 + 最终架构两支柱 + 代码地图 + 文档指针 + 不变量速查）。新建 `docs/overview/` 目录。
 
+### Proposed
+- `docs/proposals/2026-06-14-determinism-hardening-r1-r3.md`：R1 迭代顺序 + R3 刚体桥接确定性加固方案。**R1**：审计确认 sim 热路径无顺序依赖，只加载期两处（`material.py:43` type_id 按 toml 序、`reaction.py:35` tag set 枚举序）→ 改 `sorted()` + 打乱顺序防回归测试（Phase 1 即做，~1h）。**R3**：刚体取 **R3-A（Teardown 式混合）**——刚体属实体层、不进地形 tick，走状态同步+客户端预测；R3-B（Box2D 3.1 lockstep）/R3-C（全栈定点）留作 M2 评估的升级路径。同步 architecture §5 加刚体归属句。
+
 ### Changed
 - **采纳 deep research 复核（2026-06-14），3 项 actionable 落账**：①**R1** proposal §3 **D3 契约补强**——sim 遍历禁裸 `Dictionary`/`HashSet`、强制稳定排序（Box2D 作者亲证无序迭代即非确定；M1 C# 迁移头号风险），同步 architecture §8 不变量；②**R2**（用户校正）proposal §4.4 澄清 Noita Entangled Worlds **不构成 lockstep 反证**——它走状态同步是被闭源不确定引擎所迫（没得选），仅证退路 C 工程可行；**路线 B 仍首选，退路 C 维持兜底，M2 实测确认，不因它调整 B/C 优先级**；③**R3** 刚体桥接浮点确定性陷阱可能使"地形/弹幕/刚体"成三层同步，记入开放问题。另确认：velocity 用 8.8 定点累加器（非概率取整）；C# 数据布局不预设 SoA 收益（"SoA 必快"论断 0-3 否决，需实测）。涉及 `docs/proposals/2026-06-06-deterministic-parallel-and-netcode.md`、`docs/overview/architecture.md`。
 - **液体/气体 dispersion rate**（spec `docs/superpowers/specs/2026-06-07-liquid-dispersion-design.md`、plan `.../plans/2026-06-07-liquid-dispersion-plan.md`，commits `fecdc68`→`951f0fa`）：
