@@ -65,6 +65,7 @@ flowchart LR
 
 > **下一项（#2 velocity）已定的约束**（2026-06-14 确定性复核，实施前 brainstorm 时直接采纳）：
 > - **用 8.8 定点子像素累加器，不用概率取整**——后者依赖 RNG，对确定性联机内核引入额外 desync 面与 RNG 调用次数耦合（依据 `docs/reference/2026-06-14-tech-route-critical-review.md` §3）。
+> - **沿路径逐格探测，非"验终点瞬移"**：移动必须复用 `_probe_side` 的"逐格走、遇障碍截停、落最远连续空格"语义，步数上限取 `floor(|velocity|)`——**不可**像 EP01 那样只验终点格是否空就 teleport（会穿墙，见 `docs/reference/ep01-sandsim-comparison.md` §3 核对）。dispersion 已铺好该探测基础设施。
 > - **写域契约第一次真正承压**：一帧多格移动会逼近 chunk 的 32px margin。dispersion（≤5）远未触及，velocity 积分需确保单帧位移 ≤ margin，并在 `_can_move_to`/探测路径上验证写域 break 真正生效（`prototype/core/rules.py` 写域契约已预埋，见注释）。
 > - free-falling inertia：碰撞时 velocity 归零（jason.today 同款），落地静止像素的唤醒留给 #5 粉末 inertia。
 
