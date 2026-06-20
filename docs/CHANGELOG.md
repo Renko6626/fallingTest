@@ -11,6 +11,7 @@
 - **液体/气体"方向承诺"bug（day-one 缺陷，非 M0/M0.5 回归）**：`_move_liquid`/`_move_gas` 侧移走 `-vel` 方向时不翻转方向记忆，下帧先试 `+vel`（= 刚腾出的空格）→ 表面像素在两格间永久打乒乓，净输运为零，**液面冻结成沙堆形**（盆中水柱 6000 帧 profile 一字不变；单像素轨迹追踪铁证）。三版本（pre-M0 / M0 / M0.5）行为一致证明非回归。修复后水柱 600 帧摊平至 spread 1（修复前 13）。`prototype/core/rules.py`（侧移段方向承诺）；新增 3 测试（方向承诺 ×2 + 液面摊平守恒）`prototype/tests/test_rules.py`。72 passed；benchmark 27.2/13.9 FPS 无回退（基线 27.1/14.0）。注意：本修复改变模拟语义，既往 hash 序列作废（与 M0.5 同口径）。commit `fcc9312`。
 
 ### Added
+- `docs/reference/2026-06-14-deterministic-physics-netcode-survey.md`：刚体/物理确定性联机方案专项调研（deep research，5 角度 / 23 源 / 25 条对抗式验证，23 confirmed / 2 killed）。结论：**Teardown 2026-03 混合架构（破坏走确定性命令流 + 刚体走状态同步）是与我们同构的直接商用先例**，"刚体走状态同步"是合理默认而非无奈；Box2D 3.1 默认已跨平台确定（无需定点，但需关 FMA + 确定接触顺序 + 无 rollback）、Quantum 全栈定点已出货 32 人物理。为 R3 三路线对比提供依据。
 - `docs/reference/2026-06-14-tech-route-critical-review.md`：技术路线批判性复核（deep research，5 角度 / 21 源 / 25 条对抗式验证，15 confirmed / 10 killed）。结论：多数决策有一手先例支撑（定点+counter RNG、正方形写域、运动学、单缓冲布局），**联机 lockstep 是最高风险**。
 - `docs/overview/architecture.md`：架构总览导航（三阶段 + M0–M3 里程碑 + Phase 1 玩法队列 + 最终架构两支柱 + 代码地图 + 文档指针 + 不变量速查）。新建 `docs/overview/` 目录。
 
