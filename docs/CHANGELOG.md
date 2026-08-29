@@ -18,6 +18,9 @@
 - `docs/README.md`：docs 导航入口 + 当前优先队列（CLAUDE.md §3.1 规划已久，首次补建）。
 - **Rust workspace 骨架**：`Cargo.toml`（workspace，edition 2024）+ `crates/sand-core`（Ring 0 纯库，暂只载铁律文档注释）+ `crates/sand-harness`（CLI stub）+ `clippy.toml` disallowed_types deny std HashMap/HashSet（charter §6 执法，**红绿验证**：临时违规代码确认 clippy 报错后移除）。`cargo clippy`/`cargo test` 全绿。commit `453eec0`。
 
+### Proposed
+- `docs/superpowers/specs/2026-08-29-m0-skeleton-design.md`：M0 实现级设计（用户批准六节设计 + 两裁决：M0 即上 rayon、水走简版横流；GIF 占位渲染器并入 M0）。要点：Cell u32（8 位世代戳替代总纲的 1-bit 奇偶位——自审抓到陈旧位撞车 bug，M0.5 决策①同款结论）、脏矩形原子 min/max 合并为相内唯一共享写、WriteWindow debug 写域断言、SyncTest 四配置（1/N 线程 × 跳过开关）、材料表走 RON + InitConfig 注入保持 Ring 0 零 I/O。
+
 ### Removed
 - **Python 原型归档**：`prototype/` → `archive/prototype-python/`（只读史料 + README 定性：算法语义参考，不做一对一移植）。83 tests 与 M0/M0.5 成果封存，commit `f5f2371`。
 
