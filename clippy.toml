@@ -1,0 +1,6 @@
+# 确定性执法（kernel-charter §6）：std HashMap/HashSet 默认 hasher 每次运行随机化，
+# 任何影响状态的使用都会破坏 P1。需要 hash 容器时用 FxHashMap/FxHashSet 或 BTreeMap/BTreeSet。
+disallowed-types = [
+    { path = "std::collections::HashMap", reason = "默认 RandomState hasher 破坏确定性（charter §6）；用 FxHashMap 或 BTreeMap" },
+    { path = "std::collections::HashSet", reason = "默认 RandomState hasher 破坏确定性（charter §6）；用 FxHashSet 或 BTreeSet" },
+]

@@ -1,0 +1,11 @@
+[package]
+name = "sand-core"
+version.workspace = true
+edition.workspace = true
+
+# Ring 0 铁律（program-architecture §2）：本 crate 永不依赖 godot/gdext、网络库、
+# 文件系统与墙钟。依赖清单出现上述任何一项，构建即视为架构违规。
+[dependencies]
+
+[lints]
+workspace = true

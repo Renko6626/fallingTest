@@ -1,0 +1,12 @@
+[workspace]
+resolver = "3"
+members = ["crates/sand-core", "crates/sand-harness"]
+# 后续按里程碑加入：sand-session（M5 前）、sand-bridge（M0 渲染接通时）、sand-relay（期权）
+# 依赖方向单向向内：bridge → session → core；harness → session → core（program-architecture §2）
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+
+[workspace.lints.clippy]
+disallowed_types = "deny"

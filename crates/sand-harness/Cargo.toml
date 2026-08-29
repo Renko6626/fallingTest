@@ -1,0 +1,10 @@
+[package]
+name = "sand-harness"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sand-core = { path = "../sand-core" }
+
+[lints]
+workspace = true
