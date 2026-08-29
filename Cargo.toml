@@ -10,3 +10,7 @@ edition = "2024"
 
 [workspace.lints.clippy]
 disallowed_types = "deny"
+
+# dev/test 也要能跑万 tick 级 SyncTest；debug 断言（写域执法）保持开启
+[profile.dev]
+opt-level = 2

@@ -4,8 +4,10 @@ version.workspace = true
 edition.workspace = true
 
 # Ring 0 铁律（program-architecture §2）：本 crate 永不依赖 godot/gdext、网络库、
-# 文件系统与墙钟。依赖清单出现上述任何一项，构建即视为架构违规。
+# 文件系统与墙钟。rayon（有界并行）与 xxhash（状态哈希）为纯计算，属允许清单。
 [dependencies]
+rayon = "1"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
 [lints]
 workspace = true
