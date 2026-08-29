@@ -1,0 +1,13 @@
+// 沙堆场景：128×128，中心浇沙 → 金字塔堆积。golden replay 场景 #1。
+Scenario(
+    name: "sand_pile",
+    world: (2, 2),
+    seed: 20260830,
+    ticks: 600,
+    setup: [
+        Fill(material: "wall", x0: 0, y0: 120, x1: 127, y1: 127),
+    ],
+    script: [
+        Every(from: 0, until: 360, step: 2, op: Brush(material: "sand", x: 64, y: 8, r: 1)),
+    ],
+)

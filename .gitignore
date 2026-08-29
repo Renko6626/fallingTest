@@ -7,3 +7,4 @@ venv/
 # 生成的演示动图（docs 规范禁二进制图片，留本地即可）
 *.gif
 /target
+/out

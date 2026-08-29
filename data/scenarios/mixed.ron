@@ -1,0 +1,19 @@
+// 混合场景：256×192，沙 + 双路水 + 中央挡板。golden replay 场景 #2，
+// 也是 CI 级 SyncTest 的多 chunk 压力几何（4×3 chunk，含缝隙交叉）。
+Scenario(
+    name: "mixed",
+    world: (4, 3),
+    seed: 0xC0FFEE,
+    ticks: 1500,
+    setup: [
+        Fill(material: "wall", x0: 0, y0: 184, x1: 255, y1: 191),
+        Fill(material: "wall", x0: 0, y0: 100, x1: 3, y1: 183),
+        Fill(material: "wall", x0: 252, y0: 100, x1: 255, y1: 183),
+        Fill(material: "wall", x0: 100, y0: 120, x1: 160, y1: 124),
+    ],
+    script: [
+        Every(from: 0, until: 900, step: 3, op: Brush(material: "sand", x: 130, y: 10, r: 2)),
+        Every(from: 0, until: 900, step: 5, op: Brush(material: "water", x: 60, y: 10, r: 2)),
+        Every(from: 0, until: 900, step: 5, op: Brush(material: "water", x: 200, y: 10, r: 2)),
+    ],
+)

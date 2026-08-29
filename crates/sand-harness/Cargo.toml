@@ -5,6 +5,10 @@ edition.workspace = true
 
 [dependencies]
 sand-core = { path = "../sand-core" }
+serde = { version = "1", features = ["derive"] }
+ron = "0.8"
+gif = "0.13"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
 [lints]
 workspace = true
