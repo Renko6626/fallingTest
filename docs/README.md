@@ -13,8 +13,9 @@
 ## 当前优先队列
 
 1. **M0 收尾**：双机 hashrun 验收（用户手动，见 `sessions/2026-08-30-m0-implementation.md`）。其余验收项已过，代码在 `crates/`。
-2. **M1 粒子层**：脱格/落格闭环、DDA 碰撞、容量限流（先 brainstorming 出 spec）。
-3. M2 场层与反应表 → M3 刚体（详见总纲 §11）。
+2. **M1 门口：O1 chunk 内活矩形**（`proposals/2026-08-30-noita-derived-optimizations.md`）——回收 Noita 式 sub-chunk 跳过，SyncTest 加第 5 配置执法。
+3. **M1 粒子层**：脱格/落格闭环、DDA 碰撞、容量限流（先 brainstorming 出 spec；顺手评估 O3 粉末惯性）。
+4. M2 场层与反应表（spec 里裁决 O2 场降本）→ M3 刚体 → M5 时启用 O4 运行时周期哈希（详见总纲 §11 与上述提案）。
 
 ## 目录分工
 

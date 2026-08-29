@@ -19,6 +19,9 @@
 ### Added
 - `docs/perf/2026-08-30-m0-rust-informal.md`：M0 非正式性能测量（Xeon 6330 服务器 CPU，provisional）。要点：640×384 全活跃最坏 ~3ms@8T、1280×768 ~8ms@8T（>总纲 4ms 目标但在帧预算内；§7 单线程估算实测偏乐观 3×）、睡眠常态 0.066ms、1080p 全图崩塌 9.6ms@16T 仍可 60Hz；地图上限的真实约束 = 同时活跃面积（本机 ~百万 cell ≈ 8–10ms）而非驻留面积；与 Noita 对照表（调度同构、规则复杂度暂不可比、Layer F 落地后大图结论需重估）。
 
+### Proposed
+- `docs/proposals/2026-08-30-noita-derived-optimizations.md`：Noita 对照四项优化入档——O1 chunk 内活矩形（M1 门口；含与全扫逐位等价的论证，区别于被否决的冻结矩形）、O2 Layer F 低分辨率场格+半频（M2 设计期裁决）、O3 粉末惯性 is_free_falling/inertial_resistance（M1 可选）、O4 运行时周期哈希口径（M5）；另记录两项明确不采纳（reality bubble 违反 P1、非确定随机跳过违反 D2）。docs/README 优先队列同步。
+
 ### Fixed
 - **spec §1.4 实施期修订：cell 级冻结脏矩形被 SyncTest 当场击落**——单缓冲扫描允许 tick 内链式移动（整段静止水沿扫描方向一 tick 整体平移，链长无上界），tick 起点冻结的矩形切断链，与全扫语义分叉（实测 tick 583，256×192 场景）。修复：休眠粒度提升为 **chunk 级 + 相位边界唤醒**（重查 dirty ∪ next_dirty，屏障后原子合并结果调度无关），活跃 chunk 全量扫描；等价论证入 spec §1.4。`crates/sand-core/src/scheduler.rs`。这正是 SyncTest 作为常驻执法的第一次实战开张。
 
