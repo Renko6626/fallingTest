@@ -16,6 +16,9 @@
   - 验收：release 版 640×384 × 10 万 tick × 四配置 SyncTest 零分叉；GIF 目检通过（安息角/沙沉水/液面摊平）。双机 hashrun 待用户执行。
   - 性能参考（release，640×384 活跃期）：见 synctest 日志；正式 bench 与 `docs/perf/` Rust 基线留 M1 后。
 
+### Added
+- `docs/perf/2026-08-30-m0-rust-informal.md`：M0 非正式性能测量（Xeon 6330 服务器 CPU，provisional）。要点：640×384 全活跃最坏 ~3ms@8T、1280×768 ~8ms@8T（>总纲 4ms 目标但在帧预算内；§7 单线程估算实测偏乐观 3×）、睡眠常态 0.066ms、1080p 全图崩塌 9.6ms@16T 仍可 60Hz；地图上限的真实约束 = 同时活跃面积（本机 ~百万 cell ≈ 8–10ms）而非驻留面积；与 Noita 对照表（调度同构、规则复杂度暂不可比、Layer F 落地后大图结论需重估）。
+
 ### Fixed
 - **spec §1.4 实施期修订：cell 级冻结脏矩形被 SyncTest 当场击落**——单缓冲扫描允许 tick 内链式移动（整段静止水沿扫描方向一 tick 整体平移，链长无上界），tick 起点冻结的矩形切断链，与全扫语义分叉（实测 tick 583，256×192 场景）。修复：休眠粒度提升为 **chunk 级 + 相位边界唤醒**（重查 dirty ∪ next_dirty，屏障后原子合并结果调度无关），活跃 chunk 全量扫描；等价论证入 spec §1.4。`crates/sand-core/src/scheduler.rs`。这正是 SyncTest 作为常驻执法的第一次实战开张。
 
