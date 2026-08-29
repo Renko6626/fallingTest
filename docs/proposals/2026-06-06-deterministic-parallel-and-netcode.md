@@ -1,7 +1,8 @@
 > 文档路径：`docs/proposals/2026-06-06-deterministic-parallel-and-netcode.md`
 > 运行时版本：Phase 1 Python 原型 → Phase 2 Godot 4.5 + C#
 > 最近更新：2026-06-06 (UTC+8)
-> **Status**: Trial（2026-06-06 用户裁决通过，M0 批准执行——见 §7 裁决记录）
+> **Status**: Superseded（部分，2026-08-29）——M0/M0.5 已在 Python 原型完成并归档（`archive/prototype-python/`）。确定性思想（契约 D1–D10、counter RNG、写域论证）被 `docs/overview/kernel-charter.md` 继承并改写：并行语义换为四相棋盘 + r≤16、RNG key 收敛为 hash(tick,x,y,salt/stream)、联机定为全栈 lockstep（含刚体）。冲突处以总纲为准，翻案清单见总纲 §11。本文保留作为论证史料。
+> （原 Status: Trial，2026-06-06 用户裁决通过——见 §7 裁决记录）
 
 # 确定性并行模拟 + 联机网络策略
 

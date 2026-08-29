@@ -1,7 +1,7 @@
 > 文档路径：`docs/proposals/2026-06-14-determinism-hardening-r1-r3.md`
 > 运行时版本：Python 3.x（Phase 1）→ Godot 4.5 + C#（Phase 2）
 > 最近更新：2026-06-14 (UTC+8)
-> **Status**: Proposed
+> **Status**: Superseded（部分，2026-08-29）——R1（加载期排序）已实施完成并随 Python 原型归档；**R3 裁决被推翻**：R3-A"刚体走状态同步"改为刚体入核心全 lockstep，见 `docs/overview/kernel-charter.md` §5 与 §11 翻案记录第 1 条。
 
 # 确定性加固：R1 迭代顺序 + R3 刚体桥接
 

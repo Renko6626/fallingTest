@@ -1,6 +1,7 @@
 > 文档路径：`docs/superpowers/specs/2026-05-26-fire-system-design.md`
 > 运行时版本：Python 3.11+
 > 最近更新：2026-06-06 (UTC+8)
+> **Status**: Superseded（待重审，2026-08-29）——项目转向 Rust 内核后，"温度场降级实验分支"的裁决被推翻：温度作为 Layer F pull 扩散场回归主线（`docs/overview/kernel-charter.md` §4、§11 翻案记录第 2 条）。本文的 fire_hp / burn pass / 延迟点燃队列设计在 M2 实施前按总纲重审，可复用部分另立新 spec。
 
 # 火焰系统设计 v2：Noita 式 fire_hp 燃烧 + 静态温度比较（主线）
 

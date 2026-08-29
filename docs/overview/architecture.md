@@ -1,6 +1,7 @@
 > 文档路径：`docs/overview/architecture.md`
 > 运行时版本：Python 3.x（Phase 1）→ Godot 4.5 + C#（Phase 2+）
 > 最近更新：2026-06-14 (UTC+8)
+> **Status**: Superseded（2026-08-29）——项目已转向 Rust 内核 + 1v1 法术对战。本文描述的 Python→C# 三阶段路线与 M0–M3 里程碑作废；现行真源 = `kernel-charter.md`（总纲）+ `program-architecture.md`（架构）。Python 原型代码已归档至 `archive/prototype-python/`。本文保留作为原型时代的导航与史料。
 
 # fallingTest 架构总览（导航入口）
 
