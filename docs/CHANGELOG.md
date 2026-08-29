@@ -5,6 +5,22 @@
 
 ## [Unreleased]
 
+## 2026-08-29
+
+### Changed
+- **项目大转向（用户裁决）**：东方同人横版动作（Python 原型 → Godot C#）→ **1v1 落沙法术对战，Rust 内核 + Godot 4/gdext 表现层，全栈确定性 lockstep**。产品与内核约束由用户新写的两份文档定义（见 Added）。
+- `CLAUDE.md` 全文重写：薄化为协作规范 + 确定性红线速查 §5，技术真源指向总纲/架构文档（消除旧版正文与补丁横幅漂移的模式）；命名约定换 Rust/RON/GDScript。
+- **四项翻案落档**（总纲 §11 翻案记录）：①刚体入核心全 lockstep（推翻 R3-A 状态同步）；②温度场作为 Layer F 回归主线（推翻 2026-06-06 降级裁决）；③并行语义换四相棋盘 + r≤16（替代 M0.5 正方形写域）；④RNG key 收敛为 hash(tick,x,y,salt/stream)，pass_id/attempt 维度并入 stream 且实现时必须显式保留。对应旧文档加 Superseded 标注：`docs/overview/architecture.md`、`docs/proposals/2026-06-14-determinism-hardening-r1-r3.md`、`docs/proposals/2026-06-06-deterministic-parallel-and-netcode.md`、`docs/superpowers/specs/2026-05-26-fire-system-design.md`。
+
+### Added
+- `docs/overview/kernel-charter.md`：内核顶层设计总纲 v0.1（用户撰写，2026-08-29 采纳为项目宪法）——P1–P5 第一性原则、三层内核（四相 push 网格 + 稀疏粒子 + pull 场）、1v1 延迟制 lockstep、确定性纪律法典、里程碑 M0–M6、决策日志。
+- `docs/overview/program-architecture.md`：程序架构文档 v0.1（用户撰写）——四环结构、crate 布局与单向依赖、Ring 0 子系统读写清单、规范 tick 管线（时序即契约）、跨层通信白名单。
+- `docs/README.md`：docs 导航入口 + 当前优先队列（CLAUDE.md §3.1 规划已久，首次补建）。
+- **Rust workspace 骨架**：`Cargo.toml`（workspace，edition 2024）+ `crates/sand-core`（Ring 0 纯库，暂只载铁律文档注释）+ `crates/sand-harness`（CLI stub）+ `clippy.toml` disallowed_types deny std HashMap/HashSet（charter §6 执法，**红绿验证**：临时违规代码确认 clippy 报错后移除）。`cargo clippy`/`cargo test` 全绿。commit `453eec0`。
+
+### Removed
+- **Python 原型归档**：`prototype/` → `archive/prototype-python/`（只读史料 + README 定性：算法语义参考，不做一对一移植）。83 tests 与 M0/M0.5 成果封存，commit `f5f2371`。
+
 ## 2026-06-14
 
 ### Fixed
