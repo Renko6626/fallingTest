@@ -5,6 +5,20 @@
 
 ## [Unreleased]
 
+## 2026-08-30
+
+### Added
+- **M0 骨架与执法实施完成**（spec `2026-08-29-m0-skeleton-design.md` → Implemented）：
+  - `crates/sand-core`：Cell u32 位段（`cell.rs`）、chunk/脏矩形原子合并（`chunk.rs`）、chunk 寻址世界 + brush/fill 共用写入路径（`world.rs`）、SquirrelNoise5 RNG **与 Python 版金值交叉锚定**（`rng.rs`）、WriteWindow unsafe 窗口 + debug 写域断言（`window.rs`）、数据驱动沙/水规则含方向承诺不变量（`rules.rs`）、四相 rayon 调度器（`scheduler.rs`）、xxh3 哈希树叶层（`hash.rs`）、Sim 门面（`lib.rs`）。
+  - `crates/sand-harness`：RON 场景/材料加载 + xxh3 指纹（P5）、synctest/replay/hashrun/render 四子命令、golden 回归 ×2 入库、GIF 占位渲染器（消费 `Sim::world()` 只读视图 = Channel A 雏形）。
+  - `data/materials.ron` + 三场景（sand_pile / mixed / acceptance 640×384）。
+  - 测试 22 项全绿：单测（位段/RNG 金值/相几何互斥穷举/哈希/写域 should_panic）+ 行为 5 项（沙落/堆守恒/沉水/跨缝摊平/方向承诺）+ CI SyncTest（256×192×6000 tick×四配置）+ golden ×2。
+  - 验收：release 版 640×384 × 10 万 tick × 四配置 SyncTest 零分叉；GIF 目检通过（安息角/沙沉水/液面摊平）。双机 hashrun 待用户执行。
+  - 性能参考（release，640×384 活跃期）：见 synctest 日志；正式 bench 与 `docs/perf/` Rust 基线留 M1 后。
+
+### Fixed
+- **spec §1.4 实施期修订：cell 级冻结脏矩形被 SyncTest 当场击落**——单缓冲扫描允许 tick 内链式移动（整段静止水沿扫描方向一 tick 整体平移，链长无上界），tick 起点冻结的矩形切断链，与全扫语义分叉（实测 tick 583，256×192 场景）。修复：休眠粒度提升为 **chunk 级 + 相位边界唤醒**（重查 dirty ∪ next_dirty，屏障后原子合并结果调度无关），活跃 chunk 全量扫描；等价论证入 spec §1.4。`crates/sand-core/src/scheduler.rs`。这正是 SyncTest 作为常驻执法的第一次实战开张。
+
 ## 2026-08-29
 
 ### Changed

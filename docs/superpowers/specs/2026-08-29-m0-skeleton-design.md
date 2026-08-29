@@ -3,7 +3,8 @@
 > 文档路径：`docs/superpowers/specs/2026-08-29-m0-skeleton-design.md`
 > 运行时版本：Rust（sand-core / sand-harness）
 > 最近更新：2026-08-29 (UTC+8)
-> **Status**: Trial（2026-08-29 用户批准设计六节 + 两项裁决：M0 即上 rayon、水走简版横流）
+> **Status**: Implemented（2026-08-30；§1.4 经实施期修订——chunk 级休眠 + 相位边界唤醒。
+> 验收 1/2/4 已过：22 tests 绿、10 万 tick SyncTest、GIF 目检；验收 3（双机 hashrun）待用户执行）
 > 上游：`docs/overview/kernel-charter.md`（总纲）§4/§6/§11、`docs/overview/program-architecture.md`（架构）§2–§4
 
 ## 0. 目标与验收
