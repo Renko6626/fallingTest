@@ -25,8 +25,10 @@
 产出：`crates/sand-core` 新增 `fixed.rs`/`particle.rs`/`dda.rs`，`world.rs`/`rng.rs`/`hash.rs`/
 `material.rs`/`lib.rs` 扩展；`crates/sand-harness` 的 `scenario.rs`/`runner.rs`/`render.rs` 扩展；
 `data/scenarios/` 新增 5 个场景 + `materials.ron` 新增 `blast_cost` 字段。测试从 M0 的 22 项增长到
-**124 项全绿**（`cargo test --workspace`），`cargo clippy --workspace --all-targets` 全程无警告。
-详细文件清单与逐任务产出见 `docs/CHANGELOG.md` 2026-08-30 各条目。
+**122 项全绿**（`cargo test --workspace`，逐 suite 核验：core 单测 91 + `particle_behavior` 3 +
+`rules_behavior` 5 + `synctest_ci` 1 + harness 单测 16 + golden 4 + `synctest` 2 =
+91+3+5+1+16+4+2 = 122），`cargo clippy --workspace --all-targets` 全程无警告。详细文件清单与逐任务
+产出见 `docs/CHANGELOG.md` 2026-08-30 各条目。
 
 ## 关键事件
 
@@ -61,7 +63,7 @@ golden` 全部哈希值已重录；无 Emit 的场景（`sand_pile`/`mixed`）�
 
 | # | 项 | 状态 |
 |---|---|---|
-| 1 | `cargo test` 全绿 | ✅ 124 项（core 单测 91 + 行为测试 8 + CI SyncTest 3 + harness 单测 16 + golden 4 + synctest 2），`cargo clippy --workspace --all-targets` 无警告 |
+| 1 | `cargo test` 全绿 | ✅ 122 项（core 单测 91 + `particle_behavior` 3 + `rules_behavior` 5 + `synctest_ci` 1 + harness 单测 16 + golden 4 + `synctest` 2 = 91+3+5+1+16+4+2 = 122），`cargo clippy --workspace --all-targets` 无警告 |
 | 2 | SyncTest：waterfall/explosion_splash 各 2 万 tick 六配置零分叉 | ✅ waterfall `scenario_fp 39575dfa5dfed750`（577.8s）；explosion_splash `scenario_fp f229c61b5deb0328`（856.1s）；均 release、`--threads 8` |
 | 3 | golden 重录（旧场景逐 tick 网格哈希零扰动 + 新场景 golden ×2 入库） | ✅ Task 3（`--grid-only` 两步程序，`sand_pile`/`mixed` 零扰动取证）+ Task 6（`explosion_ci` 入库，`sand_pile`/`mixed`/`waterfall_ci` 三个既有 golden 仅 `materials_fp` 一行变化） |
 | 4 | render GIF 目检 | ✅ `out/waterfall.gif`、`out/explosion_splash.gif`（`--every 100 --scale 2`，各 201 帧，覆盖完整 2 万 tick）。见下方目检记录，**结论留给用户** |
@@ -108,3 +110,21 @@ golden` 全部哈希值已重录；无 Emit 的场景（`sand_pile`/`mixed`）�
   完成**（见上方验收状态表 #2）。
 - **acceptance bench 1 线程组合**超 ±10% 阈值（+14.8%/+15.6%）判定为共享服务器噪声但未做独占核
   复测验证，若后续需要精确数字建议补测（`docs/perf/2026-08-30-m1-particle-baseline.md` "观察"节）。
+- **Task 6 评审 minor，终审分诊**（协调方 ledger，Task 6 完成时未列入该任务的 Concerns 节，本次
+  Task 7 评审补记，均未修复——留给后续任务按优先级处理）：
+  ① `crates/sand-core/tests/common/mod.rs` 注释提到"供本文件之外的爆炸行为测试
+  （`explode_behavior.rs`）直接复用同一张表"，但该文件并不存在（爆炸行为测试实际内联在
+  `world.rs` 自己的 `#[cfg(test)]` 模块里）——注释指向失实，需改写或补建该文件；
+  ② `Op::Explode` 的 `r`/`x`/`y` 在 harness 加载期无范围校验，若场景 RON 给出 ≥32768 的值会在
+  `i32`/`Fx` 转换处静默截断而非报错拒绝，与 `Op::Emit` 侧已有的 `resolve_op` 校验纪律不对称；
+  ③ `crates/sand-core/src/world.rs:289` 附近 `Fx::from_ratio(energy as i32, power as i32)`——
+  `power: u32` 若超过 `i32::MAX` 会在 `as i32` 处翻号（变负），使 `speed_ratio` 计算得到错误
+  符号/量级，当前无防线（数据驱动的 `power` 字段理论上可达 `u32::MAX`）；
+  ④ `fire_ray_already_air_cells_cost_zero_and_do_not_respawn` 一类测试名所暗示的覆盖面比实际
+  断言更宽，需要核对测试体是否真的覆盖了"零费用 + 不重复生成"两个子命题，还是只覆盖了其中一个；
+  ⑤ 爆炸摧毁产生的粒子若撞上 `MAX_PARTICLES` 容量拒绝，等价于该格材质凭空消失（网格侧已置
+  air，但粒子未能生成）——这是一次真实的质量不守恒，目前代码里没有就地注释说明这个已知权衡；
+  ⑥ 缺一个"同一 tick 的 `ops` 切片里出现两个 `Op::Explode`"的时序覆盖测试（`Op::Emit` 侧已有
+  `emit_op_idx_differentiates_same_tick_same_cell_emits` 对应覆盖，`Op::Explode` 侧目前只有单个
+  `Op::Explode` 场景的 `explode_same_tick_two_explodes_have_different_jitter_sequences`，未验证
+  两次 Explode 的网格摧毁/生成互相正确叠加而非互相覆盖）。

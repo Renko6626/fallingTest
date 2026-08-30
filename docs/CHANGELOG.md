@@ -21,8 +21,10 @@
   场景指纹 `combine(源字节哈希, 已解析 Fx 字段折叠)`；`--grid-only` 开关支撑 spec §9 两步 golden
   重录程序。数据：`data/scenarios/{waterfall,waterfall_ci,explosion_ci,explosion_splash,particle_stress}.ron`，
   `materials.ron` 新增 `blast_cost` 字段（缺省 1，wall 用 `BLAST_COST_INFINITE` 哨兵）。测试从 M0 的
-  22 项增长到 **124 项**（`cargo test --workspace` 全绿：core 单测 91 + 行为测试 8 + CI SyncTest 3 +
-  harness 单测 16 + golden 4 + synctest 2）；`cargo clippy --workspace --all-targets` 全程无警告。
+  22 项增长到 **122 项**（`cargo test --workspace` 全绿，逐 suite 核验：core 单测 91 + `particle_behavior`
+  3 + `rules_behavior` 5 + `synctest_ci` 1 + harness 单测 16 + golden 4 + `synctest` 2 =
+  91+3+5+1+16+4+2 = 122）；`cargo clippy --workspace --all-targets` 全程无警告。（修正 2026-08-30
+  评审：此前误写"124 项"，系沿用 Task 6 报告的加总错误——`synctest_ci` 实为 1 项而非 3 项。）
   各任务分述详见 `.superpowers/sdd/2026-08-30-m1-particle-layer-plan/task-{1..6}-report.md`；本条汇总
   Task 7 验收前的实施全貌，Task 1/3/5/6 的独立 Added 条目见下方（保留原有颗粒度）。
 
@@ -49,18 +51,23 @@
   `draw_particles`——只读叠加粒子层单像素点，不影响任何哈希/模拟语义）：`out/waterfall.gif`、
   `out/explosion_splash.gif`（均不入库，`.gitignore` 已排除 `/out`）；目检要点见
   `docs/sessions/2026-08-30-m1-particle-layer.md`"验收状态"节，结论留给用户复核。文档四件套：
-  `docs/overview/kernel-charter.md` §11 新增决策日志第 6 条（M1 粒子相插入 tick 管线第 5 步 + Layer P
-  落格语义修正）、`docs/CHANGELOG.md`（本条）、`docs/sessions/2026-08-30-m1-particle-layer.md`（新增）、
+  `docs/overview/kernel-charter.md` §11 新增"实施期决策（2026-08-30，M1）"小节第 1 条（M1 粒子相
+  插入 tick 管线第 5 步 + Layer P 落格语义修正）、`docs/CHANGELOG.md`（本条）、
+  `docs/sessions/2026-08-30-m1-particle-layer.md`（新增）、
   spec Status → Implemented、`docs/README.md` 优先队列更新为"M1 完成，下一项 Layer G 速度提案 / M2"。
 
 ### Changed
-- **`docs/overview/kernel-charter.md` §4 Layer P 落格语义措辞修正 + §11 决策日志新增第 6 条**
+- **`docs/overview/kernel-charter.md` §4 Layer P 落格语义措辞修正 + §11 新增"实施期决策"小节**
   （2026-08-30）：原文"输家按定序邻格搜索或继续飞行"中的"继续飞行"（悬浮）分支已改写为
   "定序邻格（上/左/右/左上/右上）搜索空位；五邻格全占则沿候选格正上方继续向上搜索最近空格，搜到
   世界顶仍无空位则确定性出界销毁——不存在'继续飞行/悬浮'分支"，与 M1 spec §5（决策记录第 6 条）
-  实现口径对齐。§11 新增决策日志第 6 条：M1 粒子相插入 tick 管线第 5 步（`program-architecture.md`
-  自立宪起已把该步骤排在管线第 5 位，M1 实施是让其从占位转为真实生效，仍属协议版本变更）+ 上述
-  落格语义修正的依据（Task 4 评审 C1 活锁实证）。
+  实现口径对齐。§11 在既有"翻案记录"列表之后新立小节标题"实施期决策（2026-08-30，M1）"（翻案记录
+  列表标题与既有 1–5 条原样不动），第 1 条记：M1 粒子相插入 tick 管线第 5 步
+  （`program-architecture.md` 自立宪起已把该步骤排在管线第 5 位，M1 实施是让其从占位转为真实生效，
+  仍属协议版本变更）+ 上述落格语义修正的依据（Task 4 评审 C1 活锁实证）。**归档位置修正
+  （2026-08-30 评审 I2）**：该条最初误放进"翻案记录"编号列表（记作第 6 条）——它记的是实施期对
+  本文措辞的补记，不是"推翻既有裁决"，分类失准，已移出并单独立节，翻案记录列表标题与条目内容
+  未改动。
 
 ### Added
 - **M1 Task 6 完成：`Op::Explode` Noita 射线模型 + 爆炸/压测场景**（spec §6/§10）。
@@ -85,7 +92,8 @@
   CI）、`particle_stress.ron`（640×384，3000 tick，持续 2000/tick Emit 顶满
   65536 容量，bench 专用不进 CI/golden）。测试：core 新增 21 项（`CellWalk` 4 +
   `circle_offsets` 5 + `fire_ray` 白盒 3 + `Op::Explode` 行为 8 + 金值 1）+ harness
-  新增 2 项 + golden 1 项 + synctest 1 项，`cargo test --workspace`（124 项）与
+  新增 2 项 + golden 1 项 + synctest 1 项，`cargo test --workspace`（122 项，修正
+  2026-08-30 评审：此前误写"124 项"，加总错误——`synctest_ci` 实为 1 项而非 3 项）与
   `cargo clippy --workspace --all-targets` 全绿。**golden 重录**：既有
   `sand_pile`/`mixed`/`waterfall_ci` 三个 golden 的 tick 周期哈希与终态哈希
   **逐位不变**（`git diff` 确认三个文件都只有 `materials_fp` 一行变化），证明
