@@ -7,6 +7,9 @@
 
 ## 2026-08-30
 
+### Fixed
+- **GIF 帧延迟与采样率解耦**（用户目检发现帧率异常）：`render.rs` 原公式 delay = every×100/60（墙钟等速），`--every 100` 时 1.67 秒/帧成幻灯片——M1 验收两张 GIF 即中招。默认仍等速但 clamp [2,10]cs（稀疏采样自动转延时摄影），新增 `--fps` 显式覆盖回放帧率；3 项 `frame_delay` 金值单测；`out/waterfall.gif`、`out/explosion_splash.gif` 已重渲（10cs/帧 ≈ 20 秒）。`crates/sand-harness/src/{render,main}.rs`，commit `d982c70`。
+
 ### Added
 - **M1 粒子层（Layer P）实施完成，spec → Implemented**（`docs/superpowers/specs/2026-08-30-m1-particle-layer-design.md`，
   Task 1–7 全部完成，验收标准 §0 五项全过）。跨 Task 1–6 的完整产出：`crates/sand-core/src/fixed.rs`
