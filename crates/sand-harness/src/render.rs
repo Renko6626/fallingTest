@@ -50,6 +50,7 @@ pub fn render_gif(
         sim.step(&sc.ops_for_tick(t));
         if t % opts.every == 0 || t + 1 == ticks {
             fill_frame(sim, w, h, opts.scale, &mut buf);
+            draw_particles(sim, w, h, opts.scale, &mut buf);
             let frame = gif::Frame {
                 width: ow as u16,
                 height: oh as u16,
@@ -62,6 +63,29 @@ pub fn render_gif(
         }
     }
     Ok(frames)
+}
+
+/// 粒子层目检叠加：Layer P 每颗粒子按当前格坐标画一个 scale×scale 像素块
+/// （同 fill_frame 的最近邻放大规则），材质色沿用调色板。只读消费
+/// `sim.particles()`（Channel A 雏形），不影响任何哈希——纯渲染面。
+fn draw_particles(sim: &Sim, w: usize, h: usize, scale: usize, buf: &mut [u8]) {
+    let ow = w * scale;
+    let particles = sim.particles();
+    for i in 0..particles.len() {
+        let cx = particles.x(i).to_cell();
+        let cy = particles.y(i).to_cell();
+        if cx < 0 || cy < 0 || cx as usize >= w || cy as usize >= h {
+            continue;
+        }
+        let (cx, cy) = (cx as usize, cy as usize);
+        let id = particles.material(i);
+        for sy in 0..scale {
+            let row_start = (cy * scale + sy) * ow;
+            for sx in 0..scale {
+                buf[row_start + cx * scale + sx] = id;
+            }
+        }
+    }
 }
 
 fn fill_frame(sim: &Sim, w: usize, h: usize, scale: usize, buf: &mut [u8]) {

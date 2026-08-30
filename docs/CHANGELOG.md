@@ -8,6 +8,61 @@
 ## 2026-08-30
 
 ### Added
+- **M1 粒子层（Layer P）实施完成，spec → Implemented**（`docs/superpowers/specs/2026-08-30-m1-particle-layer-design.md`，
+  Task 1–7 全部完成，验收标准 §0 五项全过）。跨 Task 1–6 的完整产出：`crates/sand-core/src/fixed.rs`
+  （手写 Q16.16 定点：add/sub/neg/mul/mul_int/from_ratio/to_cell/isqrt，全部配金值单测）、
+  `particle.rs`（SoA `Particles`：x/y/vx/vy/material + `next_id`/`rejected_total`/`buried_total`，
+  spawn 顺序即 id 序、65536 容量确定性拒绝、保序 `compact`、并行 `integrate` + 串行按 id `commit`）、
+  `dda.rs`（`CellWalk` 迭代器：i64 交叉相乘整数网格穿越，供粒子飞行路径与爆炸射线复用同一算法）、
+  `world.rs` 新增 `Op::Emit`（发射器，harness 场景 `Every` script 驱动）与 `Op::Explode`（Noita 射线模型：
+  Bresenham 圆周逐条 DDA 射线、`blast_cost` 逐格消耗能量、遮挡免费涌现）、`rng.rs` 新增
+  `STREAM_EMIT`/`STREAM_EXPLODE`、`hash.rs` 新增粒子层哈希折叠 + `Sim::grid_hash()`/`state_hash()` 分离。
+  harness 侧：`scenario.rs` 新增 `OpSpec::Emit`/`Explode` + `quantize_fx`（I/O 层唯一浮点量化点）+
+  场景指纹 `combine(源字节哈希, 已解析 Fx 字段折叠)`；`--grid-only` 开关支撑 spec §9 两步 golden
+  重录程序。数据：`data/scenarios/{waterfall,waterfall_ci,explosion_ci,explosion_splash,particle_stress}.ron`，
+  `materials.ron` 新增 `blast_cost` 字段（缺省 1，wall 用 `BLAST_COST_INFINITE` 哨兵）。测试从 M0 的
+  22 项增长到 **124 项**（`cargo test --workspace` 全绿：core 单测 91 + 行为测试 8 + CI SyncTest 3 +
+  harness 单测 16 + golden 4 + synctest 2）；`cargo clippy --workspace --all-targets` 全程无警告。
+  各任务分述详见 `.superpowers/sdd/2026-08-30-m1-particle-layer-plan/task-{1..6}-report.md`；本条汇总
+  Task 7 验收前的实施全貌，Task 1/3/5/6 的独立 Added 条目见下方（保留原有颗粒度）。
+
+  **实施期修复轮要点**（详见各任务 report 的"修复轮"节）：Task 4 评审 C1（Critical）——落格五邻格
+  全占后原设计"重置为悬浮、速度清零"在静态堆场景构成**活锁**（40 颗同位同速沙粒复现，32 颗永久卡死，
+  两 tick 一循环）；改判为向上兜底搜索（候选格正上方逐格找空位，搜到世界顶仍无空位则确定性出界销毁，
+  `buried_total` 计数不入哈希），**完全废除"继续飞行/悬浮"分支**——`kernel-charter.md` §4/§11 已同步
+  修正（见下方 Changed 条目）。Task 5 评审 I1（Important）——同帧同格多个 `Op::Emit`（或 setup 阶段与
+  紧接的 tick 0 首个 `step()`）共享 `fseed` 导致 RNG key 撞车，新增 `emit_salt(op_idx, i)`/
+  `emit_attempt(stamp, roll)` 折进 salt/attempt 高位区分（呼应总纲翻案记录第 4 条"同帧同格多次掷骰
+  必须彼此不同"纪律）；I2——场景指纹从"仅源字节哈希"改为 `combine(源字节哈希, 已解析 Fx 字段折叠)`，
+  堵住"源字节相同但跨平台解析出不同 Fx"的假设性分叉。
+
+- **M1 Task 7 完成：验收与收尾**。SyncTest 验收（release，`--threads 8`，六配置 = {1,8}线程 ×
+  {Full,ChunkSleep,LiveRect}）：`waterfall.ron` 2 万 tick 零分叉（`scenario_fp 39575dfa5dfed750`，
+  实跑 577.8s）；`explosion_splash.ron` 2 万 tick 零分叉（`scenario_fp f229c61b5deb0328`，实跑
+  856.1s）——spec §0 验收标准第 2 条完成。bench 对照（`docs/perf/2026-08-30-m1-particle-baseline.md`，
+  同 Task 1 口径复测）：mixed/sparse 网格路径在 ±10% 内持平或更快；acceptance 1 线程组合超出 ±10%
+  阈值（+14.8%/+15.6%），判定为共享服务器噪声（基线文档已记录同组 3 次波动可达 20–30%），非回归，
+  已如实记录待后续复核。`particle_stress.ron` 压测：稳态粒子数 = 容量硬上限 `65536`（33 tick 内触顶）；
+  用容量爬升期"零网格落地"窗口做总耗时差分（未改动 `sand-core`），直接测得 2 万粒子量级下粒子相
+  开销 **0.586ms/tick**，另用 65536 粒子恒定窗口折算得 **0.504ms/tick**（20k 等效），均低于总纲 §7
+  预算"2 万粒子 ≈ 0.8ms"，预算校准通过。render GIF 目检（`crates/sand-harness/src/render.rs` 新增
+  `draw_particles`——只读叠加粒子层单像素点，不影响任何哈希/模拟语义）：`out/waterfall.gif`、
+  `out/explosion_splash.gif`（均不入库，`.gitignore` 已排除 `/out`）；目检要点见
+  `docs/sessions/2026-08-30-m1-particle-layer.md`"验收状态"节，结论留给用户复核。文档四件套：
+  `docs/overview/kernel-charter.md` §11 新增决策日志第 6 条（M1 粒子相插入 tick 管线第 5 步 + Layer P
+  落格语义修正）、`docs/CHANGELOG.md`（本条）、`docs/sessions/2026-08-30-m1-particle-layer.md`（新增）、
+  spec Status → Implemented、`docs/README.md` 优先队列更新为"M1 完成，下一项 Layer G 速度提案 / M2"。
+
+### Changed
+- **`docs/overview/kernel-charter.md` §4 Layer P 落格语义措辞修正 + §11 决策日志新增第 6 条**
+  （2026-08-30）：原文"输家按定序邻格搜索或继续飞行"中的"继续飞行"（悬浮）分支已改写为
+  "定序邻格（上/左/右/左上/右上）搜索空位；五邻格全占则沿候选格正上方继续向上搜索最近空格，搜到
+  世界顶仍无空位则确定性出界销毁——不存在'继续飞行/悬浮'分支"，与 M1 spec §5（决策记录第 6 条）
+  实现口径对齐。§11 新增决策日志第 6 条：M1 粒子相插入 tick 管线第 5 步（`program-architecture.md`
+  自立宪起已把该步骤排在管线第 5 位，M1 实施是让其从占位转为真实生效，仍属协议版本变更）+ 上述
+  落格语义修正的依据（Task 4 评审 C1 活锁实证）。
+
+### Added
 - **M1 Task 6 完成：`Op::Explode` Noita 射线模型 + 爆炸/压测场景**（spec §6/§10）。
   `crates/sand-core/src/material.rs`：`MaterialDef`/`MaterialTable` 新增
   `blast_cost: u32`（+ `BLAST_COST_INFINITE` 哨兵），`data/materials.ron` 全部材料

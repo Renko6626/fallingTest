@@ -7,6 +7,8 @@
 
 取代 `docs/perf/2026-08-30-m0-rust-informal.md`（该文档头部已加指针回指本文档）。本文档是 M1 粒子层动工前的性能基线快照（`.superpowers/sdd/2026-08-30-m1-particle-layer-plan/task-1-brief.md` Task 1），纯测量，未改动 `crates/` 或 `data/` 任何文件。
 
+**M1 完成后的同口径对照与 particle_stress 压测见 `docs/perf/2026-08-30-m1-particle-baseline.md`**（M1 Task 7）。
+
 **口径说明（重要，与 informal 文档不可直接对比）**：本基线走**短程稳态吞吐**口径——每组测量的 tick 数以命令行为准（见下），远小于 informal 文档"720p 全活跃前 300/1200 tick"或 `acceptance.ron` 全量 20000 tick 的长程口径。这是执行期纠偏后的结果：最初尝试用 acceptance 20000→100000 tick 差分单独扣出"纯稳态"数值，单组测量墙钟达 ~60 秒、总预算超支，被中途叫停；改为本文档口径后单组测量 ≤ 数秒，总测量墙钟 < 5 分钟。
 
 ## 环境

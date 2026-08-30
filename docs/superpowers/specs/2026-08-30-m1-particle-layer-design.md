@@ -3,7 +3,7 @@
 > 文档路径：`docs/superpowers/specs/2026-08-30-m1-particle-layer-design.md`
 > 运行时版本：Rust（内核）+ Godot 4 + gdext（表现层）
 > 最近更新：2026-08-30 (UTC+8)
-> **Status**: Proposed（brainstorming 全节口头批准，待用户过目本文件）
+> **Status**: Implemented（Task 1–7 全部完成，验收标准 §0 五项全过，见 `docs/sessions/2026-08-30-m1-particle-layer.md`）
 
 对应总纲里程碑 **M1 粒子层**（`docs/overview/kernel-charter.md:126`）：脱格/落格闭环、
 DDA 碰撞、容量限流；验收 = 瀑布与爆炸溅射场景 SyncTest 绿。Layer P 硬约束见
