@@ -22,6 +22,13 @@ const P_ATTEMPT: u32 = 0x1656_67B1;
 /// 调用点流注册表（对应 Python 版 pass_id 维度；spec §4.1）。
 pub const STREAM_DIAG: u32 = 0;
 
+/// `Op::Emit` 发射器速度抖动流（spec §7/§8，M1 Task 5）。调用点：
+/// `world.rs::World::apply_op` 的 `Op::Emit` 分支——`salt` = 粒子序号 i，
+/// `attempt` 挪用为"vx/vy 骰子标号"（0=vx、1=vy，见该分支文档注释），
+/// 与其原始"重试次数"语义不同但同属"同 salt 下的独立第 N 骰"，满足
+/// charter §11 翻案 4"同帧同格多骰不同参数"的纪律。
+pub const STREAM_EMIT: u32 = 1;
+
 pub fn squirrel5(pos: u32, seed: u32) -> u32 {
     let mut m = pos.wrapping_mul(N1);
     m = m.wrapping_add(seed);

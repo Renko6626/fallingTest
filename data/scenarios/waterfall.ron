@@ -1,0 +1,24 @@
+// 瀑布场景（M1 验收，spec §7/§10）：640×384，高处 Op::Emit 持续注水 → 落入
+// 盆地几何堆积、摊平。2 万 tick：0–18000 持续喷射，18000–20000 留作沉降尾段。
+// 用法：
+//   sand-harness synctest data/scenarios/waterfall.ron          （六配置验收，Task 7）
+//   sand-harness render   data/scenarios/waterfall.ron -o waterfall.gif
+Scenario(
+    name: "waterfall",
+    world: (10, 6),
+    seed: 0x5A7E_2FA1,
+    ticks: 20000,
+    setup: [
+        Fill(material: "wall", x0: 0, y0: 360, x1: 639, y1: 383),   // 盆地底
+        Fill(material: "wall", x0: 0, y0: 200, x1: 7, y1: 359),      // 左壁
+        Fill(material: "wall", x0: 632, y0: 200, x1: 639, y1: 359),  // 右壁
+    ],
+    script: [
+        // 顶部高处持续喷发：每 2 tick 3 个粒子，初速 (0.0, 1.5) 略带横向
+        // 抖动，落体飞行 ~200 格进入盆地（x0=8..631 内，抖动幅度远不足以
+        // 在此距离内飞出盆地两壁）。
+        Every(from: 0, until: 18000, step: 2,
+              op: Emit(material: "water", x: 320.0, y: 8.0,
+                       vx: 0.0, vy: 1.5, count: 3, jitter: 0.6)),
+    ],
+)

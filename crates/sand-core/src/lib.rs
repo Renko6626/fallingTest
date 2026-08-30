@@ -53,17 +53,6 @@ pub struct InitConfig {
     pub scan: ScanMode,
 }
 
-/// 生成队列条目（M1 spec §4 第 3 步 a）：`Op::Explode` / `Op::Emit`（Task 4/5）
-/// 与测试代码经 [`Sim::queue_spawn`] 压入，本 tick 粒子相开头按入队序 drain。
-#[derive(Clone, Copy, Debug)]
-struct SpawnRequest {
-    material: u8,
-    x: fixed::Fx,
-    y: fixed::Fx,
-    vx: fixed::Fx,
-    vy: fixed::Fx,
-}
-
 /// 模拟实例门面：World + MaterialTable + 线程池 + 粒子池。
 /// harness 与未来的 sand-session 都经此驱动；`world()` 是 Channel A 只读视图的雏形。
 pub struct Sim {
@@ -72,7 +61,7 @@ pub struct Sim {
     pool: rayon::ThreadPool,
     scan: ScanMode,
     particles: Particles,
-    spawn_queue: Vec<SpawnRequest>,
+    spawn_queue: Vec<world::SpawnRequest>,
 }
 
 /// setup 期世代戳：≠ tick 0 的戳（0），保证 setup 内容从 tick 0 起可动（spec §4.4）。
@@ -95,10 +84,10 @@ impl Sim {
     }
 
     /// 压入一个粒子生成请求，本 tick `step()` 开头按入队序 drain（M1 spec §4）。
-    /// 白名单通信介质：Task 4 的 `Op::Explode`/`Op::Emit` 与测试代码经此复用，
-    /// 粒子层本身不关心生产者是谁。
+    /// 白名单通信介质：`Op::Emit`（本任务）/ 未来 `Op::Explode` 与测试代码经此
+    /// 复用，粒子层本身不关心生产者是谁。
     pub fn queue_spawn(&mut self, material: u8, x: fixed::Fx, y: fixed::Fx, vx: fixed::Fx, vy: fixed::Fx) {
-        self.spawn_queue.push(SpawnRequest { material, x, y, vx, vy });
+        self.spawn_queue.push(world::SpawnRequest { material, x, y, vx, vy });
     }
 
     pub fn particles(&self) -> &Particles {
@@ -106,21 +95,27 @@ impl Sim {
     }
 
     /// 场景 setup（仅 tick 0 之前调用）；与脚本 brush 共用同一确定性写入路径。
+    /// `Op::Emit` 在 setup 里同样合法（虽然场景通常走 `script`）：用 tick 0
+    /// 的 `fseed` 掷骰，产出的生成请求并入 `spawn_queue`，随首个 `step()`
+    /// 一并 drain——与 `script` 里的 Emit 走同一条队列、同一套语义。
     pub fn apply_setup(&mut self, ops: &[Op]) {
         assert_eq!(self.world.tick, 0, "setup 只允许在首个 step 之前");
+        let fseed = rng::frame_seed(self.world.seed, self.world.tick);
         for op in ops {
-            self.world.apply_op(&self.table, op, SETUP_STAMP);
+            self.world.apply_op(&self.table, op, SETUP_STAMP, fseed, &mut self.spawn_queue);
         }
     }
 
     pub fn step(&mut self, ops: &[Op]) {
         let tick = self.world.tick;
-        scheduler::step(&mut self.world, &self.table, &self.pool, self.scan, ops);
+        scheduler::step(&mut self.world, &self.table, &self.pool, self.scan, ops, &mut self.spawn_queue);
 
         // 粒子相（M1 spec §4 第 3 步）：a. 生成（drain 入队序 + 容量拒绝，
-        // Particles::spawn 内置）；b/c/d. 并行积分 → 串行提交 → 保序压缩，
-        // 整体委托 particle::advance（Task 4）。stamp 与网格四相同一口径
-        // （本 tick 的 tick 值，取自四相调度前，与 scheduler::step 内部一致）。
+        // Particles::spawn 内置）——队列此刻已包含测试代码经 queue_spawn
+        // 的历史积压 *与* 本 tick ops 阶段里 Op::Emit 刚追加的请求，追加序
+        // 即入队序；b/c/d. 并行积分 → 串行提交 → 保序压缩，整体委托
+        // particle::advance（Task 4）。stamp 与网格四相同一口径（本 tick 的
+        // tick 值，取自四相调度前，与 scheduler::step 内部一致）。
         for req in self.spawn_queue.drain(..) {
             self.particles.spawn(req.material, req.x, req.y, req.vx, req.vy);
         }

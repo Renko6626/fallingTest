@@ -37,3 +37,8 @@ fn golden_sand_pile() {
 fn golden_mixed() {
     check("data/scenarios/mixed.ron", "crates/sand-harness/tests/golden/mixed.golden");
 }
+
+#[test]
+fn golden_waterfall_ci() {
+    check("data/scenarios/waterfall_ci.ron", "crates/sand-harness/tests/golden/waterfall_ci.golden");
+}

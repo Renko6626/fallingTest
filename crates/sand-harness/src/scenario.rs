@@ -5,7 +5,7 @@
 use serde::Deserialize;
 use xxhash_rust::xxh3::xxh3_64;
 
-use sand_core::{Category, MaterialDef, MaterialTable, Op};
+use sand_core::{Category, Fx, MaterialDef, MaterialTable, Op};
 
 // ---------- materials.ron ----------
 
@@ -75,6 +75,20 @@ pub struct ScenarioFile {
 pub enum OpSpec {
     Brush { material: String, x: i32, y: i32, r: i32 },
     Fill { material: String, x0: i32, y0: i32, x1: i32, y1: i32 },
+    /// `Op::Emit` 的 RON 表面形式（spec §7）：坐标/速度/抖动幅度写十进制小数，
+    /// 加载期经 [`quantize_fx`] 一次性 round 量化为 Q16.16——core 边界只见
+    /// `Fx`，量化在 I/O 层完成，不碰核心零浮点红线。
+    Emit { material: String, x: f64, y: f64, vx: f64, vy: f64, count: u16, jitter: f64 },
+}
+
+/// 场景 RON 里的十进制小数 → Q16.16 定点（`Fx`），**round**（非截断）语义：
+/// `v * 65536.0` 四舍五入到最近整数即 raw 位模式。`f64::round` 对 `.5` 边界
+/// 走"绝对值远离零"舍入（如 `0.5 → 32768`，恰好是整数点，不受舍入方向
+/// 影响——用作本函数的金值锚点，见 `quantize_fx_round_half_examples` 单测）。
+/// 这是 I/O 边界上唯一允许出现浮点运算的地方：结果一旦落地为 `Fx`，
+/// core 侧全程整数运算（charter §6 混合数值制原判）。
+pub fn quantize_fx(v: f64) -> Fx {
+    Fx((v * 65536.0).round() as i32)
 }
 
 #[derive(Deserialize, Clone)]
@@ -109,6 +123,20 @@ fn resolve_op(spec: &OpSpec, table: &MaterialTable) -> Result<Op, String> {
         }
         OpSpec::Fill { material, x0, y0, x1, y1 } => {
             Op::Fill { material: id(material)?, x0: *x0, y0: *y0, x1: *x1, y1: *y1 }
+        }
+        OpSpec::Emit { material, x, y, vx, vy, count, jitter } => {
+            if *jitter < 0.0 {
+                return Err(format!("Emit jitter 必须非负，实际 {jitter}"));
+            }
+            Op::Emit {
+                material: id(material)?,
+                x: quantize_fx(*x),
+                y: quantize_fx(*y),
+                vx: quantize_fx(*vx),
+                vy: quantize_fx(*vy),
+                count: *count,
+                jitter: quantize_fx(*jitter),
+            }
         }
     })
 }
@@ -161,5 +189,101 @@ impl Scenario {
             })
             .map(|(_, op)| op.clone())
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sand_core::{Category, MaterialDef, MaterialTable};
+
+    fn table_with_water() -> MaterialTable {
+        MaterialTable::new(vec![
+            MaterialDef { id: 0, name: "air".into(), category: Category::Static, density: 0, color: (0, 0, 0) },
+            MaterialDef { id: 1, name: "wall".into(), category: Category::Static, density: 100, color: (0, 0, 0) },
+            MaterialDef { id: 2, name: "water".into(), category: Category::Liquid, density: 16, color: (0, 0, 0) },
+        ])
+        .unwrap()
+    }
+
+    // ==================== quantize_fx：round 金值（任务书要求）====================
+
+    #[test]
+    fn quantize_fx_exact_half_rounds_to_0x8000() {
+        assert_eq!(quantize_fx(0.5).0, 0x8000);
+        assert_eq!(quantize_fx(-0.5).0, -0x8000);
+    }
+
+    #[test]
+    fn quantize_fx_integers_shift_exactly() {
+        assert_eq!(quantize_fx(0.0).0, 0);
+        assert_eq!(quantize_fx(1.0).0, 0x1_0000);
+        assert_eq!(quantize_fx(-2.0).0, -0x2_0000);
+    }
+
+    #[test]
+    fn quantize_fx_rounds_nearest_not_truncates() {
+        // 0.0001 * 65536 = 6.5536 → round 到 7；若实现是截断会给 6，
+        // 这条测试能把两者的实现差异暴露出来。
+        assert_eq!(quantize_fx(0.0001).0, 7);
+    }
+
+    // ==================== resolve_op：Emit 解析 + 量化落地 + 校验 ====================
+
+    #[test]
+    fn resolve_op_emit_quantizes_all_fx_fields() {
+        let t = table_with_water();
+        let spec = OpSpec::Emit { material: "water".into(), x: 120.0, y: 8.0, vx: 0.5, vy: 2.0, count: 3, jitter: 0.8 };
+        let op = resolve_op(&spec, &t).unwrap();
+        match op {
+            Op::Emit { material, x, y, vx, vy, count, jitter } => {
+                assert_eq!(material, 2);
+                assert_eq!(x, quantize_fx(120.0));
+                assert_eq!(y, quantize_fx(8.0));
+                assert_eq!(vx, quantize_fx(0.5));
+                assert_eq!(vy, quantize_fx(2.0));
+                assert_eq!(count, 3);
+                assert_eq!(jitter, quantize_fx(0.8));
+            }
+            other => panic!("期望 Op::Emit，实际 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_op_rejects_negative_jitter() {
+        let t = table_with_water();
+        let spec =
+            OpSpec::Emit { material: "water".into(), x: 0.0, y: 0.0, vx: 0.0, vy: 0.0, count: 1, jitter: -0.1 };
+        assert!(resolve_op(&spec, &t).is_err(), "负 jitter 必须被拒绝");
+    }
+
+    #[test]
+    fn resolve_op_emit_unknown_material_errors() {
+        let t = table_with_water();
+        let spec =
+            OpSpec::Emit { material: "lava".into(), x: 0.0, y: 0.0, vx: 0.0, vy: 0.0, count: 1, jitter: 0.0 };
+        assert!(resolve_op(&spec, &t).is_err());
+    }
+
+    // ==================== 场景指纹：raw 字节哈希天然覆盖 Emit 参数变化 ====================
+    //
+    // spec §7 要求"量化后的 Fx 原始位参与场景指纹"。`load_scenario` 的
+    // `fingerprint` 取自 *解析前* 的原始文件字节（`xxh3_64(&bytes)`），
+    // 任何文本层面的 Emit 参数改动都已经改变了这些字节——量化只发生在
+    // 之后的 `resolve_op` 阶段，不可能出现"参数变了但指纹不变"的情形。
+    // 这条测试把该保证钉死，防止未来把 fingerprint 改成只哈希部分字段时
+    // 悄悄丢掉这个覆盖面。
+
+    #[test]
+    fn fingerprint_changes_when_emit_params_change() {
+        let a = "Scenario(name:\"t\",world:(1,1),seed:0,ticks:1,setup:[],\
+                  script:[Every(from:0,until:1,step:1,op:Emit(material:\"water\",x:1.0,y:1.0,vx:0.5,vy:1.0,count:1,jitter:0.1))])";
+        let b = "Scenario(name:\"t\",world:(1,1),seed:0,ticks:1,setup:[],\
+                  script:[Every(from:0,until:1,step:1,op:Emit(material:\"water\",x:1.0,y:1.0,vx:0.6,vy:1.0,count:1,jitter:0.1))])";
+        assert_ne!(
+            xxh3_64(a.as_bytes()),
+            xxh3_64(b.as_bytes()),
+            "仅改 Emit 的 vx，场景指纹也必须改变"
+        );
     }
 }

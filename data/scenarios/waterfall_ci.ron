@@ -1,0 +1,20 @@
+// 瀑布场景 CI 小图版（同 waterfall.ron 几何族，缩到 CI 尺度）：256×192，
+// 高处 Op::Emit 注水 → 盆地堆积。1200 tick：0–900 持续喷射，900–1200 沉降尾段。
+// 并入 harness 六配置 CI SyncTest（`crates/sand-harness/tests/synctest.rs`）+
+// golden 入库（`crates/sand-harness/tests/golden/waterfall_ci.golden`）。
+Scenario(
+    name: "waterfall_ci",
+    world: (4, 3),
+    seed: 0x5A7E_2FA1,
+    ticks: 1200,
+    setup: [
+        Fill(material: "wall", x0: 0, y0: 184, x1: 255, y1: 191),   // 盆地底
+        Fill(material: "wall", x0: 0, y0: 100, x1: 7, y1: 183),      // 左壁
+        Fill(material: "wall", x0: 248, y0: 100, x1: 255, y1: 183),  // 右壁
+    ],
+    script: [
+        Every(from: 0, until: 900, step: 2,
+              op: Emit(material: "water", x: 128.0, y: 8.0,
+                       vx: 0.0, vy: 1.5, count: 2, jitter: 0.6)),
+    ],
+)
