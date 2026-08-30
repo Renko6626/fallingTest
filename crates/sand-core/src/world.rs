@@ -66,7 +66,10 @@ impl World {
 
     /// brush/setup 共用写入路径：写 cell + 盖戳 + 脏标记 ±1。
     /// 液体方向记忆按 x 奇偶初始化（确定性且无整体偏置）。
-    fn set_cell_stamped(&mut self, table: &MaterialTable, x: i32, y: i32, material: u8, stamp: u8) {
+    ///
+    /// `pub(crate)`（M1 Task 4 起）：粒子落格提交复用同一写入路径，保证脏矩形
+    /// 合并 + chunk 唤醒对粒子写入与 brush/setup 写入一视同仁（spec §5 明文）。
+    pub(crate) fn set_cell_stamped(&mut self, table: &MaterialTable, x: i32, y: i32, material: u8, stamp: u8) {
         if !self.in_bounds(x, y) {
             return;
         }

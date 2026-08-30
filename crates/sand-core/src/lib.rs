@@ -13,6 +13,7 @@
 
 pub mod cell;
 pub mod chunk;
+mod dda;
 pub mod fixed;
 pub mod hash;
 pub mod material;
@@ -113,15 +114,18 @@ impl Sim {
     }
 
     pub fn step(&mut self, ops: &[Op]) {
+        let tick = self.world.tick;
         scheduler::step(&mut self.world, &self.table, &self.pool, self.scan, ops);
 
-        // 粒子相骨架（M1 spec §4 第 3 步；Task 3 占位，无运动——积分/落格/冲突
-        // 消解留 Task 4）。当前仅有生成入口，尚无移除判据，compact 全 keep。
+        // 粒子相（M1 spec §4 第 3 步）：a. 生成（drain 入队序 + 容量拒绝，
+        // Particles::spawn 内置）；b/c/d. 并行积分 → 串行提交 → 保序压缩，
+        // 整体委托 particle::advance（Task 4）。stamp 与网格四相同一口径
+        // （本 tick 的 tick 值，取自四相调度前，与 scheduler::step 内部一致）。
         for req in self.spawn_queue.drain(..) {
             self.particles.spawn(req.material, req.x, req.y, req.vx, req.vy);
         }
-        let keep = vec![true; self.particles.len()];
-        self.particles.compact(&keep);
+        let stamp = (tick % 256) as u8;
+        particle::advance(&mut self.particles, &mut self.world, &self.table, &self.pool, stamp);
     }
 
     pub fn tick(&self) -> u64 {
