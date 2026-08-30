@@ -7,6 +7,31 @@
 
 ## 2026-08-30
 
+### Changed
+- **爆炸手感迭代四项（用户目检裁决）+ `explosion_splash.ron` 场景收窄**：
+  ① `EXPLODE_SPEED` 16→8（"粒子更重"）；② 新增密度冲量缩放
+  `REF_BLAST_DENSITY=40`，出射速度按 `参考密度/材质密度` 缩放（`v∝1/密度`，
+  沙锚定系数 1.0、水系数 2.5 受 `clamp_speed` 封顶）；③ 射线方向涨落——每
+  条射线独立掷能量 ±25%、射程 −25%..0 两骰（`ray_fluct`，分母
+  `EXPLODE_FLUCT_DIV=4`），`explode_attempt` 编码随之从"低 1 位骰子标号"
+  扩为"低 2 位"（4 颗骰），与 `emit_attempt` 独立演化、互不牵连；④
+  `data/materials.ron` 汽化阈值调整：`sand` 0.7→**0.95**（更耐炸，近心
+  汽化圈显著收窄），`water` 维持 0.4。配合本轮手感目检，`explosion_splash.ron`
+  的 `ticks` 从 20000 收窄到 **8000**、script 从 19 炮（`Every(from:500,
+  until:19500,step:1000)`）收窄到 **8 炮**（`until:7500`），单次渲染/回放
+  耗时大幅下降。新增单测 `explode_crater_is_not_perfectly_circular`/
+  `blast_mass_factor_golden_values`/`fire_ray_lighter_material_launches_faster_than_heavier`
+  等锁定四项行为；4 个 golden 因 `materials.ron` 内容哈希变化重录
+  ——`sand_pile`/`mixed`/`waterfall_ci` 三个无爆炸场景仅 `materials_fp` 行变、
+  tick 哈希序列逐位不变（重录前 `cargo test` 失败输出 diff 实测确认），
+  `explosion_ci` 因爆炸语义变更状态哈希全变（预期内）。`cargo test
+  --workspace`、`cargo clippy --workspace --all-targets` 全绿。涉及：
+  `crates/sand-core/src/world.rs`、`data/materials.ron`、
+  `data/scenarios/explosion_splash.ron`、
+  `crates/sand-harness/tests/golden/*.golden`、
+  `docs/superpowers/specs/2026-08-30-m1-particle-layer-design.md`
+  §6.2（新增）/§10/§13 决策记录第 8 条。
+
 ### Fixed
 - **GIF 帧延迟与采样率解耦**（用户目检发现帧率异常）：`render.rs` 原公式 delay = every×100/60（墙钟等速），`--every 100` 时 1.67 秒/帧成幻灯片——M1 验收两张 GIF 即中招。默认仍等速但 clamp [2,10]cs（稀疏采样自动转延时摄影），新增 `--fps` 显式覆盖回放帧率；3 项 `frame_delay` 金值单测；`out/waterfall.gif`、`out/explosion_splash.gif` 已重渲（10cs/帧 ≈ 20 秒）。`crates/sand-harness/src/{render,main}.rs`，commit `d982c70`。
 

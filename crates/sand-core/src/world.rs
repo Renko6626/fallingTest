@@ -6,7 +6,7 @@ use crate::chunk::{Chunk, CHUNK, DirtyRect};
 use crate::dda::CellWalk;
 use crate::fixed::{isqrt, Fx};
 use crate::material::{MaterialTable, Category, MAT_AIR, MAT_WALL};
-use crate::particle::{clamp_speed, MAX_SPEED};
+use crate::particle::clamp_speed;
 use crate::rng;
 
 pub const WALL_SENTINEL: Cell = Cell(MAT_WALL as u32);
@@ -152,6 +152,34 @@ fn emit_jitter(r: u32, jitter: Fx) -> Fx {
 const EXPLODE_ROLL_VX: u32 = 0;
 /// `Op::Explode` 里 vy 抖动用的骰子标号（同上，见 [`EXPLODE_ROLL_VX`]）。
 const EXPLODE_ROLL_VY: u32 = 1;
+/// 每射线能量涨落骰（2026-08-30 用户裁决"方向相关涨落"：完美圆坑不自然）。
+const EXPLODE_ROLL_RAY_POWER: u32 = 2;
+/// 每射线射程涨落骰。
+const EXPLODE_ROLL_RAY_RANGE: u32 = 3;
+
+/// `Op::Explode` 专用 attempt 编码：`stamp` 占高位、骰子标号占**低 2 位**
+/// （射线涨落骰加入后 Explode 有 4 颗骰）。与 [`emit_attempt`]（低 1 位）
+/// 分道扬镳正是 [`EXPLODE_ROLL_VX`] 文档预言的"任一方改动骰子数量不该
+/// 牵连另一方"——本次扩位只作废爆炸场景的 RNG 序列，Emit（瀑布）不动。
+fn explode_attempt(stamp: u8, roll: u32) -> u32 {
+    ((stamp as u32) << 2) | roll
+}
+
+/// 射线涨落幅度分母：涨落量 = `v / EXPLODE_FLUCT_DIV`（即 ±25% 或 −25%）。
+const EXPLODE_FLUCT_DIV: u32 = 4;
+
+/// 确定性整数涨落映射（乘移法，同 [`emit_jitter`] 的数学，作用在 u32 上）：
+/// - `sym = true`：返回 `v + d`，`d ∈ [-q, +q]`（能量：方向间可强可弱）；
+/// - `sym = false`：返回 `v + d`，`d ∈ [-q, 0]`（射程：只缩不涨——
+///   `CellWalk` 的终点是圆周格，无法越过目标延长，故射程涨落取单边）。
+///
+/// 其中 `q = v / EXPLODE_FLUCT_DIV`；结果下限 1（防零能量/零射程退化）。
+fn ray_fluct(v: u32, roll: u32, sym: bool) -> u32 {
+    let q = (v / EXPLODE_FLUCT_DIV) as u64;
+    let span = if sym { 2 * q + 1 } else { q + 1 };
+    let d = ((roll as u64).wrapping_mul(span) >> 32) as i64 - q as i64;
+    ((v as i64) + d).max(1) as u32
+}
 
 /// 溅射速度抖动幅度（spec §6 point 3"调参项"）：`Fx::from_ratio(1, 2)`
 /// 的位模式（写成字面量是因为 `from_ratio` 非 `const fn`，理由同
@@ -159,6 +187,20 @@ const EXPLODE_ROLL_VY: u32 = 1;
 /// 单测钉死等价性）。复用 [`emit_jitter`] 做区间映射——同一套抖动数学，
 /// 只是幅度常量与调用点（stream/salt/attempt）不同。
 const EXPLODE_JITTER: Fx = Fx(0x0000_8000);
+
+/// 爆炸出射速度上限（调参项，2026-08-30 用户目检裁决"粒子更重"：16→8）——
+/// 溅射速度 = `EXPLODE_SPEED × 剩余能量/power`。与 `particle.rs::MAX_SPEED`
+/// （飞行 clamp 上限）解耦：前者管"炸得多猛"的手感，后者是 DDA 步数上界的
+/// 数值纪律，不随手感调。位模式 = `Fx::from_int(8)`（`from_int` 非 `const fn`，
+/// `explode_speed_matches_from_int_eight` 单测钉死等价性）。
+const EXPLODE_SPEED: Fx = Fx(8 << 16);
+
+/// 爆炸冲量的参考密度（2026-08-30 用户裁决"冲量物理"：同一冲量下
+/// v ∝ 1/密度）。出射速度按 `参考密度/材质密度` 缩放；取沙的密度 40 为
+/// 参考 → 沙的系数恒为 1（手感锚点不动），水（密度 16）系数 2.5（受
+/// `clamp_speed` 封顶 ±MAX_SPEED）。密度取 `max(1)` 防御除零（air 不会
+/// 走到溅射路径，纯防御）。
+const REF_BLAST_DENSITY: i32 = 40;
 
 /// 半格偏移（Q16.16 的 0.5）：格坐标 → 格心连续坐标，供爆炸射线的起点/
 /// 落点定位（cell_walk 的 DDA 几何要求连续坐标，格心比格角更安全——见
@@ -264,6 +306,10 @@ fn fire_ray(
     dx: i32,
     dy: i32,
     power: u32,
+    // 本射线最多走过的格数（含爆心格；`u32::MAX` = 不设限，走满到圆周目标）。
+    // 涨落策略在 apply_op（调用方）结算——fire_ray 保持"给定预算走射线"的
+    // 纯原语，白盒测试不受涨落干扰。
+    max_cells: u32,
     stamp: u8,
     fseed: u32,
     op_idx: usize,
@@ -281,7 +327,10 @@ fn fire_ray(
 
     let mut energy = power;
     let salt = op_idx as u32;
-    for (gx, gy) in ray_cells {
+    for (cell_i, (gx, gy)) in ray_cells.enumerate() {
+        if cell_i as u32 >= max_cells {
+            break; // 射程涨落封顶（见 max_cells 参数注释）。
+        }
         if !world.in_bounds(gx, gy) {
             break; // 出界断线，同"撞不可摧毁材料"一样直接停止该射线。
         }
@@ -316,9 +365,13 @@ fn fire_ray(
         }
 
         let speed_ratio = Fx::from_ratio(energy as i32, power as i32);
-        let speed_mag = MAX_SPEED.mul(speed_ratio);
-        let rx = rng::rng_u32(fseed, rng::STREAM_EXPLODE, gx, gy, salt, emit_attempt(stamp, EXPLODE_ROLL_VX));
-        let ry = rng::rng_u32(fseed, rng::STREAM_EXPLODE, gx, gy, salt, emit_attempt(stamp, EXPLODE_ROLL_VY));
+        // 冲量→速度按材质密度缩放（v ∝ 1/m，见 REF_BLAST_DENSITY）：
+        // from_ratio 是确定性整数除法，每摧毁格一次，成本可忽略。
+        let mass_factor =
+            Fx::from_ratio(REF_BLAST_DENSITY, table.density(material).max(1) as i32);
+        let speed_mag = EXPLODE_SPEED.mul(speed_ratio).mul(mass_factor);
+        let rx = rng::rng_u32(fseed, rng::STREAM_EXPLODE, gx, gy, salt, explode_attempt(stamp, EXPLODE_ROLL_VX));
+        let ry = rng::rng_u32(fseed, rng::STREAM_EXPLODE, gx, gy, salt, explode_attempt(stamp, EXPLODE_ROLL_VY));
         let vx = clamp_speed(unit_dx.mul(speed_mag) + emit_jitter(rx, EXPLODE_JITTER));
         let vy = clamp_speed(unit_dy.mul(speed_mag) + emit_jitter(ry, EXPLODE_JITTER));
 
@@ -525,7 +578,24 @@ impl World {
                     // 确定性，但需知悉：拒绝事件计入
                     // `Particles::rejected_total()`，可观测、可断言。
                     for (dx, dy) in circle_offsets(r) {
-                        fire_ray(self, table, x, y, dx, dy, power, stamp, fseed, op_idx, spawns);
+                        // 方向相关涨落（2026-08-30 用户裁决：完美圆坑不自然）：
+                        // 每射线独立掷两骰——能量 ±25%、射程 −25%..0——key 锚点
+                        // 是射线方向 offset (dx,dy)（circle_offsets 保证每 op 内
+                        // 唯一），salt=op_idx 区分同 tick 多爆，attempt 用射线骰
+                        // 编码（explode_attempt，与逐格 vx/vy 骰不同码位）。
+                        // fire_ray 的 speed_ratio / 汽化比较均以涨落后的
+                        // ray_power 为分母——每条射线自洽如一条"额定功率不同"
+                        // 的正常射线，弱射线挖得浅、汽化圈也浅，坑沿与汽化边界
+                        // 一起毛糙。
+                        let salt = op_idx as u32;
+                        let rp = rng::rng_u32(fseed, rng::STREAM_EXPLODE, dx, dy, salt,
+                            explode_attempt(stamp, EXPLODE_ROLL_RAY_POWER));
+                        let rr = rng::rng_u32(fseed, rng::STREAM_EXPLODE, dx, dy, salt,
+                            explode_attempt(stamp, EXPLODE_ROLL_RAY_RANGE));
+                        let ray_power = ray_fluct(power, rp, true);
+                        // 射程按半径取单边涨落再 +1 含爆心格。
+                        let max_cells = ray_fluct(r as u32, rr, false) + 1;
+                        fire_ray(self, table, x, y, dx, dy, ray_power, max_cells, stamp, fseed, op_idx, spawns);
                     }
                 }
             }
@@ -819,9 +889,10 @@ mod tests {
 
     #[test]
     fn fire_ray_speed_decays_monotonically_outward_along_axis() {
-        // power=16、sand cost=2：每摧毁一格衰减 MAX_SPEED*2/16=2.0 格/tick
-        // 的"真值"速度，远大于 EXPLODE_JITTER 的最大抖动摆幅（两次独立抖动
-        // 最坏情况相差 1.0 格/tick），保证断言不受随机抖动噪声干扰。
+        // power=16、sand cost=2：每摧毁一格衰减 EXPLODE_SPEED*2/16=1.0 格/tick
+        // 的"真值"速度，与 EXPLODE_JITTER 的最坏抖动摆幅（1.0 格/tick）持平，
+        // 故单调性断言按**步长 2** 比较（真值差 2.0 > 抖动 1.0），不受噪声干扰。
+        // （EXPLODE_SPEED 16→8 后逐格真值差减半，断言从相邻比较改为隔格比较。）
         let t = test_table();
         let mut w = World::new(1, 1, 0xABC);
         let (cx, cy) = (10, 10);
@@ -830,16 +901,16 @@ mod tests {
         }
         let fseed = rng::frame_seed(w.seed, w.tick);
         let mut spawns = Vec::new();
-        fire_ray(&mut w, &t, cx, cy, 8, 0, 16, 0, fseed, 0, &mut spawns);
+        fire_ray(&mut w, &t, cx, cy, 8, 0, 16, u32::MAX, 0, fseed, 0, &mut spawns);
 
         assert_eq!(spawns.len(), 6, "6 个沙格应全部被摧毁：{spawns:?}");
         for i in 0..6i32 {
             assert_eq!(w.cell(cx + 1 + i, cy).material(), MAT_AIR, "沙格应变 air");
         }
-        for pair in spawns.windows(2) {
+        for i in 0..spawns.len() - 2 {
             assert!(
-                pair[0].vx.0 > pair[1].vx.0,
-                "沿射线向外速度应单调衰减：{:?}",
+                spawns[i].vx.0 > spawns[i + 2].vx.0,
+                "沿射线向外速度应单调衰减（隔格比较）：{:?}",
                 spawns.iter().map(|s| s.vx.0).collect::<Vec<_>>()
             );
         }
@@ -854,7 +925,7 @@ mod tests {
         w.set_cell_stamped(&t, cx + 4, cy, 3, 0); // sand behind wall
         let fseed = rng::frame_seed(w.seed, w.tick);
         let mut spawns = Vec::new();
-        fire_ray(&mut w, &t, cx, cy, 8, 0, 1000, 0, fseed, 0, &mut spawns);
+        fire_ray(&mut w, &t, cx, cy, 8, 0, 1000, u32::MAX, 0, fseed, 0, &mut spawns);
 
         assert_eq!(w.cell(cx + 3, cy).material(), 1, "wall 本身不可摧毁");
         assert_eq!(w.cell(cx + 4, cy).material(), 3, "wall 后方沙格应逐格完好（遮挡）");
@@ -869,7 +940,7 @@ mod tests {
         let mut w = World::new(1, 1, 0);
         let fseed = rng::frame_seed(w.seed, w.tick);
         let mut spawns = Vec::new();
-        fire_ray(&mut w, &t, 10, 10, 8, 0, 5, 0, fseed, 0, &mut spawns);
+        fire_ray(&mut w, &t, 10, 10, 8, 0, 5, u32::MAX, 0, fseed, 0, &mut spawns);
         assert!(spawns.is_empty());
     }
 
@@ -910,7 +981,7 @@ mod tests {
         w.set_cell_stamped(&t, cx, cy, 2, 0);
         let fseed = rng::frame_seed(w.seed, w.tick);
         let mut spawns = Vec::new();
-        fire_ray(&mut w, &t, cx, cy, 1, 0, 255, 0, fseed, 0, &mut spawns);
+        fire_ray(&mut w, &t, cx, cy, 1, 0, 255, u32::MAX, 0, fseed, 0, &mut spawns);
         assert_eq!(spawns.len(), 1, "阈值恰好持平，不应汽化");
         assert_eq!(w.vaporized_total(), 0);
         assert_eq!(w.cell(cx, cy).material(), MAT_AIR, "仍应正常摧毁为 air");
@@ -925,7 +996,7 @@ mod tests {
         w.set_cell_stamped(&t, cx, cy, 3, 0);
         let fseed = rng::frame_seed(w.seed, w.tick);
         let mut spawns = Vec::new();
-        fire_ray(&mut w, &t, cx, cy, 1, 0, 255, 0, fseed, 0, &mut spawns);
+        fire_ray(&mut w, &t, cx, cy, 1, 0, 255, u32::MAX, 0, fseed, 0, &mut spawns);
         assert!(spawns.is_empty(), "越过阈值应汽化，不生成粒子");
         assert_eq!(w.vaporized_total(), 1);
         assert_eq!(w.cell(cx, cy).material(), MAT_AIR, "汽化仍需清空格子（质量蒸发）");
@@ -959,7 +1030,7 @@ mod tests {
         w.set_cell_stamped(&t, cx, cy, 2, 0);
         let fseed = rng::frame_seed(w.seed, w.tick);
         let mut spawns = Vec::new();
-        fire_ray(&mut w, &t, cx, cy, 1, 0, 1000, 0, fseed, 0, &mut spawns);
+        fire_ray(&mut w, &t, cx, cy, 1, 0, 1000, u32::MAX, 0, fseed, 0, &mut spawns);
         assert_eq!(spawns.len(), 1, "缺省阈值下 remaining==power 也不应汽化");
         assert_eq!(w.vaporized_total(), 0);
     }
@@ -1203,5 +1274,101 @@ mod tests {
     #[test]
     fn explode_jitter_matches_from_ratio_one_half() {
         assert_eq!(EXPLODE_JITTER, Fx::from_ratio(1, 2));
+    }
+
+    #[test]
+    fn explode_speed_matches_from_int_eight() {
+        assert_eq!(EXPLODE_SPEED, Fx::from_int(8));
+    }
+
+    #[test]
+    fn ray_fluct_mapping_bounds() {
+        // v=200，q=200/4=50：sym 端点 [150,250]；非 sym 端点 [150,200]。
+        assert_eq!(ray_fluct(200, 0, true), 150);
+        assert_eq!(ray_fluct(200, u32::MAX, true), 250);
+        assert_eq!(ray_fluct(200, 0, false), 150);
+        assert_eq!(ray_fluct(200, u32::MAX, false), 200);
+        // q=0（v<4 整除截断）：无涨落；下限保护恒 ≥1。
+        assert_eq!(ray_fluct(3, 0, true), 3);
+        assert_eq!(ray_fluct(1, 0, true), 1);
+    }
+
+    #[test]
+    fn fire_ray_max_cells_caps_ray_length() {
+        // 8 格沙、能量充足，max_cells=4（含爆心格）→ 只摧毁前 3 格沙。
+        let t = test_table();
+        let mut w = World::new(1, 1, 0);
+        let (cx, cy) = (10, 10);
+        for dx in 1..=8 {
+            w.set_cell_stamped(&t, cx + dx, cy, 3, 0);
+        }
+        let fseed = rng::frame_seed(w.seed, w.tick);
+        let mut spawns = Vec::new();
+        fire_ray(&mut w, &t, cx, cy, 9, 0, 1000, 4, 0, fseed, 0, &mut spawns);
+        assert_eq!(spawns.len(), 3, "max_cells=4 含爆心，应只摧毁 3 格沙");
+        assert_eq!(w.cell(cx + 3, cy).material(), MAT_AIR);
+        assert_eq!(w.cell(cx + 4, cy).material(), 3, "第 4 格沙应因射程封顶幸存");
+    }
+
+    #[test]
+    fn explode_crater_is_not_perfectly_circular() {
+        // 方向涨落（能量 ±25% + 射程 −25%..0）应让四个轴向的摧毁半径不全等。
+        let t = test_table();
+        let mut w = World::new(2, 2, 0x77);
+        for y in 32..96 {
+            for x in 32..96 {
+                w.set_cell_stamped(&t, x, y, 3, 0);
+            }
+        }
+        let fseed = rng::frame_seed(w.seed, w.tick);
+        let mut spawns = Vec::new();
+        // r=16、power=1000：能量远超 16 格沙的成本，射程涨落是约束项。
+        w.apply_op(&t, &Op::Explode { x: 64, y: 64, r: 16, power: 1000 }, 0, fseed, 0, &mut spawns);
+        let extent = |sx: i32, sy: i32| -> i32 {
+            let mut d = 0;
+            while w.cell(64 + sx * (d + 1), 64 + sy * (d + 1)).material() == MAT_AIR {
+                d += 1;
+            }
+            d
+        };
+        let exts = [extent(1, 0), extent(-1, 0), extent(0, 1), extent(0, -1)];
+        assert!(
+            exts.iter().any(|e| *e != exts[0]),
+            "四轴摧毁半径全等 = 完美圆，方向涨落未生效：{exts:?}"
+        );
+        // 涨落有界：射程最短 3/4 r，最长 r。
+        for e in exts {
+            assert!((12..=16).contains(&e), "轴向半径 {e} 超出 [12,16] 涨落界：{exts:?}");
+        }
+    }
+
+    #[test]
+    fn blast_mass_factor_golden_values() {
+        // 参考密度 40：沙（40）系数恒 1.0——手感锚点；水（16）2.5 = 0x28000。
+        assert_eq!(Fx::from_ratio(REF_BLAST_DENSITY, 40), Fx::from_int(1));
+        assert_eq!(Fx::from_ratio(REF_BLAST_DENSITY, 16), Fx(0x0002_8000));
+    }
+
+    #[test]
+    fn fire_ray_lighter_material_launches_faster_than_heavier() {
+        // 冲量物理（v ∝ 1/密度）：同 power、同距离，水（密度 16）出射速度
+        // 必须高于沙（密度 40）。水 8×2.5=20 会被 clamp 到 16，沙 ≤8+抖动 0.5，
+        // 差距远大于抖动摆幅，断言稳定。
+        let t = test_table();
+        let mut w = World::new(1, 1, 0xD5);
+        let (cx, cy) = (10, 10);
+        w.set_cell_stamped(&t, cx + 1, cy, 3, 0); // sand
+        w.set_cell_stamped(&t, cx - 1, cy, 2, 0); // water（test_table 里 id 自查为准）
+        let fseed = rng::frame_seed(w.seed, w.tick);
+        let mut spawns = Vec::new();
+        fire_ray(&mut w, &t, cx, cy, 1, 0, 255, u32::MAX, 0, fseed, 0, &mut spawns);
+        fire_ray(&mut w, &t, cx, cy, -1, 0, 255, u32::MAX, 0, fseed, 0, &mut spawns);
+        assert_eq!(spawns.len(), 2, "沙、水各一格应各溅射一颗：{spawns:?}");
+        let sand_speed = spawns[0].vx.0.abs();
+        let water_speed = spawns[1].vx.0.abs();
+        assert!(
+            water_speed > sand_speed,
+            "轻材质应飞更快：water |vx|={water_speed:#x} vs sand |vx|={sand_speed:#x}"
+        );
     }
 }

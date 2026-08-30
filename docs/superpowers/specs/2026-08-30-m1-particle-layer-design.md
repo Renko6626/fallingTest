@@ -198,6 +198,46 @@ tick 的 `scheduler::step` 才会被合并进 `dirty` 生效——粒子落格�
   `waterfall_ci` 无爆炸，状态哈希逐位不变（重录前 diff 验证，证明改动只
   影响爆炸路径）。
 
+### 6.2 手感迭代四项（用户目检裁决，2026-08-30）
+
+M1 终审后针对 `explosion_splash.ron` 的多轮实机目检，落定四项调参 + 一项涨落
+机制（均已过 core 102 项测试 + clippy，实现见 `crates/sand-core/src/world.rs`
+的 `fire_ray`/`apply_op` Explode 分支）：
+
+1. **`EXPLODE_SPEED` 16→8**（"粒子更重"裁决）：溅射出射速度上限从
+   `Fx::from_int(16)` 降到 `Fx::from_int(8)`——原速度手感偏"轻飘"，目检后
+   裁定砍半（`world.rs::EXPLODE_SPEED`）。与 `particle.rs::MAX_SPEED`
+   （飞行 clamp 上限，管数值纪律）解耦，纯手感调参项。
+2. **密度冲量缩放**（"冲量物理"裁决）：同一冲量下出射速度应与材质密度成
+   反比（`v ∝ 1/density`），而非此前全材质等速。新增参考密度
+   `REF_BLAST_DENSITY = 40`（取沙的密度为锚点，沙的缩放系数恒为 1.0，手感
+   不动），出射速度额外乘 `mass_factor = REF_BLAST_DENSITY / density(material)`
+   （`Fx::from_ratio`，整数除法）；水（密度 16）系数 2.5，会被 `clamp_speed`
+   封顶（`world.rs::fire_ray`，单测 `blast_mass_factor_golden_values`/
+   `fire_ray_lighter_material_launches_faster_than_heavier`）。
+3. **射线方向涨落**（"完美圆坑不自然"裁决）：此前每条射线严格按
+   `power`/`r` 结算，坑形是完美 Bresenham 圆——目检认为不自然。改为每条
+   射线独立掷两颗骰：能量涨落 `±25%`（`ray_fluct(power, ., sym=true)`）、
+   射程涨落 `−25%..0`（`ray_fluct(r, ., sym=false)`，只缩不涨——`CellWalk`
+   终点是圆周格，无法越过延长）；涨落分母 `EXPLODE_FLUCT_DIV = 4`。
+   骰子锚点是射线方向 `(dx, dy)`（`circle_offsets` 保证每次 `Op::Explode`
+   内唯一），`salt = op_idx` 区分同 tick 多次爆炸。
+   为容纳这两颗新骰，`explode_attempt` 编码从 `emit_attempt` 的"高位
+   stamp + 低 1 位骰子标号"扩为"高位 stamp + **低 2 位**骰子标号"（4 颗骰：
+   vx/vy/ray_power/ray_range）——`Op::Emit`/`Op::Explode` 的 attempt 编码
+   各自独立演化，本次扩位只作废爆炸场景的 RNG 序列，不牵连 Emit（瀑布）
+   （`world.rs::explode_attempt` 文档、单测
+   `explode_crater_is_not_perfectly_circular`）。
+4. **汽化阈值现值调整**：`data/materials.ron` 里 `sand.vaporize_threshold`
+   由 0.7 上调到 **0.95**（沙更耐炸，近心汽化圈显著收窄）；`water` 维持
+   **0.4** 不变。§6.1 判定逻辑本身未变，只是数据表取值随目检结果迭代。
+
+**场景 tick 口径同步收窄**：`explosion_splash.ron` 从 `ticks: 20000` /
+`script Every(from: 500, until: 19500, step: 1000)`（19 炮）改为
+`ticks: 8000` / `Every(from: 500, until: 7500, step: 1000)`（8 炮）——
+迭代阶段 2 万 tick 单次渲染/回放耗时过长，8000 tick 已足够覆盖"挖坑 + 溅射
++ 脱格 + 水面重新摊平"的完整观察窗口。
+
 ## 7. 发射器：`Op::Emit` + 场景 script
 
 core 只认 Op；"发射器"完全由既有场景 script 机制表达，**harness 零新概念**：
@@ -245,7 +285,7 @@ charter §11 翻案 4 纪律。
 | 场景 | 几何 | 用途 |
 |---|---|---|
 | `waterfall.ron` | 高处 Emit 水 → 盆地，2 万 tick | SyncTest 验收 + golden |
-| `explosion_splash.ron` | 沙墙 + 水池 + script 定期 Explode，2 万 tick | SyncTest 验收 + golden |
+| `explosion_splash.ron` | 沙丘 + 水池 + script 定期 Explode，8000 tick（8 炮） | SyncTest 验收 + golden |
 | `particle_stress.ron` | 持续高 rate Emit 顶满 64k | bench 专用 |
 
 **CI SyncTest**：小图版粒子场景并入既有六配置矩阵。
@@ -279,3 +319,4 @@ charter §11 翻案 4 纪律。
 | 5 | 哈希格式变更 → golden 按 §9 两步程序重录 | §9 |
 | 6 | 废除"全占转悬浮"，改五邻格全占后向上兜底搜索、搜到世界顶仍无 air 则出界 | §5；Task 4 评审 2026-08-30 修复轮 1 实证活锁（C1），悬浮路径在静态堆场景两 tick 死循环 |
 | 7 | 爆炸引入近心汽化 `vaporize_threshold`（每材质字段，严格质量守恒放宽为"守恒 + 汽化计数"）：射线剩余能量比例超过材质阈值即删除、不生成粒子 | §6.1；用户裁决 2026-08-30，观感诉求"近心没了、外圈飞溅" |
+| 8 | 本轮手感迭代四项：`EXPLODE_SPEED` 16→8（更重）、密度冲量缩放 `v∝1/密度`（`REF_BLAST_DENSITY=40`）、射线方向涨落 ±25%/−25%（`explode_attempt` 扩位到低 2 位，不牵连 `emit_attempt`）、`sand.vaporize_threshold` 0.7→0.95（`water` 0.4 不变）；`explosion_splash.ron` 同步收窄 20000→8000 tick（19 炮→8 炮） | §6.2；用户目检迭代裁决 2026-08-30（多轮实机渲染观察后逐项定稿） |

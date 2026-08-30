@@ -1,5 +1,5 @@
 // 爆炸溅射场景（M1 验收，spec §6/§10）：640×384，沙丘 + 两侧水池 + script
-// 定期 Op::Explode（19 次，tick 500..18500，step 1000）。2 万 tick：验收 M1
+// 定期 Op::Explode（8 次，tick 500..7500，step 1000）。8000 tick：验收 M1
 // 的"挖坑 + 溅射 + 脱格"三合一路径，长程反复观察沙丘被逐步炸矮、溅落物
 // 落水、水面重新摊平。
 //
@@ -9,7 +9,7 @@
 //      侧向/斜上仍撞壁——只要沙体是 440 宽厚板，侧向永远是墙；
 //   3. 改沙丘 + 爆点在丘顶：侧向射线 ~30 格即出丘壁，粒子带 ~90% 速度
 //      入开阔空气，抛物线落两侧水池——经典"火山口喷发"画面。
-// 不进 CI（同 waterfall.ron 先例，20000 tick 太重）；CI + golden 用小图
+// 不进 CI（同 waterfall.ron 先例，8000 tick 仍偏重）；CI + golden 用小图
 // 同构版 `explosion_ci.ron`。
 // 用法：
 //   sand-harness synctest data/scenarios/explosion_splash.ron          （六配置验收）
@@ -20,7 +20,7 @@ Scenario(
     name: "explosion_splash",
     world: (10, 6),
     seed: 0xE270_10DE,
-    ticks: 20000,
+    ticks: 8000,
     setup: [
         Fill(material: "wall", x0: 0, y0: 360, x1: 639, y1: 383),    // 盆地底
         Fill(material: "wall", x0: 0, y0: 100, x1: 7, y1: 359),      // 左壁
@@ -34,7 +34,10 @@ Scenario(
         Fill(material: "water", x0: 421, y0: 330, x1: 631, y1: 359),
     ],
     script: [
-        Every(from: 500, until: 19500, step: 1000,
-              op: Explode(x: 320, y: 210, r: 60, power: 600)),
+        Every(from: 500, until: 7500, step: 1000,
+              // power 与 blast_cost 联动决定汽化圈：沙路径剩余比例 = (power−2d)/power，
+              // power=200 → d<30 汽化（>0.7）、30–50 溅射（速度 0.4–0.7×MAX_SPEED）。
+              // power=600 时边缘剩余比例仍 0.8 > 沙阈值，全半径汽化、零溅射（已踩过）。
+              op: Explode(x: 320, y: 210, r: 50, power: 200)),
     ],
 )

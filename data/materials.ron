@@ -22,7 +22,7 @@
     materials: [
         (id: 0, name: "air",   category: Static, density: 0,   color: (16, 16, 24),    blast_cost: 0),
         (id: 1, name: "wall",  category: Static, density: 100, color: (110, 106, 118), blast_cost: 4294967295),
-        (id: 2, name: "sand",  category: Powder, density: 40,  color: (214, 176, 96),  blast_cost: 2, vaporize_threshold: 0.7),
+        (id: 2, name: "sand",  category: Powder, density: 40,  color: (214, 176, 96),  blast_cost: 2, vaporize_threshold: 0.95),
         (id: 3, name: "water", category: Liquid, density: 16,  color: (48, 108, 220),  blast_cost: 1, vaporize_threshold: 0.4),
     ],
 )
