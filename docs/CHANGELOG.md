@@ -38,6 +38,20 @@
   必须彼此不同"纪律）；I2——场景指纹从"仅源字节哈希"改为 `combine(源字节哈希, 已解析 Fx 字段折叠)`，
   堵住"源字节相同但跨平台解析出不同 Fx"的假设性分叉。
 
+### Fixed
+- **M1 终审修复波**（详见 `.superpowers/sdd/2026-08-30-m1-particle-layer-plan/final-fix-report.md`，
+  仿真语义零改动，全部落在 harness 校验/注释/文档）：① `crates/sand-harness/src/scenario.rs`
+  `resolve_op` 的 `Op::Explode` 分支补加载期范围校验——`x`/`y` 需 `|v| < 32768`（`Fx::from_int`
+  安全域）、`r ∈ [1, 32767]`、`power ∈ [1, i32::MAX as u32]`，越界 `Err`（此前纯透传，越界会
+  静默腐化为 wrapping/翻号），新增 2 条拒绝测试；② `crates/sand-core/tests/common/mod.rs` 订正
+  失实注释（`explode_behavior.rs` 不存在，测试实际内联在 `world.rs`）；③ `crates/sand-core/src/world.rs`
+  `Op::Explode` 应用处补注释：格子已清 air 后若 spawn 队列 drain 被 `MAX_PARTICLES` 拒绝，该质量
+  永久丢失（计入 `rejected_total`），非 bug 但需知悉；④ `docs/superpowers/specs/2026-08-30-m1-particle-layer-design.md`
+  §4 补充实际执行位置：粒子相在 `Sim::step` 里位于 `scheduler::step`（网格四相 + tick 自增 +
+  脏矩形交换）**之后**执行，落格唤醒经 `next_dirty` 于下一 tick 生效——既定语义，SyncTest 已覆盖，
+  供 M2 插入场层时参考。`cargo test --workspace` 122→**124** 项全绿，`cargo clippy --workspace
+  --all-targets` 零警告，既有 golden/SyncTest 零回归。
+
 - **M1 Task 7 完成：验收与收尾**。SyncTest 验收（release，`--threads 8`，六配置 = {1,8}线程 ×
   {Full,ChunkSleep,LiveRect}）：`waterfall.ron` 2 万 tick 零分叉（`scenario_fp 39575dfa5dfed750`，
   实跑 577.8s）；`explosion_splash.ron` 2 万 tick 零分叉（`scenario_fp f229c61b5deb0328`，实跑

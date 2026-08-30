@@ -472,6 +472,17 @@ impl World {
                     // fire_ray 文档：坐标本身已是天然唯一键，op_idx 只需
                     // 区分同 tick 内不同 Op::Explode，charter §11 翻案 4 +
                     // Task 5 I1 同款纪律）。
+                    //
+                    // 质量守恒缺口（终审观察，非 bug）：`fire_ray` 对每个命中
+                    // 格先 `set_cell_stamped(.., MAT_AIR, ..)` 清格，再把同一
+                    // 份质量以 `SpawnRequest` 追加进 `spawns`；`spawns` 之后
+                    // 由调用方（`Sim::step`/`apply_setup`）drain 进
+                    // `Particles::spawn`。若彼时粒子池已在 `MAX_PARTICLES`
+                    // 上限，`spawn` 会确定性拒绝——格子已经变 air，粒子却没能
+                    // 生成，这份质量永久丢失（不返还、不回滚已清的格）。两端
+                    // 状态一致（drain 序定序、拒绝条件是纯函数），不破坏
+                    // 确定性，但需知悉：拒绝事件计入
+                    // `Particles::rejected_total()`，可观测、可断言。
                     for (dx, dy) in circle_offsets(r) {
                         fire_ray(self, table, x, y, dx, dy, power, stamp, fseed, op_idx, spawns);
                     }

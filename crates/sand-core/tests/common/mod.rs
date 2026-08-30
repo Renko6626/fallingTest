@@ -6,8 +6,10 @@ pub const SAND: u8 = 2;
 pub const WATER: u8 = 3;
 
 pub fn test_table() -> MaterialTable {
-    // blast_cost 取 spec §6 的口径值（air 0 / water 1 / sand 2 / wall 免疫），
-    // 供本文件之外的爆炸行为测试（`explode_behavior.rs`）直接复用同一张表。
+    // blast_cost 取 spec §6 的口径值（air 0 / water 1 / sand 2 / wall 免疫）。
+    // 爆炸行为测试并未独立成 `explode_behavior.rs` 文件，而是内联在
+    // `crates/sand-core/src/world.rs` 的 `#[cfg(test)] mod tests` 里——本表
+    // 供本文件之外、复用同一材料语义的测试模块直接调用。
     let def = |id: u8, name: &str, category: Category, density: u16, blast_cost: u32| MaterialDef {
         id,
         name: name.into(),

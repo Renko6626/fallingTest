@@ -99,6 +99,18 @@ pub struct Particles {
    - **d. 保序压缩**：移除 Land/Gone 者。
 4. 封帧哈希含粒子层（§9）。
 
+**实际执行位置说明**（终审观察，`crates/sand-core/src/lib.rs:109` `Sim::step`）：
+上面的步骤编号是管线**语义**顺序，但代码里粒子相（3.a–3.d，`particle::advance`）
+调用点在 `scheduler::step` **之后**——即网格四相跑完、`tick += 1` 已自增、且
+`chunk.dirty = chunk.next_dirty.take()` 的脏矩形交换已发生（`scheduler.rs:103,105`）
+之后才执行。因此粒子落格时对 `next_dirty` 的标记（`world.rs` 落格写入路径，
+经 `set_cell_stamped`）落在**已经清空过的**下一轮 `next_dirty` 里，要到下一个
+tick 的 `scheduler::step` 才会被合并进 `dirty` 生效——粒子落格唤醒周边网格格子
+天然带一 tick 延迟，不是本 tick 内网格四相能看见的。这一时序是既定语义、
+不是 bug：六套配置的 SyncTest（M1 Task 3/4/6 commit）逐 tick 哈希比对已覆盖
+并锁定这一行为。M2 插入场层（pull 场读网格/粒子状态）时，此处的先后关系与
+一 tick 延迟是既有事实，不要按步骤编号的书写顺序假设"同 tick 生效"。
+
 ## 5. DDA 与落格
 
 `dda.rs`（或并入 particle.rs，实现时定）：

@@ -186,7 +186,33 @@ fn resolve_op(spec: &OpSpec, table: &MaterialTable) -> Result<Op, String> {
                 jitter: jitter_fx,
             }
         }
-        OpSpec::Explode { x, y, r, power } => Op::Explode { x: *x, y: *y, r: *r, power: *power },
+        OpSpec::Explode { x, y, r, power } => {
+            // 加载期范围校验（终审修复波）：`Op::Explode` 是纯整数签名，不经
+            // quantize_fx，但 core 侧仍会静默腐化越界输入——`fire_ray` 用
+            // `Fx::from_int(x)`/`Fx::from_int(y)` 把爆心转成 Fx（world.rs
+            // :269），`|v| >= 32768` 时左移 16 位溢出 i32、静默 wrapping；
+            // `power as i32`（world.rs :289 `speed_ratio` 分母）在
+            // `power > i32::MAX` 时静默翻号。两端一致腐化不破坏确定性
+            // （SyncTest 不会报警），但把配置错误伪装成合法输入一路带进
+            // 仿真，属静默垃圾语义——体例仿 MAX_EMIT_JITTER_RAW，在加载期
+            // 拦住而非留给运行期。
+            if x.unsigned_abs() >= 32768 || y.unsigned_abs() >= 32768 {
+                return Err(format!(
+                    "Explode 坐标越界：(x={x}, y={y})，需满足 |x|<32768 且 |y|<32768\
+                     （Fx::from_int 的安全域）"
+                ));
+            }
+            if *r < 1 || *r > 32767 {
+                return Err(format!("Explode 半径越界：r={r}，需 ∈ [1, 32767]"));
+            }
+            if *power < 1 || *power > i32::MAX as u32 {
+                return Err(format!(
+                    "Explode power 越界：power={power}，需 ∈ [1, {}]",
+                    i32::MAX as u32
+                ));
+            }
+            Op::Explode { x: *x, y: *y, r: *r, power: *power }
+        }
     })
 }
 
@@ -348,6 +374,38 @@ mod tests {
             Op::Explode { x, y, r, power } => assert_eq!((x, y, r, power), (100, 50, 12, 40)),
             other => panic!("期望 Op::Explode，实际 {other:?}"),
         }
+    }
+
+    // ==================== resolve_op：Explode 加载期范围校验（终审修复波）====================
+
+    #[test]
+    fn resolve_op_rejects_explode_radius_out_of_range() {
+        let t = table_with_water();
+        assert!(
+            resolve_op(&OpSpec::Explode { x: 0, y: 0, r: 0, power: 10 }, &t).is_err(),
+            "r=0（低于下限 1）必须被拒绝"
+        );
+        assert!(
+            resolve_op(&OpSpec::Explode { x: 0, y: 0, r: 32768, power: 10 }, &t).is_err(),
+            "r=32768（超出上限 32767）必须被拒绝"
+        );
+    }
+
+    #[test]
+    fn resolve_op_rejects_explode_power_out_of_range() {
+        let t = table_with_water();
+        assert!(
+            resolve_op(&OpSpec::Explode { x: 0, y: 0, r: 1, power: 0 }, &t).is_err(),
+            "power=0（低于下限 1）必须被拒绝"
+        );
+        assert!(
+            resolve_op(
+                &OpSpec::Explode { x: 0, y: 0, r: 1, power: i32::MAX as u32 + 1 },
+                &t
+            )
+            .is_err(),
+            "power > i32::MAX（`power as i32` 会静默翻号）必须被拒绝"
+        );
     }
 
     // ==================== MatSpec：blast_cost 缺省 1（spec §6）====================
