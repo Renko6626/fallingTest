@@ -7,6 +7,9 @@
 
 ## 2026-08-30
 
+### Proposed
+- `docs/superpowers/specs/2026-08-30-m1-particle-layer-design.md`：M1 粒子层实现级设计（brainstorming 全节口头批准，待用户过目 spec）。要点：手写 Q16.16 定点（用户裁决维持总纲 §6，浮点四雷区论证入 spec §2）、SoA 顺序即 id 序、并行积分 + 串行按 id 提交、DDA 阻挡一视同仁、**爆炸采 Noita 射线模型**（wiki 查证：ray energy 逐格消耗 + durability 门槛，遮挡免费涌现——替代圆盘扫描）、发射器 = script Every + Op::Emit 零新概念、哈希格式变更 golden 两步重录程序、动工前落 `docs/perf/` 正式基线。
+
 ### Changed
 - **M1 粒子层范围裁决（用户批准，brainstorming 进行中）**：M1 走**最小闭环**——粒子来源 = 场景发射器（瀑布）+ 爆炸 Op（半径内网格 cell 轰成带外向速度的粒子，即真实脱格路径），Layer G 语义零改动、golden 不作废；DDA / 串行按 id 落格 / 64k 容量限流照总纲。**Layer G 速度积分**（格内移速 ≤4、超限自然脱格——总纲 §4 Layer G/P 衔接的原文语义）**后置为 M1 之后的独立提案**：它直接顶在 r≤16 并行安全论证上，须单独立项、过 §11、跑 SyncTest；此为分期实施而非翻案。依据：Noita 实为"网格速度积分 + 脱格粒子"双系统（官方 32px/帧上限锚点 `docs/reference/noita-deep-dive.md:200`、GDC 原话同文 208-210），网格速度是迟早要还的债，记账不弃账。O3 粉末惯性同理不入 M1（一次只动一个语义层，M0 tick-583 教训）。M1 动工前先落 `docs/perf/` 正式 bench 基线。`docs/README.md` 优先队列同步。
 
