@@ -5,6 +5,13 @@
 pub const MAT_AIR: u8 = 0;
 pub const MAT_WALL: u8 = 1;
 
+/// `blast_cost` 哨兵值：代表"当前简化版爆炸免疫"（spec §6：M1 里 wall 的
+/// `blast_cost`），任何有限 `power` 都无法满足 `energy >= cost`——射线撞上
+/// 这类材料必然断线，绝不摧毁。`u32::MAX` 而非某个"足够大"的有限值：语义
+/// 上就是"无限"，不依赖"场景 power 不会超过某个界"这类隐含假设。
+/// M2 反应表引入 durability/hardness 后此字段语义细化替换（设计 §12）。
+pub const BLAST_COST_INFINITE: u32 = u32::MAX;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Category {
     Static,
@@ -19,6 +26,11 @@ pub struct MaterialDef {
     pub category: Category,
     pub density: u16,
     pub color: (u8, u8, u8),
+    /// 爆炸射线逐格能量消耗（spec §6）：air 0、water 1、sand 2、wall
+    /// [`BLAST_COST_INFINITE`]。RON 缺省 1（`sand-harness::scenario::MatSpec`
+    /// 的 serde 默认），字段本身在 core 侧不做取值校验——错误配置的后果只是
+    /// 打出手感不对的爆炸，不影响确定性红线。
+    pub blast_cost: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -74,6 +86,11 @@ impl MaterialTable {
     pub fn color(&self, id: u8) -> (u8, u8, u8) {
         self.defs[id as usize].color
     }
+
+    /// 爆炸射线逐格能量消耗（spec §6）；[`BLAST_COST_INFINITE`] 代表免疫。
+    pub fn blast_cost(&self, id: u8) -> u32 {
+        self.defs[id as usize].blast_cost
+    }
 }
 
 #[cfg(test)]
@@ -81,7 +98,7 @@ mod tests {
     use super::*;
 
     fn def(id: u8, name: &str, category: Category, density: u16) -> MaterialDef {
-        MaterialDef { id, name: name.into(), category, density, color: (0, 0, 0) }
+        MaterialDef { id, name: name.into(), category, density, color: (0, 0, 0), blast_cost: 1 }
     }
 
     #[test]
@@ -102,5 +119,22 @@ mod tests {
     fn rejects_gap_and_wrong_sentinels() {
         assert!(MaterialTable::new(vec![def(0, "air", Category::Static, 0), def(2, "sand", Category::Powder, 40)]).is_err());
         assert!(MaterialTable::new(vec![def(0, "wall", Category::Static, 0), def(1, "air", Category::Static, 0)]).is_err());
+    }
+
+    // ==================== blast_cost（M1 Task 6）====================
+
+    #[test]
+    fn blast_cost_accessor_returns_declared_value_including_infinite_sentinel() {
+        let mk = |id, name, cost| MaterialDef {
+            id,
+            name: String::from(name),
+            category: Category::Static,
+            density: 0,
+            color: (0, 0, 0),
+            blast_cost: cost,
+        };
+        let t = MaterialTable::new(vec![mk(0, "air", 0), mk(1, "wall", BLAST_COST_INFINITE)]).unwrap();
+        assert_eq!(t.blast_cost(0), 0);
+        assert_eq!(t.blast_cost(1), BLAST_COST_INFINITE);
     }
 }

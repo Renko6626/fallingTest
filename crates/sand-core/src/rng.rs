@@ -29,6 +29,18 @@ pub const STREAM_DIAG: u32 = 0;
 /// charter §11 翻案 4"同帧同格多骰不同参数"的纪律。
 pub const STREAM_EMIT: u32 = 1;
 
+/// `Op::Explode` 溅射速度抖动流（spec §6/§8，M1 Task 6）。调用点：
+/// `world.rs::World::apply_op` 的 `Op::Explode` 分支——`(x, y)` 直接用
+/// **被摧毁格自身的绝对坐标**（不像 `Op::Emit` 那样共享单一发射点，故不需要
+/// 逐粒子的 `salt = i` 维度：一次 Explode 应用内，每个格子至多被摧毁一次，
+/// 坐标天然唯一），`salt = op_idx`（区分同 tick 内多个 `Op::Explode`，charter
+/// §11 翻案 4 + Task 5 评审 I1 同款教训——即便两个爆炸参数完全相同、圆心重合，
+/// 也不能让同一格子在假设性的"重算"路径上撞出相同抖动，op_idx 维度是免费的
+/// 防御），`attempt` 复用 `emit_attempt(stamp, roll)` 的编码（`stamp` 区分
+/// setup 与 tick 0 首个 step 共享 fseed 的相位撞车，`roll` 区分 vx/vy 两骰，
+/// 与 `Op::Emit` 同一套 `EXPLODE_ROLL_VX`/`EXPLODE_ROLL_VY` 常量）。
+pub const STREAM_EXPLODE: u32 = 2;
+
 pub fn squirrel5(pos: u32, seed: u32) -> u32 {
     let mut m = pos.wrapping_mul(N1);
     m = m.wrapping_add(seed);

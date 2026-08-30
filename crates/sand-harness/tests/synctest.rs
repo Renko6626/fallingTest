@@ -20,3 +20,14 @@ fn waterfall_ci_six_configs_zero_divergence() {
     runner::synctest(&sc, &table, 4, sc.ticks)
         .unwrap_or_else(|e| panic!("waterfall_ci 六配置 SyncTest 分叉：{e}"));
 }
+
+/// `Op::Explode` 版本（M1 Task 6）：与上一条互补——覆盖爆炸射线/圆周生成/
+/// 溅射粒子在六配置（线程数 × 扫描模式）下的确定性，RON→整数字段透传路径
+/// （`Op::Explode` 无需量化，见 `scenario::resolve_op`）本身也受此测试覆盖。
+#[test]
+fn explosion_ci_six_configs_zero_divergence() {
+    let (table, _materials_fp) = load_materials(&repo_path("data/materials.ron")).unwrap();
+    let sc = load_scenario(&repo_path("data/scenarios/explosion_ci.ron"), &table).unwrap();
+    runner::synctest(&sc, &table, 4, sc.ticks)
+        .unwrap_or_else(|e| panic!("explosion_ci 六配置 SyncTest 分叉：{e}"));
+}

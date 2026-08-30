@@ -1,0 +1,22 @@
+// 爆炸场景 CI 小图版（同 explosion_splash.ron 几何族，缩到 CI 尺度）：
+// 256×192，沙墙 + 水池 + script 定期 Op::Explode。1200 tick：4 次定时爆炸
+// （tick 100/400/700/1000），其后留 200 tick 沉降尾段。
+// 并入 harness 六配置 CI SyncTest（`crates/sand-harness/tests/synctest.rs`）+
+// golden 入库（`crates/sand-harness/tests/golden/explosion_ci.golden`）。
+Scenario(
+    name: "explosion_ci",
+    world: (4, 3),
+    seed: 0xE270_10DE,
+    ticks: 1200,
+    setup: [
+        Fill(material: "wall", x0: 0, y0: 184, x1: 255, y1: 191),   // 底
+        Fill(material: "wall", x0: 0, y0: 40, x1: 7, y1: 183),      // 左壁
+        Fill(material: "wall", x0: 248, y0: 40, x1: 255, y1: 183),  // 右壁
+        Fill(material: "sand", x0: 60, y0: 60, x1: 195, y1: 160),   // 沙墙块（爆炸目标）
+        Fill(material: "water", x0: 60, y0: 170, x1: 195, y1: 183), // 水池（承接溅落）
+    ],
+    script: [
+        Every(from: 100, until: 1100, step: 300,
+              op: Explode(x: 128, y: 110, r: 18, power: 220)),
+    ],
+)

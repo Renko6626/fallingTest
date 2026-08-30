@@ -42,3 +42,8 @@ fn golden_mixed() {
 fn golden_waterfall_ci() {
     check("data/scenarios/waterfall_ci.ron", "crates/sand-harness/tests/golden/waterfall_ci.golden");
 }
+
+#[test]
+fn golden_explosion_ci() {
+    check("data/scenarios/explosion_ci.ron", "crates/sand-harness/tests/golden/explosion_ci.golden");
+}

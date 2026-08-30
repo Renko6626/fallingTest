@@ -1,10 +1,17 @@
 // 材料表（P5：数据即确定性输入，内容哈希入指纹）。
 // id 显式声明，禁依赖声明顺序；air 必须 id=0，wall 必须 id=1（core 校验）。
+//
+// blast_cost（M1 Task 6，spec §6）：Op::Explode 射线逐格能量消耗。
+// air 0 / water 1 / sand 2 / wall 4294967295（u32::MAX 哨兵，代表 M1 简化版
+// 爆炸免疫——见 sand-core::material::BLAST_COST_INFINITE；M2 反应表引入
+// durability/hardness 后替换，设计 §12）。字段新增非语义变更：既有场景的
+// 网格演化逻辑不受影响，但本文件内容哈希（materials_fp）随之改变——受影响
+// golden 的 materials_fp 行已按 spec §9 程序重录（状态哈希序列本身验证不变）。
 (
     materials: [
-        (id: 0, name: "air",   category: Static, density: 0,   color: (16, 16, 24)),
-        (id: 1, name: "wall",  category: Static, density: 100, color: (110, 106, 118)),
-        (id: 2, name: "sand",  category: Powder, density: 40,  color: (214, 176, 96)),
-        (id: 3, name: "water", category: Liquid, density: 16,  color: (48, 108, 220)),
+        (id: 0, name: "air",   category: Static, density: 0,   color: (16, 16, 24),    blast_cost: 0),
+        (id: 1, name: "wall",  category: Static, density: 100, color: (110, 106, 118), blast_cost: 4294967295),
+        (id: 2, name: "sand",  category: Powder, density: 40,  color: (214, 176, 96),  blast_cost: 2),
+        (id: 3, name: "water", category: Liquid, density: 16,  color: (48, 108, 220),  blast_cost: 1),
     ],
 )

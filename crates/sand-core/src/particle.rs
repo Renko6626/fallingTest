@@ -189,8 +189,10 @@ pub(crate) enum Outcome {
     Gone,
 }
 
-/// 逐轴速度 clamp 到 `±MAX_SPEED`。
-fn clamp_speed(v: Fx) -> Fx {
+/// 逐轴速度 clamp 到 `±MAX_SPEED`。`pub(crate)`（M1 Task 6 起）：爆炸溅射
+/// 速度合成（方向 × 衰减 + 抖动）复用同一 clamp，避免两处独立实现同一条
+/// 数值纪律（spec §6 point 3："速度分量最终 clamp 到 ±MAX_SPEED"）。
+pub(crate) fn clamp_speed(v: Fx) -> Fx {
     if v > MAX_SPEED {
         MAX_SPEED
     } else if v < -MAX_SPEED {
@@ -437,18 +439,19 @@ mod tests {
     // ==================== 串行提交：冲突消解（spec §5）====================
 
     fn test_table() -> MaterialTable {
-        use crate::material::{Category, MaterialDef};
-        let def = |id: u8, name: &str, category: Category, density: u16| MaterialDef {
+        use crate::material::{Category, MaterialDef, BLAST_COST_INFINITE};
+        let def = |id: u8, name: &str, category: Category, density: u16, blast_cost: u32| MaterialDef {
             id,
             name: name.into(),
             category,
             density,
             color: (0, 0, 0),
+            blast_cost,
         };
         MaterialTable::new(vec![
-            def(0, "air", Category::Static, 0),
-            def(1, "wall", Category::Static, 100),
-            def(2, "sand", Category::Powder, 40),
+            def(0, "air", Category::Static, 0, 0),
+            def(1, "wall", Category::Static, 100, BLAST_COST_INFINITE),
+            def(2, "sand", Category::Powder, 40, 2),
         ])
         .unwrap()
     }

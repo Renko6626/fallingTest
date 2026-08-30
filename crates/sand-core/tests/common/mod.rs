@@ -1,23 +1,26 @@
 //! 测试公用：内联材料表（core 测试不读 data/，保持 crate 自包含）。
 
-use sand_core::{Category, InitConfig, MaterialDef, MaterialTable, ScanMode, Sim};
+use sand_core::{Category, InitConfig, MaterialDef, MaterialTable, ScanMode, Sim, BLAST_COST_INFINITE};
 
 pub const SAND: u8 = 2;
 pub const WATER: u8 = 3;
 
 pub fn test_table() -> MaterialTable {
-    let def = |id: u8, name: &str, category: Category, density: u16| MaterialDef {
+    // blast_cost 取 spec §6 的口径值（air 0 / water 1 / sand 2 / wall 免疫），
+    // 供本文件之外的爆炸行为测试（`explode_behavior.rs`）直接复用同一张表。
+    let def = |id: u8, name: &str, category: Category, density: u16, blast_cost: u32| MaterialDef {
         id,
         name: name.into(),
         category,
         density,
         color: (0, 0, 0),
+        blast_cost,
     };
     MaterialTable::new(vec![
-        def(0, "air", Category::Static, 0),
-        def(1, "wall", Category::Static, 100),
-        def(SAND, "sand", Category::Powder, 40),
-        def(WATER, "water", Category::Liquid, 16),
+        def(0, "air", Category::Static, 0, 0),
+        def(1, "wall", Category::Static, 100, BLAST_COST_INFINITE),
+        def(SAND, "sand", Category::Powder, 40, 2),
+        def(WATER, "water", Category::Liquid, 16, 1),
     ])
     .unwrap()
 }

@@ -7,6 +7,11 @@ use xxhash_rust::xxh3::{xxh3_64, Xxh3};
 
 use sand_core::{Category, Fx, MaterialDef, MaterialTable, Op, MAX_EMIT_JITTER_RAW};
 
+/// `MatSpec::blast_cost` 的 serde 缺省值（spec §6："RON 缺省 1"）。
+fn default_blast_cost() -> u32 {
+    1
+}
+
 // ---------- materials.ron ----------
 
 #[derive(Deserialize)]
@@ -21,6 +26,12 @@ struct MatSpec {
     category: CatSpec,
     density: u16,
     color: (u8, u8, u8),
+    /// 爆炸射线逐格能量消耗（spec §6）。缺省 1——已入库的 `materials.ron`
+    /// 若不显式声明该字段仍能解析，但当前版本已给全部材料显式赋值（见该
+    /// 文件注释：字段新增非语义变更，materials_fp 因内容变化而改变，golden
+    /// 的 materials_fp 行按 spec §9 程序重录）。
+    #[serde(default = "default_blast_cost")]
+    blast_cost: u32,
 }
 
 #[derive(Deserialize)]
@@ -50,6 +61,7 @@ pub fn load_materials(path: &str) -> Result<(MaterialTable, u64), String> {
             },
             density: m.density,
             color: m.color,
+            blast_cost: m.blast_cost,
         })
         .collect();
     Ok((MaterialTable::new(defs)?, fp))
@@ -79,6 +91,10 @@ pub enum OpSpec {
     /// 加载期经 [`quantize_fx`] 一次性 round 量化为 Q16.16——core 边界只见
     /// `Fx`，量化在 I/O 层完成，不碰核心零浮点红线。
     Emit { material: String, x: f64, y: f64, vx: f64, vy: f64, count: u16, jitter: f64 },
+    /// `Op::Explode` 的 RON 表面形式（spec §6）：`x/y/r/power` 全部是整数
+    /// （圆心格坐标、半径格数、初始能量），无需量化——core 侧 `Op::Explode`
+    /// 本就是纯整数签名，这里原样透传。
+    Explode { x: i32, y: i32, r: i32, power: u32 },
 }
 
 /// 场景 RON 里的十进制小数 → Q16.16 定点（`Fx`），**round**（非截断）语义：
@@ -170,13 +186,14 @@ fn resolve_op(spec: &OpSpec, table: &MaterialTable) -> Result<Op, String> {
                 jitter: jitter_fx,
             }
         }
+        OpSpec::Explode { x, y, r, power } => Op::Explode { x: *x, y: *y, r: *r, power: *power },
     })
 }
 
 /// 折叠"全部已解析 `Op` 中 `Fx` 字段"的原始位（spec §7：量化后的数值必须
 /// 入场景指纹）。目前只有 `Op::Emit` 携带 `Fx` 字段，其余变体（`Brush`/
-/// `Fill`）是纯整数、不折叠——它们的文本已经被 [`load_scenario`] 里的
-/// 源字节哈希覆盖，这里不重复。
+/// `Fill`/`Explode`）是纯整数、不折叠——它们的文本已经被 [`load_scenario`]
+/// 里的源字节哈希覆盖，这里不重复。
 ///
 /// **为什么不能只靠源字节哈希**（Task 5 修复轮 1 I2）：`load_scenario` 原先
 /// 的 `fingerprint = xxh3_64(原始文件字节)` 只保证"文本变了指纹就变"，但
@@ -267,9 +284,9 @@ mod tests {
 
     fn table_with_water() -> MaterialTable {
         MaterialTable::new(vec![
-            MaterialDef { id: 0, name: "air".into(), category: Category::Static, density: 0, color: (0, 0, 0) },
-            MaterialDef { id: 1, name: "wall".into(), category: Category::Static, density: 100, color: (0, 0, 0) },
-            MaterialDef { id: 2, name: "water".into(), category: Category::Liquid, density: 16, color: (0, 0, 0) },
+            MaterialDef { id: 0, name: "air".into(), category: Category::Static, density: 0, color: (0, 0, 0), blast_cost: 0 },
+            MaterialDef { id: 1, name: "wall".into(), category: Category::Static, density: 100, color: (0, 0, 0), blast_cost: sand_core::BLAST_COST_INFINITE },
+            MaterialDef { id: 2, name: "water".into(), category: Category::Liquid, density: 16, color: (0, 0, 0), blast_cost: 1 },
         ])
         .unwrap()
     }
@@ -318,6 +335,38 @@ mod tests {
         assert!(quantize_fx(32768.0).is_err());
         assert!(quantize_fx(-32769.0).is_err());
         assert!(quantize_fx(1.0e30).is_err());
+    }
+
+    // ==================== resolve_op：Explode 整数透传（M1 Task 6）====================
+
+    #[test]
+    fn resolve_op_explode_passes_integers_through_unquantized() {
+        let t = table_with_water();
+        let spec = OpSpec::Explode { x: 100, y: 50, r: 12, power: 40 };
+        let op = resolve_op(&spec, &t).unwrap();
+        match op {
+            Op::Explode { x, y, r, power } => assert_eq!((x, y, r, power), (100, 50, 12, 40)),
+            other => panic!("期望 Op::Explode，实际 {other:?}"),
+        }
+    }
+
+    // ==================== MatSpec：blast_cost 缺省 1（spec §6）====================
+
+    #[test]
+    fn materials_ron_without_blast_cost_field_defaults_to_one() {
+        let ron = "(materials:[\
+            (id:0,name:\"air\",category:Static,density:0,color:(0,0,0)),\
+            (id:1,name:\"wall\",category:Static,density:100,color:(0,0,0)),\
+        ])";
+        let path = std::env::temp_dir().join(format!(
+            "sand_harness_test_materials_default_blast_cost_{}.ron",
+            std::process::id()
+        ));
+        std::fs::write(&path, ron).unwrap();
+        let (t, _fp) = load_materials(path.to_str().unwrap()).unwrap();
+        std::fs::remove_file(&path).ok();
+        assert_eq!(t.blast_cost(0), 1, "未声明 blast_cost 的材料应缺省为 1");
+        assert_eq!(t.blast_cost(1), 1);
     }
 
     // ==================== resolve_op：Emit 解析 + 量化落地 + 校验 ====================

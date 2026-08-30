@@ -1,0 +1,21 @@
+// 粒子压测场景（M1 spec §10/§11，bench 专用）：640×384 盆地，持续高 rate
+// Op::Emit（每 tick 2000 个粒子）——约 33 tick 内顶满 MAX_PARTICLES=65536，
+// 此后维持在容量上限附近（超额请求走确定性拒绝，见 `Particles::spawn`），
+// 直到场景结束，用于 bench 粒子相在满载并行积分/串行提交下的开销。
+// 不进 CI、不用 golden（纯粹性能压测，非确定性回归对象）。
+// 用法：sand-harness hashrun data/scenarios/particle_stress.ron --grid-only
+Scenario(
+    name: "particle_stress",
+    world: (10, 6),
+    seed: 0x1CE0_FFEE,
+    ticks: 3000,
+    setup: [
+        Fill(material: "wall", x0: 0, y0: 360, x1: 639, y1: 383),
+        Fill(material: "wall", x0: 0, y0: 0, x1: 7, y1: 359),
+        Fill(material: "wall", x0: 632, y0: 0, x1: 639, y1: 359),
+    ],
+    script: [
+        Every(from: 0, until: 3000, step: 1,
+              op: Emit(material: "water", x: 320.0, y: 8.0, vx: 0.0, vy: 1.0, count: 2000, jitter: 3.0)),
+    ],
+)

@@ -92,40 +92,74 @@ fn x_crosses_first(ax: &AxisState, ay: &AxisState) -> bool {
     }
 }
 
+/// 纯几何格序列迭代器（**不含起点格**）：从 `pos` 出发按 `vel` 逐次跨越格线
+/// （与 [`trace`] 同一套 i64 交叉相乘算法），直到到达终点格
+/// `to_cell(pos+vel)`（含终点格，作为最后一个产出项）。不做任何越界/材质
+/// 判断——那是各调用方自己的语义。供 [`trace`]（粒子阻挡语义）与爆炸射线
+/// （能量语义，`world.rs::World::apply_op` 的 `Op::Explode` 分支）共享底层
+/// 穿越算法（M1 Task 6：避免在 world.rs 里重新实现一遍同款轴跨越逻辑）。
+/// 双轴都静止（`vel == (0,0)`）时起点=终点，`next()` 立即返回 `None`。
+pub(crate) struct CellWalk {
+    cx: i32,
+    cy: i32,
+    target_cx: i32,
+    target_cy: i32,
+    ax: AxisState,
+    ay: AxisState,
+}
+
+impl CellWalk {
+    pub(crate) fn new(pos: (Fx, Fx), vel: (Fx, Fx)) -> CellWalk {
+        let end = (pos.0 + vel.0, pos.1 + vel.1);
+        CellWalk {
+            cx: pos.0.to_cell(),
+            cy: pos.1.to_cell(),
+            target_cx: end.0.to_cell(),
+            target_cy: end.1.to_cell(),
+            ax: axis_init(pos.0, vel.0),
+            ay: axis_init(pos.1, vel.1),
+        }
+    }
+}
+
+impl Iterator for CellWalk {
+    type Item = (i32, i32);
+
+    fn next(&mut self) -> Option<(i32, i32)> {
+        if (self.cx, self.cy) == (self.target_cx, self.target_cy) {
+            return None;
+        }
+        if x_crosses_first(&self.ax, &self.ay) {
+            self.cx += self.ax.step;
+            self.ax.rem += CELL_RAW;
+        } else {
+            self.cy += self.ay.step;
+            self.ay.rem += CELL_RAW;
+        }
+        Some((self.cx, self.cy))
+    }
+}
+
 /// 从 `pos` 到 `pos + vel` 的 DDA 穿越（spec §5）。`world` 是本 tick 网格终态的
 /// 只读快照——纯函数，同输入同输出，任意线程数/调度顺序不影响结果。
 pub(crate) fn trace(pos: (Fx, Fx), vel: (Fx, Fx), world: &World) -> Trace {
     let end = (pos.0 + vel.0, pos.1 + vel.1);
-    let mut cx = pos.0.to_cell();
-    let mut cy = pos.1.to_cell();
-    let target_cx = end.0.to_cell();
-    let target_cy = end.1.to_cell();
-
-    let mut ax = axis_init(pos.0, vel.0);
-    let mut ay = axis_init(pos.1, vel.1);
     // 初值 = 起点格。起点格从不检查（本文件顶部注释），所以这个初值完全可能
     // 本身就是非 air（见顶部注释的零穿越场景）。若离开起点后第一步就撞阻挡，
     // `Blocked` 会原样把这个非 air 的起点格当候选返回；调用方
     // （`particle::resolve_landing`）因此不能假设候选默认可落，必须重新判定
     // 候选本身是否 air——这正是 Task 4 修复轮 1 C1 活锁的根源之一（另一半在
     // 旧版"全占转悬浮"路径，已废除，见 `particle.rs::resolve_landing` 文档）。
-    let mut last_air = (cx, cy);
+    let mut last_air = (pos.0.to_cell(), pos.1.to_cell());
 
     // 安全上限：MAX_SPEED=16 时单轴最坏跨越数 ~17，双轴交织最坏 ~34；
     // 256 留出充裕余量，纯粹是回归防线（算法本身有界，触发即视为 bug）。
     const MAX_STEPS: u32 = 256;
     let mut steps = 0u32;
 
-    while (cx, cy) != (target_cx, target_cy) {
+    for (cx, cy) in CellWalk::new(pos, vel) {
         steps += 1;
         debug_assert!(steps <= MAX_STEPS, "DDA 步数超出安全上限，检查速度 clamp 或算法");
-        if x_crosses_first(&ax, &ay) {
-            cx += ax.step;
-            ax.rem += CELL_RAW;
-        } else {
-            cy += ay.step;
-            ay.rem += CELL_RAW;
-        }
         if !world.in_bounds(cx, cy) {
             return Trace::Gone;
         }
@@ -146,8 +180,8 @@ mod tests {
 
     fn table() -> MaterialTable {
         MaterialTable::new(vec![
-            MaterialDef { id: 0, name: "air".into(), category: Category::Static, density: 0, color: (0, 0, 0) },
-            MaterialDef { id: 1, name: "wall".into(), category: Category::Static, density: 100, color: (0, 0, 0) },
+            MaterialDef { id: 0, name: "air".into(), category: Category::Static, density: 0, color: (0, 0, 0), blast_cost: 0 },
+            MaterialDef { id: 1, name: "wall".into(), category: Category::Static, density: 100, color: (0, 0, 0), blast_cost: crate::material::BLAST_COST_INFINITE },
         ])
         .unwrap()
     }
@@ -298,5 +332,38 @@ mod tests {
         let w = world_with_walls(3, 3, &[(8, 8)]);
         let r = trace((fx(10), fx(10)), (fx(-3), fx(-3)), &w);
         assert_eq!(r, Trace::Blocked { land_cell: (8, 9) });
+    }
+
+    // ---- CellWalk（M1 Task 6：爆炸射线共享的公共 helper）----
+
+    #[test]
+    fn cell_walk_matches_trace_crossing_sequence_exactly() {
+        // CellWalk 是 trace() 内部循环体的直接抽取——用对角线穿越序反推验证
+        // 抽取没有改变任何步进语义（diagonal_blocked_stops_at_correct_cell_in_crossing_order
+        // 手工推演的同一条穿越序）。
+        let start = (Fx((5 << 16) + 0x8000), Fx((5 << 16) + 0x8000));
+        let seq: Vec<(i32, i32)> = CellWalk::new(start, (fx(3), fx(3))).collect();
+        assert_eq!(seq, vec![(6, 5), (6, 6), (7, 6), (7, 7), (8, 7), (8, 8)]);
+    }
+
+    #[test]
+    fn cell_walk_excludes_start_cell_and_includes_end_cell() {
+        let seq: Vec<(i32, i32)> = CellWalk::new((fx(5), fx(5)), (fx(3), Fx::ZERO)).collect();
+        assert_eq!(seq, vec![(6, 5), (7, 5), (8, 5)], "不含起点格 (5,5)，含终点格 (8,5)");
+    }
+
+    #[test]
+    fn cell_walk_zero_velocity_yields_empty_sequence() {
+        let seq: Vec<(i32, i32)> = CellWalk::new((fx(5), fx(5)), (Fx::ZERO, Fx::ZERO)).collect();
+        assert!(seq.is_empty(), "起点即终点，序列为空");
+    }
+
+    #[test]
+    fn cell_walk_is_deterministic_across_repeated_calls() {
+        let start = (Fx((2 << 16) + 0x8000), Fx((2 << 16) + 0x8000));
+        let vel = (fx(9), fx(4));
+        let a: Vec<(i32, i32)> = CellWalk::new(start, vel).collect();
+        let b: Vec<(i32, i32)> = CellWalk::new(start, vel).collect();
+        assert_eq!(a, b);
     }
 }

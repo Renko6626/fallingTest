@@ -1,0 +1,25 @@
+// 爆炸溅射场景（M1 验收，spec §6/§10）：640×384，沙墙 + 水池 + script 定期
+// Op::Explode（19 次，tick 500..18500，step 1000）。2 万 tick：验收 M1 的
+// "挖坑 + 溅射 + 脱格"三合一路径，长程反复观察沙墙逐步坍塌、溅落物落入
+// 水池、水面重新摊平。不进 CI（同 waterfall.ron 先例，20000 tick 太重）；
+// 用小图同构版 `explosion_ci.ron` 覆盖 CI + golden。
+// 用法：
+//   sand-harness synctest data/scenarios/explosion_splash.ron          （六配置验收）
+//   sand-harness render   data/scenarios/explosion_splash.ron -o explosion_splash.gif
+Scenario(
+    name: "explosion_splash",
+    world: (10, 6),
+    seed: 0xE270_10DE,
+    ticks: 20000,
+    setup: [
+        Fill(material: "wall", x0: 0, y0: 360, x1: 639, y1: 383),    // 盆地底
+        Fill(material: "wall", x0: 0, y0: 100, x1: 7, y1: 359),      // 左壁
+        Fill(material: "wall", x0: 632, y0: 100, x1: 639, y1: 359),  // 右壁
+        Fill(material: "sand", x0: 100, y0: 150, x1: 540, y1: 300),  // 大沙墙（爆炸目标）
+        Fill(material: "water", x0: 100, y0: 310, x1: 540, y1: 359), // 水池（承接溅落 + 检验遮挡后水面摊平）
+    ],
+    script: [
+        Every(from: 500, until: 19500, step: 1000,
+              op: Explode(x: 320, y: 220, r: 40, power: 600)),
+    ],
+)

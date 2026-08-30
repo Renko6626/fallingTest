@@ -1,6 +1,6 @@
 scenario mixed
 scenario_fp 50c9d279c289a8f7
-materials_fp 26a067e03b2c51fa
+materials_fp c45a9a92295306c8
 world 256x192 seed 12648430 ticks 1500
 tick      256 hash 0c49425bd4ed75cc
 tick      512 hash 2f9699c5ad7ab25b

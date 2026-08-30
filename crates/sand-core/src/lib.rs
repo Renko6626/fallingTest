@@ -26,7 +26,7 @@ pub mod world;
 
 pub use cell::Cell;
 pub use fixed::Fx;
-pub use material::{Category, MaterialDef, MaterialTable, MAT_AIR, MAT_WALL};
+pub use material::{Category, MaterialDef, MaterialTable, BLAST_COST_INFINITE, MAT_AIR, MAT_WALL};
 pub use particle::{Particles, MAX_PARTICLES};
 pub use world::{Op, World, MAX_EMIT_JITTER_RAW};
 

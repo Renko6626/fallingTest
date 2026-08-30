@@ -8,6 +8,37 @@
 ## 2026-08-30
 
 ### Added
+- **M1 Task 6 完成：`Op::Explode` Noita 射线模型 + 爆炸/压测场景**（spec §6/§10）。
+  `crates/sand-core/src/material.rs`：`MaterialDef`/`MaterialTable` 新增
+  `blast_cost: u32`（+ `BLAST_COST_INFINITE` 哨兵），`data/materials.ron` 全部材料
+  显式赋值（air 0 / water 1 / sand 2 / wall 4294967295）。`world.rs`：`Op::Explode
+  { x, y, r, power }`（整数签名）；`circle_offsets`（经典 Bresenham 圆，`d=3-2r`
+  决策变量，八分圆镜像展开去重用长度 ≤8 的线性 `contains` 扫描——"相邻+首尾折返"
+  式去重对轴上退化点是错的，实现前已发现并修正）；`fire_ray` 逐格消耗
+  `blast_cost`，能量 ≥ cost 摧毁（置 air + 溅射，速度=方向单位向量×
+  `MAX_SPEED×剩余能量/power`+`emit_jitter` 抖动，`clamp_speed` 收尾），能量耗尽或
+  撞 `BLAST_COST_INFINITE` 材料断线；爆心格按"该射线第一格"计费（r≥1 必炸爆心）。
+  `dda.rs` 抽取公共 `CellWalk` 迭代器（`trace()` 内部算法原样搬入，纯重构、23 项
+  既有测试不变），供爆炸射线复用同一套穿越算法。`rng.rs` 新增
+  `STREAM_EXPLODE=2`（`(x,y)` 用被摧毁格坐标本身，`salt=op_idx` 区分同 tick 多个
+  Explode——Task 5 评审 I1 同款纪律）。`particle.rs::clamp_speed` 收紧为
+  `pub(crate)` 供 world.rs 复用。harness `scenario.rs`：`MatSpec.blast_cost`
+  （serde 缺省 1）、`OpSpec::Explode`（纯整数透传，无需量化）。新场景
+  `data/scenarios/explosion_ci.ron`（256×192，1200 tick，并入
+  `tests/golden/explosion_ci.golden` + `tests/synctest.rs` 六配置 CI）、
+  `explosion_splash.ron`（640×384，20000 tick 验收版，同 waterfall.ron 先例不进
+  CI）、`particle_stress.ron`（640×384，3000 tick，持续 2000/tick Emit 顶满
+  65536 容量，bench 专用不进 CI/golden）。测试：core 新增 21 项（`CellWalk` 4 +
+  `circle_offsets` 5 + `fire_ray` 白盒 3 + `Op::Explode` 行为 8 + 金值 1）+ harness
+  新增 2 项 + golden 1 项 + synctest 1 项，`cargo test --workspace`（124 项）与
+  `cargo clippy --workspace --all-targets` 全绿。**golden 重录**：既有
+  `sand_pile`/`mixed`/`waterfall_ci` 三个 golden 的 tick 周期哈希与终态哈希
+  **逐位不变**（`git diff` 确认三个文件都只有 `materials_fp` 一行变化），证明
+  `blast_cost` 字段新增是非语义变更；用 `sand-harness replay --write-golden`
+  按既有口径（4 线程 LiveRect）重录。详见
+  `.superpowers/sdd/2026-08-30-m1-particle-layer-plan/task-6-report.md`。
+
+### Added
 - **M1 Task 5 完成：`Op::Emit` 发射器 + 瀑布场景**（spec §7/§8）。`crates/sand-core/src/world.rs`：`Op::Emit { material, x, y, vx, vy, count, jitter }`（坐标/速度 `Fx`）；`World::apply_op` 签名新增 `fseed`/`spawns: &mut Vec<SpawnRequest>` 出参（`SpawnRequest` 从 `lib.rs` 移到此处，`pub(crate)`），Emit 分支逐粒子用 `rng_u32(fseed, STREAM_EMIT, 发射点格x, 发射点格y, salt=i, attempt)` 掷两骰（`attempt=0` vx / `attempt=1` vy，挪用 attempt 位区分"同 salt 下第几骰"而非其原始重试语义，注释显式记录）→ `emit_jitter` 整数映射到 `[-jitter,+jitter]`（无除法，`(r as u64 * width) >> 32` 重缩放）。`apply_op`/`scheduler::step` 因新增 `pub(crate)` 型参数一并收紧到 `pub(crate)`（原 `pub` 会产生私有类型泄漏警告，且从无 crate 外调用方）。`rng.rs` 新增 `STREAM_EMIT=1`。`Sim::apply_setup`/`Sim::step` 改为把 `Op::Emit` 产出的生成请求并入既有 `spawn_queue`，与 `queue_spawn` 走同一入队序；fseed 计算在 `scheduler::step` 内挪到 ops 循环之前（纯函数提前算，不改变可观测的三步顺序，非协议变更）。harness 侧：`crates/sand-harness/src/scenario.rs` 新增 `OpSpec::Emit`（RON 十进制小数）+ `quantize_fx`（round 量化，I/O 层浮点，唯一允许出现的位置）+ `resolve_op` 校验 jitter 非负；场景指纹 `xxh3_64(原始文件字节)` 天然覆盖 Emit 参数变化（新增测试钉死该保证；**该指纹口径随后在修复轮 1 改为 combine(源字节哈希, 已解析 Fx 字段折叠)，见下条**）。新场景 `data/scenarios/waterfall.ron`（640×384，20000 tick，验收用）与 `data/scenarios/waterfall_ci.ron`（256×192，1200 tick，并入 `crates/sand-harness/tests/synctest.rs` 六配置 CI SyncTest + `tests/golden/waterfall_ci.golden` 入库）。测试：核心新增 6 项单测（`emit_jitter` 金值/边界 + salt-attempt 独立性 + 确定性重跑，lib 单测总数 66 项）+ harness 新增 7 项（quantize_fx 金值/`resolve_op`/指纹敏感性，lib 单测总数 7 项）+ 1 项 harness CI SyncTest + 1 项 golden；`cargo test --workspace` 与 `cargo clippy --workspace --all-targets` 全绿；既有 3 个 golden（`sand_pile`/`mixed`）与 CI SyncTest（六配置 6000 tick）哈希不受影响。详见 `.superpowers/sdd/2026-08-30-m1-particle-layer-plan/task-5-report.md`。
 
 ### Fixed

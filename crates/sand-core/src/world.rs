@@ -3,8 +3,10 @@
 
 use crate::cell::Cell;
 use crate::chunk::{Chunk, CHUNK, DirtyRect};
-use crate::fixed::Fx;
-use crate::material::{MaterialTable, Category, MAT_WALL};
+use crate::dda::CellWalk;
+use crate::fixed::{isqrt, Fx};
+use crate::material::{MaterialTable, Category, MAT_AIR, MAT_WALL};
+use crate::particle::{clamp_speed, MAX_SPEED};
 use crate::rng;
 
 pub const WALL_SENTINEL: Cell = Cell(MAT_WALL as u32);
@@ -20,6 +22,13 @@ pub enum Op {
     /// harness 场景 RON 里写十进制小数，加载期一次性 round 量化为本处的
     /// `Fx`（`sand-harness::scenario::quantize_fx`）——core 边界只见 `Fx`。
     Emit { material: u8, x: Fx, y: Fx, vx: Fx, vy: Fx, count: u16, jitter: Fx },
+    /// 爆炸（spec §6，Noita 射线模型）：以 `(x, y)` 为圆心、半径 `r` 格的
+    /// Bresenham 圆周每格发一条 DDA 射线，射线初始能量 `power`，逐格消耗
+    /// `MaterialTable::blast_cost`，能量 ≥ 格消耗即摧毁该格（置 air + 溅射
+    /// 粒子），能量耗尽或撞 `BLAST_COST_INFINITE` 材料（M1 里即 wall）断线。
+    /// 整数签名——圆心/半径是格坐标，不经过 `Fx` 量化（与 `Op::Emit` 的
+    /// 连续坐标不同，爆炸是格对齐的离散几何）。
+    Explode { x: i32, y: i32, r: i32, power: u32 },
 }
 
 /// 生成队列条目（M1 spec §4 第 3 步 a）：由 `Op::Emit`（本任务）/ 未来
@@ -132,6 +141,169 @@ fn emit_jitter(r: u32, jitter: Fx) -> Fx {
     Fx((scaled as i32).wrapping_sub(jitter.0))
 }
 
+// ==================== Op::Explode（spec §6，M1 Task 6）====================
+
+/// `Op::Explode` 里 vx 抖动用的骰子标号，语义与 `EMIT_ROLL_VX` 相同——两者
+/// 数值巧合相等（都是 0/1）不代表可以共用常量：`Op::Emit`/`Op::Explode` 是
+/// 两个不同的调用点，各自的 `attempt` 编码独立演化，未来任一方改动骰子数量
+/// 不该牵连另一方。
+const EXPLODE_ROLL_VX: u32 = 0;
+/// `Op::Explode` 里 vy 抖动用的骰子标号（同上，见 [`EXPLODE_ROLL_VX`]）。
+const EXPLODE_ROLL_VY: u32 = 1;
+
+/// 溅射速度抖动幅度（spec §6 point 3"调参项"）：`Fx::from_ratio(1, 2)`
+/// 的位模式（写成字面量是因为 `from_ratio` 非 `const fn`，理由同
+/// `particle.rs::GRAVITY`；`explode_jitter_matches_from_ratio_one_half`
+/// 单测钉死等价性）。复用 [`emit_jitter`] 做区间映射——同一套抖动数学，
+/// 只是幅度常量与调用点（stream/salt/attempt）不同。
+const EXPLODE_JITTER: Fx = Fx(0x0000_8000);
+
+/// 半格偏移（Q16.16 的 0.5）：格坐标 → 格心连续坐标，供爆炸射线的起点/
+/// 落点定位（cell_walk 的 DDA 几何要求连续坐标，格心比格角更安全——见
+/// `dda.rs` 顶部注释关于恰好贴边界时 `rem=0` 的讨论）。
+const HALF_CELL: Fx = Fx(0x0000_8000);
+
+/// Bresenham 圆周（半径 `r` 格，圆心偏移量）：返回圆心到每个周长格的整数
+/// 偏移 `(dx, dy)`，**定序、无重复**（spec §6 point 1 + §10 单测
+/// `explode_circle_offsets_is_stable_and_has_no_duplicates`）。
+///
+/// 算法：经典 Bresenham/midpoint 圆算法（决策变量 `d = 3 - 2r`，八分圆
+/// `0 <= x <= y` 递推），每步产出的八分圆点 `(a, b)` 按固定顺序展开成全圆的
+/// 8 个镜像点：
+/// `[(a,b), (b,a), (-b,a), (-a,b), (-a,-b), (-b,-a), (b,-a), (a,-b)]`。
+///
+/// **确定性论证**：递推变量 `x/y/d` 全整数、无浮点、无随机源，同一 `r` 每次
+/// 调用产出完全相同的序列（纯算术，不依赖遍历顺序以外的任何状态）。
+///
+/// **无重复论证**：八分圆递推里 `y` 严格单调递减、`x` 单调不减（标准
+/// Bresenham 圆性质），故每步的 `(a, b)` 互不相同；对不同的 `(a,b)`，其 8
+/// 个镜像点集合两两不相交——除非 `(a1,b1)` 与 `(a2,b2)` 互为交换
+/// （`a1=b2 且 b1=a2`），但循环全程维持 `a<=b`，只有 `a=b`（对角线）才可能
+/// 自交换，那正是同一步内部的退化情形。步内去重（[`push_octant_mirror`]）
+/// 用长度 ≤8 的线性 `contains` 扫描——退化情形（`a=0` 轴上或 `a=b` 对角线）
+/// 产出的重复索引在候选数组里不保证相邻（`a=0` 时重复出现在 idx0/idx3 而非
+/// 相邻位置，手工验证过），故不能只比较"相邻 + 首尾折返"，必须是全量成员
+/// 检测；`Vec` 而非 `HashSet` 承载（候选数不超过 8，线性扫描足够快，也不
+/// 触碰"禁 std HashSet 默认 hasher"红线）。
+///
+/// `r <= 0` 特例：圆退化为圆心一点，返回 `vec![(0, 0)]`（半径为 0 的"爆炸"
+/// 只处理爆心格自身，见 [`fire_ray`] 起点格计费口径）。
+pub(crate) fn circle_offsets(r: i32) -> Vec<(i32, i32)> {
+    if r <= 0 {
+        return vec![(0, 0)];
+    }
+    let mut offsets = Vec::new();
+    let mut x: i32 = 0;
+    let mut y: i32 = r;
+    let mut d: i32 = 3 - 2 * r;
+    while y >= x {
+        push_octant_mirror(&mut offsets, x, y);
+        x += 1;
+        if d > 0 {
+            y -= 1;
+            d += 4 * (x - y) + 10;
+        } else {
+            d += 4 * x + 6;
+        }
+    }
+    offsets
+}
+
+/// 单个八分圆点 `(a, b)` 展开为全圆最多 8 个镜像点，去重（退化情形：
+/// `a == 0` 或 `a == b` 时实际只有 4 个不同点，且重复项在候选数组里未必
+/// 相邻——`a == 0` 时是 idx0 与 idx3 重复，见 [`circle_offsets`] 文档的
+/// 手工验证，故用全量 `contains` 而非相邻比较）。展开顺序固定（先出现者
+/// 保留），是圆周格的最终遍历序。
+fn push_octant_mirror(offsets: &mut Vec<(i32, i32)>, a: i32, b: i32) {
+    let candidates: [(i32, i32); 8] =
+        [(a, b), (b, a), (-b, a), (-a, b), (-a, -b), (-b, -a), (b, -a), (a, -b)];
+    let mut group: Vec<(i32, i32)> = Vec::with_capacity(8);
+    for &p in &candidates {
+        if !group.contains(&p) {
+            group.push(p);
+        }
+    }
+    offsets.extend(group);
+}
+
+/// 单条爆炸射线（spec §6 point 2/3）：从圆心 `(cx, cy)` 出发，沿方向
+/// `(dx, dy)` 逐格消耗能量，能量 ≥ 格消耗即摧毁（置 air + 溅射粒子），能量
+/// 不足或撞 `BLAST_COST_INFINITE` 材料即断线。
+///
+/// **爆心格自身的口径**（任务书 + spec §6 point 1"起点格按第一格计费处理"）：
+/// `(cx, cy)` 本身作为该射线的第一格纳入能量结算——与 [`CellWalk`]"不含
+/// 起点格"的粒子 DDA 语义相反，这里手动 `std::iter::once((cx, cy))` 前置，
+/// 再接 `CellWalk` 产出的后续格。`r>=1` 时每条射线都独立从爆心起算，第一条
+/// 处理到的射线摧毁爆心（若能量足够）；后续射线到达时爆心已是 air，
+/// `blast_cost(air)=0` 恒满足、且已 air 不重复摧毁/不重复溅射（spec §6
+/// point 4），对能量预算而言等同免费经过。
+///
+/// **能量衰减用于溅射速度**：摧毁某格后取*该格消耗完成后的剩余能量*
+/// （`remaining = energy_before - cost`）参与速度合成——"剩余能量/power"
+/// 随射线深入单调递减，天然实现"爆心附近溅得快、边缘溅得慢"的线性衰减
+/// （spec §6 point 3）。
+///
+/// `salt = op_idx`（充分性论证见 `rng.rs::STREAM_EXPLODE` 文档：坐标本身
+/// `(gx, gy)` 已经是"一次 Explode 应用内至多摧毁一次"的天然唯一键，
+/// `op_idx` 只需区分同 tick 内的不同 `Op::Explode`）。
+#[allow(clippy::too_many_arguments)]
+fn fire_ray(
+    world: &mut World,
+    table: &MaterialTable,
+    cx: i32,
+    cy: i32,
+    dx: i32,
+    dy: i32,
+    power: u32,
+    stamp: u8,
+    fseed: u32,
+    op_idx: usize,
+    spawns: &mut Vec<SpawnRequest>,
+) {
+    debug_assert!(power != 0, "fire_ray 要求 power != 0（调用方 apply_op 已在 Explode 分支判零）");
+    let mag_sq = (dx as i64) * (dx as i64) + (dy as i64) * (dy as i64);
+    let mag = isqrt(mag_sq as u64) as i32;
+    let (unit_dx, unit_dy) =
+        if mag == 0 { (Fx::ZERO, Fx::ZERO) } else { (Fx::from_ratio(dx, mag), Fx::from_ratio(dy, mag)) };
+
+    let center = (Fx::from_int(cx) + HALF_CELL, Fx::from_int(cy) + HALF_CELL);
+    let ray_cells = std::iter::once((cx, cy))
+        .chain(CellWalk::new(center, (Fx::from_int(dx), Fx::from_int(dy))));
+
+    let mut energy = power;
+    let salt = op_idx as u32;
+    for (gx, gy) in ray_cells {
+        if !world.in_bounds(gx, gy) {
+            break; // 出界断线，同"撞不可摧毁材料"一样直接停止该射线。
+        }
+        let material = world.cell(gx, gy).material();
+        let cost = table.blast_cost(material);
+        if energy < cost {
+            break; // 能量不足以摧毁这一格（含 BLAST_COST_INFINITE 撞线）。
+        }
+        energy -= cost;
+        if material == MAT_AIR {
+            continue; // 已是 air（原生或已被前序射线炸掉）：计零费、不重复溅射。
+        }
+
+        let speed_ratio = Fx::from_ratio(energy as i32, power as i32);
+        let speed_mag = MAX_SPEED.mul(speed_ratio);
+        let rx = rng::rng_u32(fseed, rng::STREAM_EXPLODE, gx, gy, salt, emit_attempt(stamp, EXPLODE_ROLL_VX));
+        let ry = rng::rng_u32(fseed, rng::STREAM_EXPLODE, gx, gy, salt, emit_attempt(stamp, EXPLODE_ROLL_VY));
+        let vx = clamp_speed(unit_dx.mul(speed_mag) + emit_jitter(rx, EXPLODE_JITTER));
+        let vy = clamp_speed(unit_dy.mul(speed_mag) + emit_jitter(ry, EXPLODE_JITTER));
+
+        world.set_cell_stamped(table, gx, gy, MAT_AIR, stamp);
+        spawns.push(SpawnRequest {
+            material,
+            x: Fx::from_int(gx) + HALF_CELL,
+            y: Fx::from_int(gy) + HALF_CELL,
+            vx,
+            vy,
+        });
+    }
+}
+
 pub struct World {
     pub width_chunks: usize,
     pub height_chunks: usize,
@@ -223,16 +395,17 @@ impl World {
     }
 
     /// 应用一个 `Op`（ops 阶段，spec §4 第 1 步）。`stamp` 供网格写入类
-    /// 操作（Brush/Fill）盖戳，`Op::Emit` 里另外折进抖动 `attempt`
-    /// （见 [`emit_attempt`]）；`fseed` 供 `Op::Emit` 的抖动掷骰（`rng::
-    /// frame_seed(world.seed, tick)`，调用方与网格四相同一口径）；`op_idx`
-    /// 是本 `op` 在调用方本 tick `ops` 切片里的下标（`enumerate()` 天然
-    /// 定序），折进抖动 `salt`（见 [`emit_salt`]），区分同 tick 内多个
-    /// `Op::Emit`；`spawns` 是本 tick 粒子生成队列的输出参数——`Op::Emit`
-    /// 把产出的 [`SpawnRequest`] 追加进去，调用方（`Sim::step`/
-    /// `Sim::apply_setup`）负责随后把它们并入 `Particles` 的入队序（Emit
-    /// 本身不直接碰 `Particles`，保持 world.rs 不知道粒子池存在——白名单
-    /// 通信介质走队列，而非类型耦合）。
+    /// 操作（Brush/Fill/Explode 摧毁）盖戳，`Op::Emit`/`Op::Explode` 里
+    /// 另外折进抖动 `attempt`（见 [`emit_attempt`]）；`fseed` 供两者的抖动
+    /// 掷骰（`rng::frame_seed(world.seed, tick)`，调用方与网格四相同一
+    /// 口径）；`op_idx` 是本 `op` 在调用方本 tick `ops` 切片里的下标
+    /// （`enumerate()` 天然定序），折进抖动 `salt`（`Op::Emit` 见
+    /// [`emit_salt`]，`Op::Explode` 见 [`fire_ray`] 文档），区分同 tick 内
+    /// 多个同类型 `Op`；`spawns` 是本 tick 粒子生成队列的输出参数——
+    /// `Op::Emit`/`Op::Explode` 把产出的 [`SpawnRequest`] 追加进去，调用方
+    /// （`Sim::step`/`Sim::apply_setup`）负责随后把它们并入 `Particles` 的
+    /// 入队序（world.rs 本身不直接碰 `Particles`，保持不知道粒子池存在——
+    /// 白名单通信介质走队列，而非类型耦合）。
     ///
     /// `pub(crate)`（Task 5 起，随 `SpawnRequest` 一起收紧）：出参类型
     /// `SpawnRequest` 本就 `pub(crate)`，外部 crate 拿不到能传的实参，保持
@@ -287,6 +460,23 @@ impl World {
                     });
                 }
             }
+            Op::Explode { x, y, r, power } => {
+                // power == 0：没有能量可摧毁任何格（哪怕 blast_cost=0 的
+                // air，"摧毁"逻辑本身不会为 air 触发），且 `fire_ray` 的
+                // `Fx::from_ratio(energy, power)` 除数不能为零——提前判零，
+                // 语义上等价于"零能量爆炸 = 无操作"，不依赖 fire_ray 内部
+                // 的分支顺序侥幸绕开除零。
+                if power != 0 {
+                    // 圆周格定序遍历（see circle_offsets 文档的确定性/无
+                    // 重复论证），每格一条独立射线，salt = op_idx（见
+                    // fire_ray 文档：坐标本身已是天然唯一键，op_idx 只需
+                    // 区分同 tick 内不同 Op::Explode，charter §11 翻案 4 +
+                    // Task 5 I1 同款纪律）。
+                    for (dx, dy) in circle_offsets(r) {
+                        fire_ray(self, table, x, y, dx, dy, power, stamp, fseed, op_idx, spawns);
+                    }
+                }
+            }
         }
     }
 
@@ -306,17 +496,23 @@ mod tests {
     use crate::material::{Category, MaterialDef};
 
     fn test_table() -> MaterialTable {
-        let def = |id: u8, name: &str, category: Category, density: u16| MaterialDef {
+        // blast_cost 取 spec §6 的口径值（air 0 / water 1 / sand 2 / wall
+        // 免疫），供本文件的 Op::Explode 测试直接复用；Emit 测试不关心该
+        // 字段取值。
+        use crate::material::BLAST_COST_INFINITE;
+        let def = |id: u8, name: &str, category: Category, density: u16, blast_cost: u32| MaterialDef {
             id,
             name: name.into(),
             category,
             density,
             color: (0, 0, 0),
+            blast_cost,
         };
         MaterialTable::new(vec![
-            def(0, "air", Category::Static, 0),
-            def(1, "wall", Category::Static, 100),
-            def(2, "water", Category::Liquid, 16),
+            def(0, "air", Category::Static, 0, 0),
+            def(1, "wall", Category::Static, 100, BLAST_COST_INFINITE),
+            def(2, "water", Category::Liquid, 16, 1),
+            def(3, "sand", Category::Powder, 40, 2),
         ])
         .unwrap()
     }
@@ -513,5 +709,276 @@ mod tests {
     #[should_panic(expected = "超出 MAX_EMIT_JITTER_RAW")]
     fn emit_jitter_above_max_bound_panics_in_debug() {
         let _ = emit_jitter(0, Fx(MAX_EMIT_JITTER_RAW + 1));
+    }
+
+    // ==================== circle_offsets：单测（M1 Task 6，spec §10）====================
+
+    #[test]
+    fn circle_offsets_r0_is_center_only() {
+        assert_eq!(circle_offsets(0), vec![(0, 0)]);
+        assert_eq!(circle_offsets(-3), vec![(0, 0)], "负半径按 0 处理");
+    }
+
+    #[test]
+    fn circle_offsets_is_deterministic_across_repeated_calls() {
+        for r in [1, 2, 3, 5, 8, 13, 20, 50] {
+            assert_eq!(circle_offsets(r), circle_offsets(r), "r={r} 重复调用必须给出完全相同序列");
+        }
+    }
+
+    #[test]
+    fn circle_offsets_has_no_duplicate_cells() {
+        for r in 1..=40 {
+            let offs = circle_offsets(r);
+            let mut sorted = offs.clone();
+            sorted.sort();
+            sorted.dedup();
+            assert_eq!(sorted.len(), offs.len(), "r={r} 圆周格出现重复：{offs:?}");
+        }
+    }
+
+    #[test]
+    fn circle_offsets_every_point_within_one_cell_of_radius() {
+        // Bresenham 圆是整数近似，允许 sqrt(dx²+dy²) 与 r 有 <1 格的栅格化
+        // 误差，但不应离谱偏离（回归防线：算法写错通常表现为半径整体跑偏）。
+        for r in [1, 5, 12, 30] {
+            for (dx, dy) in circle_offsets(r) {
+                let dist_sq = (dx as i64) * (dx as i64) + (dy as i64) * (dy as i64);
+                let dist = isqrt(dist_sq as u64) as i64;
+                assert!((dist - r as i64).abs() <= 1, "r={r} 的点 ({dx},{dy}) 距圆心 {dist}，偏离过大");
+            }
+        }
+    }
+
+    #[test]
+    fn circle_offsets_r1_matches_four_axis_neighbors() {
+        let mut offs = circle_offsets(1);
+        offs.sort();
+        let mut want = vec![(1, 0), (-1, 0), (0, 1), (0, -1)];
+        want.sort();
+        assert_eq!(offs, want);
+    }
+
+    // ==================== fire_ray：白盒（能量衰减 + 断线语义）====================
+
+    #[test]
+    fn fire_ray_speed_decays_monotonically_outward_along_axis() {
+        // power=16、sand cost=2：每摧毁一格衰减 MAX_SPEED*2/16=2.0 格/tick
+        // 的"真值"速度，远大于 EXPLODE_JITTER 的最大抖动摆幅（两次独立抖动
+        // 最坏情况相差 1.0 格/tick），保证断言不受随机抖动噪声干扰。
+        let t = test_table();
+        let mut w = World::new(1, 1, 0xABC);
+        let (cx, cy) = (10, 10);
+        for dx in 1..=6 {
+            w.set_cell_stamped(&t, cx + dx, cy, 3, 0); // sand
+        }
+        let fseed = rng::frame_seed(w.seed, w.tick);
+        let mut spawns = Vec::new();
+        fire_ray(&mut w, &t, cx, cy, 8, 0, 16, 0, fseed, 0, &mut spawns);
+
+        assert_eq!(spawns.len(), 6, "6 个沙格应全部被摧毁：{spawns:?}");
+        for i in 0..6i32 {
+            assert_eq!(w.cell(cx + 1 + i, cy).material(), MAT_AIR, "沙格应变 air");
+        }
+        for pair in spawns.windows(2) {
+            assert!(
+                pair[0].vx.0 > pair[1].vx.0,
+                "沿射线向外速度应单调衰减：{:?}",
+                spawns.iter().map(|s| s.vx.0).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn fire_ray_stops_at_wall_shields_cells_behind_and_does_not_destroy_wall() {
+        let t = test_table();
+        let mut w = World::new(1, 1, 0);
+        let (cx, cy) = (10, 10);
+        w.set_cell_stamped(&t, cx + 3, cy, 1, 0); // wall
+        w.set_cell_stamped(&t, cx + 4, cy, 3, 0); // sand behind wall
+        let fseed = rng::frame_seed(w.seed, w.tick);
+        let mut spawns = Vec::new();
+        fire_ray(&mut w, &t, cx, cy, 8, 0, 1000, 0, fseed, 0, &mut spawns);
+
+        assert_eq!(w.cell(cx + 3, cy).material(), 1, "wall 本身不可摧毁");
+        assert_eq!(w.cell(cx + 4, cy).material(), 3, "wall 后方沙格应逐格完好（遮挡）");
+        assert!(spawns.is_empty(), "撞墙前只有 air，撞墙即断线，不应产出任何溅射");
+    }
+
+    #[test]
+    fn fire_ray_already_air_cells_cost_zero_and_do_not_respawn() {
+        // 模拟"已被前序射线炸掉"：整条路径预先就是 air，射线应无阻碍走完
+        // 全程且不产出任何 spawn（air 的 blast_cost=0，从不触发摧毁分支）。
+        let t = test_table();
+        let mut w = World::new(1, 1, 0);
+        let fseed = rng::frame_seed(w.seed, w.tick);
+        let mut spawns = Vec::new();
+        fire_ray(&mut w, &t, 10, 10, 8, 0, 5, 0, fseed, 0, &mut spawns);
+        assert!(spawns.is_empty());
+    }
+
+    // ==================== Op::Explode：apply_op 行为测试（spec §10）====================
+
+    fn explode_spawn_positions(spawns: &[SpawnRequest]) -> Vec<(i32, i32)> {
+        let mut v: Vec<(i32, i32)> = spawns.iter().map(|s| (s.x.to_cell(), s.y.to_cell())).collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn explode_center_cell_is_destroyed_when_r_at_least_one() {
+        // 爆心口径钉死（任务书要求）：r>=1 时爆心格自身按第一格计费——只要
+        // 爆心原本非 air 且能量足够，必被摧毁 + 溅射，不因"起点格豁免"跳过
+        // （那是 DDA 粒子飞行语义，爆炸射线的口径明确相反，见 fire_ray 文档）。
+        let t = test_table();
+        let mut w = World::new(1, 1, 0);
+        let (cx, cy) = (30, 30);
+        w.set_cell_stamped(&t, cx, cy, 3, 0); // 爆心本身预置为沙
+        let fseed = rng::frame_seed(w.seed, w.tick);
+        let op = Op::Explode { x: cx, y: cy, r: 3, power: 50 };
+        let mut spawns = Vec::new();
+        w.apply_op(&t, &op, 0, fseed, 0, &mut spawns);
+
+        assert_eq!(w.cell(cx, cy).material(), MAT_AIR, "爆心格必须被摧毁");
+        assert!(
+            explode_spawn_positions(&spawns).contains(&(cx, cy)),
+            "爆心格必须产出溅射粒子：{:?}",
+            explode_spawn_positions(&spawns)
+        );
+    }
+
+    #[test]
+    fn explode_thin_wall_shields_sand_behind_it() {
+        // 行为测试（任务书）：薄墙遮挡——1 格 wall 后方的沙逐格完好。
+        let t = test_table();
+        let mut w = World::new(2, 2, 0);
+        let (cx, cy) = (60, 60);
+        w.set_cell_stamped(&t, cx + 4, cy, 1, 0); // 薄墙（1 格）
+        for dx in 5..=9 {
+            w.set_cell_stamped(&t, cx + dx, cy, 3, 0); // 墙后一整排沙
+        }
+        let fseed = rng::frame_seed(w.seed, w.tick);
+        let op = Op::Explode { x: cx, y: cy, r: 12, power: 10_000 }; // 能量充裕，仍不能穿墙
+        let mut spawns = Vec::new();
+        w.apply_op(&t, &op, 0, fseed, 0, &mut spawns);
+
+        assert_eq!(w.cell(cx + 4, cy).material(), 1, "wall 不可摧毁");
+        for dx in 5..=9 {
+            assert_eq!(w.cell(cx + dx, cy).material(), 3, "墙后第 {dx} 格沙应完好");
+        }
+    }
+
+    #[test]
+    fn explode_pit_conservation_destroyed_cells_equal_spawn_count() {
+        // 挖坑守恒（任务书）：炸掉的格数 == queue_spawn 提交数（容量内）。
+        let t = test_table();
+        let mut w = World::new(2, 2, 0);
+        let (cx, cy) = (60, 60);
+        let r = 6;
+        // 圆心为中心的一个方块实心沙，半径足够覆盖整个爆炸圆盘。
+        for dy in -(r + 1)..=(r + 1) {
+            for dx in -(r + 1)..=(r + 1) {
+                w.set_cell_stamped(&t, cx + dx, cy + dy, 3, 0);
+            }
+        }
+        let before = w.count_material(3);
+        let fseed = rng::frame_seed(w.seed, w.tick);
+        let op = Op::Explode { x: cx, y: cy, r, power: 1000 };
+        let mut spawns = Vec::new();
+        w.apply_op(&t, &op, 0, fseed, 0, &mut spawns);
+        let after = w.count_material(3);
+
+        let destroyed = before - after;
+        assert!(destroyed > 0, "应至少摧毁一些沙格");
+        assert_eq!(destroyed, spawns.len(), "摧毁格数必须等于生成的溅射请求数");
+        // 每个 spawn 必须落在一个"曾是沙、现在是 air"的坐标上，且坐标互不重复
+        // （每格至多被摧毁一次，spec §6 point 4）。
+        let positions = explode_spawn_positions(&spawns);
+        let mut dedup = positions.clone();
+        dedup.dedup();
+        assert_eq!(dedup.len(), positions.len(), "spawn 坐标不应重复：{positions:?}");
+        for &(x, y) in &positions {
+            assert_eq!(w.cell(x, y).material(), MAT_AIR, "spawn 坐标处网格应已是 air");
+        }
+    }
+
+    #[test]
+    fn explode_zero_power_is_a_no_op() {
+        let t = test_table();
+        let mut w = World::new(1, 1, 0);
+        let (cx, cy) = (10, 10);
+        w.set_cell_stamped(&t, cx, cy, 3, 0);
+        let fseed = rng::frame_seed(w.seed, w.tick);
+        let op = Op::Explode { x: cx, y: cy, r: 5, power: 0 };
+        let mut spawns = Vec::new();
+        w.apply_op(&t, &op, 0, fseed, 0, &mut spawns);
+        assert_eq!(w.cell(cx, cy).material(), 3, "power=0 不应摧毁任何格子");
+        assert!(spawns.is_empty());
+    }
+
+    #[test]
+    fn explode_repeated_application_is_deterministic() {
+        // 同 Op 重跑一致（任务书）：两个独立构造、内容完全相同的世界，喂同一
+        // 个 Op::Explode（同 fseed/op_idx），必须产出逐位相同的溅射序列。
+        let t = test_table();
+        let (cx, cy) = (60, 60);
+        let build = || {
+            let mut w = World::new(2, 2, 0x77);
+            for dy in -4..=4 {
+                for dx in -4..=4 {
+                    w.set_cell_stamped(&t, cx + dx, cy + dy, 3, 0);
+                }
+            }
+            w
+        };
+        let mut wa = build();
+        let mut wb = build();
+        let fseed = rng::frame_seed(wa.seed, wa.tick);
+        let op = Op::Explode { x: cx, y: cy, r: 4, power: 40 };
+
+        let mut a = Vec::new();
+        wa.apply_op(&t, &op, 0, fseed, 0, &mut a);
+        let mut b = Vec::new();
+        wb.apply_op(&t, &op, 0, fseed, 0, &mut b);
+
+        let av: Vec<(i32, i32, i32, i32)> = a.iter().map(|s| (s.x.0, s.y.0, s.vx.0, s.vy.0)).collect();
+        let bv: Vec<(i32, i32, i32, i32)> = b.iter().map(|s| (s.x.0, s.y.0, s.vx.0, s.vy.0)).collect();
+        assert_eq!(av, bv, "同一 Op::Explode 重复应用必须给出逐位相同的溅射序列");
+    }
+
+    #[test]
+    fn explode_same_tick_two_explodes_have_different_jitter_sequences() {
+        // I1 同款测试（任务书）：同 tick 内两个参数完全相同、圆心重合的
+        // Op::Explode（op_idx 不同），抖动序列必须不同——即便坐标键相同，
+        // salt=op_idx 这一维必须生效（rng.rs::STREAM_EXPLODE 文档）。
+        let t = test_table();
+        let (cx, cy) = (60, 60);
+        let build = || {
+            let mut w = World::new(2, 2, 0xC0FFEE);
+            for dy in -3..=3 {
+                for dx in -3..=3 {
+                    w.set_cell_stamped(&t, cx + dx, cy + dy, 3, 0);
+                }
+            }
+            w
+        };
+        let mut wa = build();
+        let mut wb = build();
+        let fseed = rng::frame_seed(wa.seed, wa.tick);
+        let op = Op::Explode { x: cx, y: cy, r: 3, power: 30 };
+
+        let mut a = Vec::new();
+        wa.apply_op(&t, &op, 0, fseed, 0, &mut a);
+        let mut b = Vec::new();
+        wb.apply_op(&t, &op, 0, fseed, 1, &mut b);
+
+        let av: Vec<(i32, i32)> = a.iter().map(|s| (s.vx.0, s.vy.0)).collect();
+        let bv: Vec<(i32, i32)> = b.iter().map(|s| (s.vx.0, s.vy.0)).collect();
+        assert_ne!(av, bv, "op_idx 不同时，同参数同圆心的两个 Explode 抖动序列必须不同（I1 回归）");
+    }
+
+    #[test]
+    fn explode_jitter_matches_from_ratio_one_half() {
+        assert_eq!(EXPLODE_JITTER, Fx::from_ratio(1, 2));
     }
 }
