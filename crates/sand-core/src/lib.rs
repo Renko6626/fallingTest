@@ -13,6 +13,7 @@
 
 pub mod cell;
 pub mod chunk;
+pub mod fixed;
 pub mod hash;
 pub mod material;
 pub mod rng;
