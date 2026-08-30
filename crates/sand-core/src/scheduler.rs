@@ -45,8 +45,11 @@ pub(crate) fn step(
     let tick = world.tick;
     let stamp = (tick % 256) as u8;
     let fseed = rng::frame_seed(world.seed, tick);
-    for op in ops {
-        world.apply_op(table, op, stamp, fseed, spawns);
+    // enumerate 下标 = 本 tick 内的 op 序号，折进 Op::Emit 的抖动 salt
+    // （world.rs::emit_salt），区分同 tick 内多个 Emit 命中同一发射格
+    // （Task 5 修复轮 1 I1）。
+    for (op_idx, op) in ops.iter().enumerate() {
+        world.apply_op(table, op, stamp, fseed, op_idx, spawns);
     }
 
     let (wc, hc) = (world.width_chunks, world.height_chunks);

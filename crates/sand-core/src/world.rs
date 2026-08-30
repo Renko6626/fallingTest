@@ -36,19 +36,73 @@ pub(crate) struct SpawnRequest {
     pub(crate) vy: Fx,
 }
 
-/// `Op::Emit` 里 vx 抖动用的 `rng_u32` `attempt` 标号。
+/// `Op::Emit` 里 vx 抖动用的骰子标号（并入 [`emit_attempt`] 的低位）。
 const EMIT_ROLL_VX: u32 = 0;
-/// `Op::Emit` 里 vy 抖动用的 `attempt` 标号。**`attempt` 参数在此被挪用为
-/// "同一粒子内第几次独立掷骰"，而非其在 DDA/落格语境里的原始"重试次数"
-/// 语义**——两者本质都是"同 salt 下需要互相独立的第 N 骰"，charter §11
-/// 翻案 4 只要求"同帧同格多骰不同流/参数"，未强制 attempt 只能表示重试。
-/// 若 vx/vy 复用同一个随机数，两轴抖动会完全相关（同号同幅度），破坏
-/// 抖动的各向同性，故必须用不同 attempt 区分（salt 固定为粒子序号 i 不变）。
+/// `Op::Emit` 里 vy 抖动用的骰子标号。若 vx/vy 复用同一个随机数，两轴抖动
+/// 会完全相关（同号同幅度），破坏抖动的各向同性，故必须与 `EMIT_ROLL_VX`
+/// 用不同值区分。
 const EMIT_ROLL_VY: u32 = 1;
+
+/// `Op::Emit` 抖动 `salt`：折进"本 tick 内 op 序号"（`op_idx`，调用方对本
+/// tick `ops` 切片 `enumerate()` 得到的下标，天然定序）与"粒子序号"（`i`，
+/// 同一个 `Op::Emit` 内部第几个粒子），各占 32 位里的高/低 16 位。
+///
+/// **为什么必须有 `op_idx` 这一维**（Task 5 修复轮 1 I1）：抖动流的坐标锚点
+/// 是发射点本身的格 `(gx, gy)`，不逐粒子变化。若同一 tick 里有两个
+/// `Op::Emit` 命中同一个 `(gx, gy)`（同一发射点重复配置，或不同发射点量化
+/// 后恰好落在同一格），仅用 `salt = i` 会让两个 Op 的第 i 个粒子拿到位级
+/// 相同的抖动序列——直接违反 charter §11 翻案 4"同帧同格多次掷骰必须彼此
+/// 不同"。`op_idx` 折进 salt 后，不同 Op 即便发射点重合，salt 也不同。
+///
+/// `i` 的上界是 `count: u16`（最大 65535，恰好 16 位）；`op_idx` 按同样的
+/// 16 位截断——当前场景规模下一个 tick 的 `ops` 远不到 65536 条，
+/// `debug_assert` 兜底防线，真触发即视为场景异常（不是安全问题：截断后仍
+/// 是确定性的，只是可能与另一个 `op_idx` 折叠出同一个 salt，回退到 I1 修
+/// 复前的风险，故用断言而非静默接受）。
+fn emit_salt(op_idx: usize, i: u32) -> u32 {
+    debug_assert!(
+        op_idx <= u16::MAX as usize,
+        "Op::Emit op_idx（{op_idx}）超出 emit_salt 的 16 位折叠范围，需要扩位"
+    );
+    ((op_idx as u32) << 16) | (i & 0xFFFF)
+}
+
+/// `Op::Emit` 抖动 `attempt`：折进"调用相位"（`stamp`）与"骰子标号"
+/// （[`EMIT_ROLL_VX`]/[`EMIT_ROLL_VY`]），高 8 位给 `stamp`、最低 1 位给
+/// 骰子标号。
+///
+/// **为什么需要 `stamp` 这一维**（Task 5 修复轮 1 I1 括注场景）：
+/// `Sim::apply_setup` 与随后紧接的 tick 0 首个 `step()` 共享同一个
+/// `fseed`——两者都是 `rng::frame_seed(seed, 0)`（setup 期 `world.tick`
+/// 恒为 0，与真正 tick 0 的 fseed 计算式完全相同）。若 setup 里的
+/// `Op::Emit` 与 tick-0 `script` 里的 `Op::Emit` 各自的 `op_idx` 都从 0
+/// 起算（两者是完全独立的 `ops` 切片，互不知情），仍可能在同一发射点撞出
+/// 相同 `salt`。`stamp` 是这两条路径里唯一保证不同的信号
+/// （`SETUP_STAMP = 255` vs. 真实 tick 的 `tick % 256`，tick 0 时为 0），
+/// 折进 `attempt` 后天然区分。跨 tick 不需要它兜底：不同 tick 的 `fseed`
+/// 本就不同，`stamp` 循环撞车（如 tick 0 与 tick 256 同为 0）不构成风险
+/// ——两次调用的 `fseed` 已经不同，`rng_u32` 整体输入早已分叉。
+fn emit_attempt(stamp: u8, roll: u32) -> u32 {
+    ((stamp as u32) << 1) | roll
+}
+
+/// `emit_jitter` 允许的最大 `jitter.0`（Q16.16 raw）。取值推导：设
+/// `width = 2*jitter.0 + 1`，`emit_jitter` 内部把 `[0, width)` 的缩放结果
+/// 转回 `i32`（最大值 `width - 1 = 2*jitter.0`）；要保证这一步不越过
+/// `i32::MAX` 发生静默 wrapping，需要 `2*jitter.0 <= i32::MAX`，即
+/// `jitter.0 <= (i32::MAX - 1) / 2`。`(1 << 30) - 1` 恰好满足（代入得
+/// `width = i32::MAX`，缩放结果最大 `i32::MAX - 1`，安全落在正 `i32` 内）
+/// ——约合 16384 格，远超任何合理法术/发射器配置，纯属越界防线
+/// （Task 5 修复轮 1 Minor 1）。`sand-harness::scenario::resolve_op` 复用
+/// 同一常量做加载期校验，避免两处各自定义、日后各改各的。
+pub const MAX_EMIT_JITTER_RAW: i32 = (1 << 30) - 1;
 
 /// 把 32-bit 随机数映射到 `[-jitter, +jitter]`（Fx raw 域闭区间），纯整数
 /// 运算、无浮点、无运行时除法（唯一除法点在 `fixed.rs::from_ratio`，此处
-/// 只用移位）。
+/// 只用移位）；全部算术走 `wrapping_*`，与核心其余定点运算（`fixed.rs`）
+/// 的约定一致——即便 [`MAX_EMIT_JITTER_RAW`] 的 `debug_assert` 已经在
+/// debug/test 构建里挡住越界输入，release 构建仍要求这里的算术本身不会
+/// 因溢出检查开关差异而分叉。
 ///
 /// 映射算法：设 `width = 2*jitter.0 + 1`（Fx raw 单位，含两端点共 `width`
 /// 个整数值）。`r` 均匀分布在 `[0, u32::MAX]`，右移 32 位重缩放
@@ -57,15 +111,25 @@ const EMIT_ROLL_VY: u32 = 1;
 /// `jitter.0` 平移居中，落入 `[-jitter.0, jitter.0]`：`r = 0` 时缩放结果为
 /// 0，最终为 `-jitter.0`（下界可达）；`r = u32::MAX` 时缩放结果逼近但小于
 /// `width`，即最大为 `2*jitter.0`，最终为 `+jitter.0`（上界可达）。
+/// **残余非均匀性**：`2^32` 一般不能被 `width` 整除，`[0, width)` 里排在
+/// 前面（`2^32 mod width`个）的整数值命中概率比其余的高出至多 1/2^32——
+/// 量级完全淹没在抖动的游戏感官分辨率之下（远小于 1 个 raw 单位的期望
+/// 偏差），不做额外校正。
 /// `jitter.0 <= 0` 视为"无抖动"直接返回零（调用方按 harness 量化约定
 /// 保证非负，这里兜底避免符号翻转出现反向区间）。
 fn emit_jitter(r: u32, jitter: Fx) -> Fx {
     if jitter.0 <= 0 {
         return Fx::ZERO;
     }
-    let width = 2i64 * jitter.0 as i64 + 1;
-    let scaled = ((r as u64) * (width as u64)) >> 32;
-    Fx(scaled as i32 - jitter.0)
+    debug_assert!(
+        jitter.0 <= MAX_EMIT_JITTER_RAW,
+        "Op::Emit jitter（raw={}）超出 MAX_EMIT_JITTER_RAW（{MAX_EMIT_JITTER_RAW}），\
+         emit_jitter 的定点重缩放会溢出 i32 静默 wrapping",
+        jitter.0
+    );
+    let width = (jitter.0 as i64).wrapping_mul(2).wrapping_add(1);
+    let scaled = (r as u64).wrapping_mul(width as u64) >> 32;
+    Fx((scaled as i32).wrapping_sub(jitter.0))
 }
 
 pub struct World {
@@ -159,13 +223,16 @@ impl World {
     }
 
     /// 应用一个 `Op`（ops 阶段，spec §4 第 1 步）。`stamp` 供网格写入类
-    /// 操作（Brush/Fill）盖戳；`fseed` 供 `Op::Emit` 的抖动掷骰（`rng::
-    /// frame_seed(world.seed, tick)`，调用方与网格四相同一口径）；`spawns`
-    /// 是本 tick 粒子生成队列的输出参数——`Op::Emit` 把产出的
-    /// [`SpawnRequest`] 追加进去，调用方（`Sim::step`/`Sim::apply_setup`）
-    /// 负责随后把它们并入 `Particles` 的入队序（Emit 本身不直接碰
-    /// `Particles`，保持 world.rs 不知道粒子池存在——白名单通信介质走
-    /// 队列，而非类型耦合）。
+    /// 操作（Brush/Fill）盖戳，`Op::Emit` 里另外折进抖动 `attempt`
+    /// （见 [`emit_attempt`]）；`fseed` 供 `Op::Emit` 的抖动掷骰（`rng::
+    /// frame_seed(world.seed, tick)`，调用方与网格四相同一口径）；`op_idx`
+    /// 是本 `op` 在调用方本 tick `ops` 切片里的下标（`enumerate()` 天然
+    /// 定序），折进抖动 `salt`（见 [`emit_salt`]），区分同 tick 内多个
+    /// `Op::Emit`；`spawns` 是本 tick 粒子生成队列的输出参数——`Op::Emit`
+    /// 把产出的 [`SpawnRequest`] 追加进去，调用方（`Sim::step`/
+    /// `Sim::apply_setup`）负责随后把它们并入 `Particles` 的入队序（Emit
+    /// 本身不直接碰 `Particles`，保持 world.rs 不知道粒子池存在——白名单
+    /// 通信介质走队列，而非类型耦合）。
     ///
     /// `pub(crate)`（Task 5 起，随 `SpawnRequest` 一起收紧）：出参类型
     /// `SpawnRequest` 本就 `pub(crate)`，外部 crate 拿不到能传的实参，保持
@@ -176,6 +243,7 @@ impl World {
         op: &Op,
         stamp: u8,
         fseed: u32,
+        op_idx: usize,
         spawns: &mut Vec<SpawnRequest>,
     ) {
         match *op {
@@ -197,13 +265,19 @@ impl World {
             }
             Op::Emit { material, x, y, vx, vy, count, jitter } => {
                 // 抖动流的格坐标锚点用发射点本身的格（不逐粒子变化——同一次
-                // Emit 的全部粒子共享 (x,y)，用 salt = 粒子序号 i 区分掷骰，
-                // 而非靠坐标区分，否则同点多次 Emit 会撞同一批随机数）。
+                // Emit 的全部粒子共享 (x,y)）。salt 折进 (op_idx, i) 两维：
+                // op_idx 区分"本 tick 内哪个 Op::Emit"（I1 修复：仅用
+                // salt = i 会让同 tick 命中同一发射格的两个 Emit 撞出位级
+                // 相同的抖动序列），i 区分"同一个 Emit 内第几个粒子"。
+                // attempt 折进 (stamp, roll) 两维：roll 区分 vx/vy 两骰，
+                // stamp 额外区分 setup 阶段与 tick 0 首个 step()（两者共享
+                // 同一 fseed，见 emit_attempt 文档）。
                 let gx = x.to_cell();
                 let gy = y.to_cell();
                 for i in 0..count as u32 {
-                    let rx = rng::rng_u32(fseed, rng::STREAM_EMIT, gx, gy, i, EMIT_ROLL_VX);
-                    let ry = rng::rng_u32(fseed, rng::STREAM_EMIT, gx, gy, i, EMIT_ROLL_VY);
+                    let salt = emit_salt(op_idx, i);
+                    let rx = rng::rng_u32(fseed, rng::STREAM_EMIT, gx, gy, salt, emit_attempt(stamp, EMIT_ROLL_VX));
+                    let ry = rng::rng_u32(fseed, rng::STREAM_EMIT, gx, gy, salt, emit_attempt(stamp, EMIT_ROLL_VY));
                     spawns.push(SpawnRequest {
                         material,
                         x,
@@ -290,7 +364,7 @@ mod tests {
             jitter: Fx::from_int(1),
         };
         let mut spawns = Vec::new();
-        w.apply_op(&t, &op, 0, fseed, &mut spawns);
+        w.apply_op(&t, &op, 0, fseed, 0, &mut spawns);
         assert_eq!(spawns.len(), 5, "count 个粒子必须全部产出（Emit 不吃容量限流，那是 spawn 阶段的事）");
         for s in &spawns {
             assert_eq!(s.material, 2);
@@ -313,7 +387,7 @@ mod tests {
             jitter: Fx::from_int(2),
         };
         let mut spawns = Vec::new();
-        w.apply_op(&t, &op, 0, fseed, &mut spawns);
+        w.apply_op(&t, &op, 0, fseed, 0, &mut spawns);
         assert_eq!(spawns.len(), 8);
 
         // salt 独立性：不同粒子序号 i 的 vx 抖动必须有区分度（不能全部相同）。
@@ -346,10 +420,98 @@ mod tests {
         };
         let mut a = Vec::new();
         let mut b = Vec::new();
-        w.apply_op(&t, &op, 0, fseed, &mut a);
-        w.apply_op(&t, &op, 0, fseed, &mut b);
+        w.apply_op(&t, &op, 0, fseed, 0, &mut a);
+        w.apply_op(&t, &op, 0, fseed, 0, &mut b);
         let av: Vec<(i32, i32)> = a.iter().map(|s| (s.vx.0, s.vy.0)).collect();
         let bv: Vec<(i32, i32)> = b.iter().map(|s| (s.vx.0, s.vy.0)).collect();
         assert_eq!(av, bv, "同一 fseed 重复应用 Emit 必须给出逐粒子完全相同的抖动序列");
+    }
+
+    // ==================== 修复轮 1 I1：同帧同格多 Emit 撞 key ====================
+
+    /// 同一 tick 内两个 `Op::Emit` 命中同一发射格：op_idx 不同（0 vs 1），
+    /// 抖动序列必须整体不同——修复前（salt 只含粒子序号 i）这里会逐位相同。
+    #[test]
+    fn emit_op_idx_differentiates_same_tick_same_cell_emits() {
+        let t = test_table();
+        let mut w = World::new(2, 2, 0xC0FFEE);
+        let fseed = rng::frame_seed(w.seed, w.tick);
+        let op = Op::Emit {
+            material: 2,
+            x: Fx::from_int(20),
+            y: Fx::from_int(20),
+            vx: Fx::ZERO,
+            vy: Fx::ZERO,
+            count: 6,
+            jitter: Fx::from_int(3),
+        };
+        let mut a = Vec::new();
+        let mut b = Vec::new();
+        // 同一 op 值、同一 fseed，唯一差异是 op_idx（模拟同 tick ops 切片
+        // 里的第 0 与第 1 条）。
+        w.apply_op(&t, &op, 0, fseed, 0, &mut a);
+        w.apply_op(&t, &op, 0, fseed, 1, &mut b);
+        let av: Vec<(i32, i32)> = a.iter().map(|s| (s.vx.0, s.vy.0)).collect();
+        let bv: Vec<(i32, i32)> = b.iter().map(|s| (s.vx.0, s.vy.0)).collect();
+        assert_ne!(
+            av, bv,
+            "op_idx 不同时，同发射格的两个 Emit 抖动序列必须不同（I1 回归）"
+        );
+    }
+
+    /// `emit_salt` 白盒：不同 `op_idx` 折出不同 salt（即便 `i` 相同）。
+    #[test]
+    fn emit_salt_differs_across_op_idx_for_same_particle_index() {
+        assert_ne!(emit_salt(0, 3), emit_salt(1, 3));
+        assert_ne!(emit_salt(0, 0), emit_salt(1, 0));
+    }
+
+    /// I1 括注场景：`Sim::apply_setup`（`stamp = SETUP_STAMP = 255`）与
+    /// tick 0 首个 `step()`（`stamp = 0`）共享同一 fseed；`emit_attempt`
+    /// 把 `stamp` 折进去后，即便 op_idx/salt 完全相同，两个相位的抖动
+    /// 序列也必须不同。
+    #[test]
+    fn emit_attempt_differentiates_setup_phase_from_tick_zero_step() {
+        let t = test_table();
+        let mut w = World::new(1, 1, 7);
+        let fseed = rng::frame_seed(w.seed, w.tick); // world.tick == 0，setup 期同款计算
+        let op = Op::Emit {
+            material: 2,
+            x: Fx::from_int(8),
+            y: Fx::from_int(8),
+            vx: Fx::ZERO,
+            vy: Fx::ZERO,
+            count: 3,
+            jitter: Fx::from_int(2),
+        };
+        const SETUP_STAMP: u8 = 255;
+        let mut setup_spawns = Vec::new();
+        let mut tick0_spawns = Vec::new();
+        w.apply_op(&t, &op, SETUP_STAMP, fseed, 0, &mut setup_spawns);
+        w.apply_op(&t, &op, 0, fseed, 0, &mut tick0_spawns);
+        let sv: Vec<(i32, i32)> = setup_spawns.iter().map(|s| (s.vx.0, s.vy.0)).collect();
+        let tv: Vec<(i32, i32)> = tick0_spawns.iter().map(|s| (s.vx.0, s.vy.0)).collect();
+        assert_ne!(
+            sv, tv,
+            "setup 阶段与 tick 0 首个 step() 共享 fseed，stamp 必须区分出不同抖动序列"
+        );
+    }
+
+    // ==================== 修复轮 1 Minor 1：jitter 上界防护 ====================
+
+    #[test]
+    fn emit_jitter_at_max_bound_does_not_panic() {
+        // 恰在边界：width = i32::MAX，缩放结果最大 i32::MAX - 1，安全。
+        let jitter = Fx(MAX_EMIT_JITTER_RAW);
+        let lo = emit_jitter(0, jitter);
+        let hi = emit_jitter(u32::MAX, jitter);
+        assert_eq!(lo, -jitter);
+        assert_eq!(hi, jitter);
+    }
+
+    #[test]
+    #[should_panic(expected = "超出 MAX_EMIT_JITTER_RAW")]
+    fn emit_jitter_above_max_bound_panics_in_debug() {
+        let _ = emit_jitter(0, Fx(MAX_EMIT_JITTER_RAW + 1));
     }
 }

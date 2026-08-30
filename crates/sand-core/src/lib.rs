@@ -28,7 +28,7 @@ pub use cell::Cell;
 pub use fixed::Fx;
 pub use material::{Category, MaterialDef, MaterialTable, MAT_AIR, MAT_WALL};
 pub use particle::{Particles, MAX_PARTICLES};
-pub use world::{Op, World};
+pub use world::{Op, World, MAX_EMIT_JITTER_RAW};
 
 /// 扫描模式（O1 spec §2.1）。三种模式**语义逐位等价**（SyncTest 六配置执法）；
 /// LiveRect 为运行默认，Full/ChunkSleep 是执法对照配置。
@@ -101,8 +101,8 @@ impl Sim {
     pub fn apply_setup(&mut self, ops: &[Op]) {
         assert_eq!(self.world.tick, 0, "setup 只允许在首个 step 之前");
         let fseed = rng::frame_seed(self.world.seed, self.world.tick);
-        for op in ops {
-            self.world.apply_op(&self.table, op, SETUP_STAMP, fseed, &mut self.spawn_queue);
+        for (op_idx, op) in ops.iter().enumerate() {
+            self.world.apply_op(&self.table, op, SETUP_STAMP, fseed, op_idx, &mut self.spawn_queue);
         }
     }
 
