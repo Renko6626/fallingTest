@@ -11,7 +11,23 @@ use crate::scenario::Scenario;
 pub struct RenderOpts {
     pub every: u64,
     pub scale: usize,
+    /// 回放帧率覆盖（帧/秒）。None = 墙钟等速回放，但延迟封顶 MAX_DELAY_CS
+    /// （稀疏采样时自动退化为延时摄影，避免 --every 100 变 1.67 秒/帧的幻灯片）。
+    pub fps: Option<u32>,
     pub out: String,
+}
+
+/// GIF 单位 = 1/100 秒；多数播放器对 <2cs 的延迟按 10cs 处理，故下限 2。
+const MIN_DELAY_CS: u16 = 2;
+const MAX_DELAY_CS: u16 = 10;
+
+/// 帧延迟（centiseconds）。60Hz 模拟，每 every tick 采一帧。
+fn frame_delay(every: u64, fps: Option<u32>) -> u16 {
+    match fps {
+        Some(f) => ((100.0 / f.max(1) as f64).round() as u16).max(MIN_DELAY_CS),
+        None => ((every as f64 * 100.0 / 60.0).round() as u16)
+            .clamp(MIN_DELAY_CS, MAX_DELAY_CS),
+    }
 }
 
 pub fn render_gif(
@@ -41,8 +57,7 @@ pub fn render_gif(
     let mut enc = gif::Encoder::new(&mut file, ow as u16, oh as u16, &palette)
         .map_err(|e| format!("GIF 编码器：{e}"))?;
     enc.set_repeat(gif::Repeat::Infinite).map_err(|e| format!("GIF repeat：{e}"))?;
-    // 60Hz 模拟，每 every tick 一帧；GIF delay 单位 = 1/100 秒
-    let delay = ((opts.every as f64 * 100.0 / 60.0).round() as u16).max(2);
+    let delay = frame_delay(opts.every, opts.fps);
 
     let mut frames = 0usize;
     let mut buf = vec![0u8; ow * oh];
@@ -103,5 +118,29 @@ fn fill_frame(sim: &Sim, w: usize, h: usize, scale: usize, buf: &mut [u8]) {
         for chunk in tail.chunks_exact_mut(ow) {
             chunk.copy_from_slice(head);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn delay_realtime_dense_sampling() {
+        assert_eq!(frame_delay(1, None), 2); // 1.67cs → 下限 2
+        assert_eq!(frame_delay(4, None), 7); // 6.67 → 7，M0 mixed 口径不变
+    }
+
+    #[test]
+    fn delay_sparse_sampling_caps_to_timelapse() {
+        assert_eq!(frame_delay(100, None), 10); // 修复前 167cs 幻灯片
+        assert_eq!(frame_delay(6, None), 10); // 恰好 10cs 边界
+    }
+
+    #[test]
+    fn delay_fps_override_decouples_from_every() {
+        assert_eq!(frame_delay(100, Some(25)), 4);
+        assert_eq!(frame_delay(1, Some(100)), 2); // 1cs → 下限 2
+        assert_eq!(frame_delay(50, Some(0)), 100); // fps=0 防除零按 1 处理
     }
 }
