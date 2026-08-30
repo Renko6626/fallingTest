@@ -4,6 +4,8 @@
 > 运行时版本：Rust（sand-core M0，commit `44a70cb`+）
 > 最近更新：2026-08-30 (UTC+8)
 > **Status**: Trial（非正式：临时场景、服务器 CPU、后台另有 SyncTest 在跑——112 核余量下干扰可忽略但未隔离。正式基线待 M1 后按 harness-bench 建）
+>
+> **已被正式基线取代 → 见 `docs/perf/2026-08-30-m0-rust-baseline.md`**（M1 动工前 Task 1，同机同口径 `data/scenarios/{mixed,acceptance,sparse}.ron` 正式测量）。本文档保留作为 O1 前后对照与"地图能做多大"史料，其场景/数字口径与正式基线不完全对应，不再单独引用。
 
 ## 环境
 
