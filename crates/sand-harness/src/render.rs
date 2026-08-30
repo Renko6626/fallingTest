@@ -11,6 +11,9 @@ use crate::scenario::Scenario;
 pub struct RenderOpts {
     pub every: u64,
     pub scale: usize,
+    /// 从第 N tick 起才输出帧（此前模拟照跑不出帧）——给长场景出"特写段"用，
+    /// 如爆炸瞬态：--from 450 --ticks 1700 --every 2 只看两次爆炸窗口。
+    pub from: u64,
     /// 回放帧率覆盖（帧/秒）。None = 墙钟等速回放，但延迟封顶 MAX_DELAY_CS
     /// （稀疏采样时自动退化为延时摄影，避免 --every 100 变 1.67 秒/帧的幻灯片）。
     pub fps: Option<u32>,
@@ -63,7 +66,7 @@ pub fn render_gif(
     let mut buf = vec![0u8; ow * oh];
     for t in 0..ticks {
         sim.step(&sc.ops_for_tick(t));
-        if t % opts.every == 0 || t + 1 == ticks {
+        if t >= opts.from && (t % opts.every == 0 || t + 1 == ticks) {
             fill_frame(sim, w, h, opts.scale, &mut buf);
             draw_particles(sim, w, h, opts.scale, &mut buf);
             let frame = gif::Frame {

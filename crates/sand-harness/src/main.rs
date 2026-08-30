@@ -3,7 +3,7 @@
 //!   sand-harness synctest <scenario.ron> [--ticks N] [--threads N] [--materials PATH]
 //!   sand-harness replay   <scenario.ron> [--golden PATH | --write-golden PATH] [--ticks N] [--grid-only]
 //!   sand-harness hashrun  <scenario.ron> [--ticks N] [--grid-only]
-//!   sand-harness render   <scenario.ron> -o out.gif [--every K] [--scale N] [--ticks N] [--fps F]
+//!   sand-harness render   <scenario.ron> -o out.gif [--every K] [--scale N] [--ticks N] [--fps F] [--from T]
 //!
 //! `--grid-only`：哈希流用网格哈希树根（跳过粒子层折叠），M1 golden 重录取证专用
 //! （spec §9）——证明粒子层并入前后 Layer G 逐 tick 哈希位级一致。
@@ -26,6 +26,7 @@ struct Args {
     every: u64,
     scale: usize,
     fps: Option<u32>,
+    from: u64,
     scan: sand_core::ScanMode,
     grid_only: bool,
 }
@@ -46,6 +47,7 @@ fn parse_args() -> Result<Args, String> {
         every: 4,
         scale: 4,
         fps: None,
+        from: 0,
         scan: sand_core::ScanMode::LiveRect,
         grid_only: false,
     };
@@ -61,6 +63,7 @@ fn parse_args() -> Result<Args, String> {
             "--every" => a.every = val()?.parse().map_err(|e| format!("--every: {e}"))?,
             "--scale" => a.scale = val()?.parse().map_err(|e| format!("--scale: {e}"))?,
             "--fps" => a.fps = Some(val()?.parse().map_err(|e| format!("--fps: {e}"))?),
+            "--from" => a.from = val()?.parse().map_err(|e| format!("--from: {e}"))?,
             "--grid-only" => a.grid_only = true,
             "--scan" => {
                 a.scan = match val()?.as_str() {
@@ -125,7 +128,8 @@ fn run() -> Result<(), String> {
         "render" => {
             let out = a.out.ok_or("render 需要 -o 输出路径")?;
             let mut sim = runner::build_sim(&sc, &table, a.threads, sand_core::ScanMode::LiveRect)?;
-            let opts = RenderOpts { every: a.every.max(1), scale: a.scale.max(1), fps: a.fps, out };
+            let opts =
+                RenderOpts { every: a.every.max(1), scale: a.scale.max(1), fps: a.fps, from: a.from, out };
             let frames = render_gif(&sc, &table, &mut sim, ticks, &opts)?;
             println!(
                 "已渲染 {frames} 帧 → {}（{}x{} ×{}，每 {} tick 一帧）",
