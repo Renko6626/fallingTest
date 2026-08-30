@@ -201,19 +201,20 @@ tick 的 `scheduler::step` 才会被合并进 `dirty` 生效——粒子落格�
 ### 6.2 手感迭代四项（用户目检裁决，2026-08-30）
 
 M1 终审后针对 `explosion_splash.ron` 的多轮实机目检，落定四项调参 + 一项涨落
-机制（均已过 core 102 项测试 + clippy，实现见 `crates/sand-core/src/world.rs`
-的 `fire_ray`/`apply_op` Explode 分支）：
+机制（均已过 core 102 项测试 + clippy，实现见 `crates/sand-core/src/explode.rs`
+——本轮同时把 §6/§6.1 原先挂在 `world.rs` 的实现全部纯搬移到该文件，逻辑不变，
+见 §13 决策记录第 8 条）：
 
 1. **`EXPLODE_SPEED` 16→8**（"粒子更重"裁决）：溅射出射速度上限从
    `Fx::from_int(16)` 降到 `Fx::from_int(8)`——原速度手感偏"轻飘"，目检后
-   裁定砍半（`world.rs::EXPLODE_SPEED`）。与 `particle.rs::MAX_SPEED`
+   裁定砍半（`explode.rs::EXPLODE_SPEED`）。与 `particle.rs::MAX_SPEED`
    （飞行 clamp 上限，管数值纪律）解耦，纯手感调参项。
 2. **密度冲量缩放**（"冲量物理"裁决）：同一冲量下出射速度应与材质密度成
    反比（`v ∝ 1/density`），而非此前全材质等速。新增参考密度
    `REF_BLAST_DENSITY = 40`（取沙的密度为锚点，沙的缩放系数恒为 1.0，手感
    不动），出射速度额外乘 `mass_factor = REF_BLAST_DENSITY / density(material)`
    （`Fx::from_ratio`，整数除法）；水（密度 16）系数 2.5，会被 `clamp_speed`
-   封顶（`world.rs::fire_ray`，单测 `blast_mass_factor_golden_values`/
+   封顶（`explode.rs::fire_ray`，单测 `blast_mass_factor_golden_values`/
    `fire_ray_lighter_material_launches_faster_than_heavier`）。
 3. **射线方向涨落**（"完美圆坑不自然"裁决）：此前每条射线严格按
    `power`/`r` 结算，坑形是完美 Bresenham 圆——目检认为不自然。改为每条
@@ -226,7 +227,7 @@ M1 终审后针对 `explosion_splash.ron` 的多轮实机目检，落定四项�
    stamp + 低 1 位骰子标号"扩为"高位 stamp + **低 2 位**骰子标号"（4 颗骰：
    vx/vy/ray_power/ray_range）——`Op::Emit`/`Op::Explode` 的 attempt 编码
    各自独立演化，本次扩位只作废爆炸场景的 RNG 序列，不牵连 Emit（瀑布）
-   （`world.rs::explode_attempt` 文档、单测
+   （`explode.rs::explode_attempt` 文档、单测
    `explode_crater_is_not_perfectly_circular`）。
 4. **汽化阈值现值调整**：`data/materials.ron` 里 `sand.vaporize_threshold`
    由 0.7 上调到 **0.95**（沙更耐炸，近心汽化圈显著收窄）；`water` 维持

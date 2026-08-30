@@ -14,6 +14,8 @@
 pub mod cell;
 pub mod chunk;
 mod dda;
+mod emit;
+mod explode;
 pub mod fixed;
 pub mod hash;
 pub mod material;
@@ -25,10 +27,11 @@ mod window;
 pub mod world;
 
 pub use cell::Cell;
+pub use emit::MAX_EMIT_JITTER_RAW;
 pub use fixed::Fx;
 pub use material::{Category, MaterialDef, MaterialTable, BLAST_COST_INFINITE, MAT_AIR, MAT_WALL};
 pub use particle::{Particles, MAX_PARTICLES};
-pub use world::{Op, World, MAX_EMIT_JITTER_RAW};
+pub use world::{Op, World};
 
 /// 扫描模式（O1 spec §2.1）。三种模式**语义逐位等价**（SyncTest 六配置执法）；
 /// LiveRect 为运行默认，Full/ChunkSleep 是执法对照配置。

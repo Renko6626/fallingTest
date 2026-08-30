@@ -32,6 +32,24 @@
   `docs/superpowers/specs/2026-08-30-m1-particle-layer-design.md`
   §6.2（新增）/§10/§13 决策记录第 8 条。
 
+- **`world.rs` 拆分为 `explode.rs`/`emit.rs`（纯搬移重构，M1 收口）**：
+  `world.rs` 原扛"网格存储 + Op::Emit + Op::Explode"三职责、约 1300 行；
+  新建 `crates/sand-core/src/explode.rs`（`circle_offsets`/`fire_ray`/
+  `ray_fluct`/`explode_attempt`、`EXPLODE_*` 全部常量、`REF_BLAST_DENSITY`
+  及其全部测试）与 `crates/sand-core/src/emit.rs`（`emit_salt`/
+  `emit_attempt`/`emit_jitter`、`EMIT_ROLL_*`、`MAX_EMIT_JITTER_RAW` 及其
+  全部测试）；`World::apply_op` 留在 `world.rs`，`Op::Explode`/`Op::Emit`
+  分支体抽为 `explode::apply_explode(...)`/`emit::apply_emit(...)` 调用。
+  `emit_jitter` 声明 `pub(crate)` 供 `explode.rs` 复用（同一套抖动数学）；
+  `World::vaporized_total` 字段收紧为 `pub(crate)`（`explode::fire_ray`
+  跨模块直接自增）。**一行逻辑未改**——纯度证据：拆分前（`66cea0a`）后
+  `cargo test --workspace` 全绿（sand-core 单测仍 102 项，逐条搬到对应
+  模块，无一丢失/新增逻辑分支）且拆分前重录的 4 个 golden 一个不红（=
+  逐位零扰动）；`cargo clippy --workspace --all-targets` 零警告。涉及：
+  `crates/sand-core/src/{world,explode,emit,lib,material}.rs`、
+  `docs/superpowers/specs/2026-08-30-m1-particle-layer-design.md` §6.2
+  文件引用同步更新。
+
 ### Fixed
 - **GIF 帧延迟与采样率解耦**（用户目检发现帧率异常）：`render.rs` 原公式 delay = every×100/60（墙钟等速），`--every 100` 时 1.67 秒/帧成幻灯片——M1 验收两张 GIF 即中招。默认仍等速但 clamp [2,10]cs（稀疏采样自动转延时摄影），新增 `--fps` 显式覆盖回放帧率；3 项 `frame_delay` 金值单测；`out/waterfall.gif`、`out/explosion_splash.gif` 已重渲（10cs/帧 ≈ 20 秒）。`crates/sand-harness/src/{render,main}.rs`，commit `d982c70`。
 
