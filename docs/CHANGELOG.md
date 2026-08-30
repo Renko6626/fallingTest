@@ -22,6 +22,9 @@
 ### Proposed
 - `docs/proposals/2026-08-30-noita-derived-optimizations.md`：Noita 对照四项优化入档——O1 chunk 内活矩形（M1 门口；含与全扫逐位等价的论证，区别于被否决的冻结矩形）、O2 Layer F 低分辨率场格+半频（M2 设计期裁决）、O3 粉末惯性 is_free_falling/inertial_resistance（M1 可选）、O4 运行时周期哈希口径（M5）；另记录两项明确不采纳（reality bubble 违反 P1、非确定随机跳过违反 D2）。docs/README 优先队列同步。
 
+### Changed
+- **总纲 §11 翻案 5：里程碑验收 10 万 tick → 2 万 tick 密集场景**（用户裁决）。依据：架构内无 10 万独有效应（RNG 无状态、睡眠为无状态等待、世代戳 6k 已绕 23 圈、结构性分叉在触发配置后数百 tick 内暴露——tick 583 实证）；10 万 soak 降级为 M5/M6 发布门过夜测试。`data/scenarios/acceptance.ron` 改为 20000 tick（唤醒波挪至 12k/16k，事件覆盖不变），四配置 synctest 从 ~50 分钟降至 ~10 分钟。spec §0 验收节同步。M0 已按原 10 万标准过关，本改动自 M1 起生效。
+
 ### Fixed
 - **spec §1.4 实施期修订：cell 级冻结脏矩形被 SyncTest 当场击落**——单缓冲扫描允许 tick 内链式移动（整段静止水沿扫描方向一 tick 整体平移，链长无上界），tick 起点冻结的矩形切断链，与全扫语义分叉（实测 tick 583，256×192 场景）。修复：休眠粒度提升为 **chunk 级 + 相位边界唤醒**（重查 dirty ∪ next_dirty，屏障后原子合并结果调度无关），活跃 chunk 全量扫描；等价论证入 spec §1.4。`crates/sand-core/src/scheduler.rs`。这正是 SyncTest 作为常驻执法的第一次实战开张。
 

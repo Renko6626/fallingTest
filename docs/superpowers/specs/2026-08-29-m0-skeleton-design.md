@@ -12,9 +12,9 @@
 总纲 M0 行：**chunk 寻址存储 + 四相调度器 + 沙、水两种材质 + SyncTest 双实例框架**，
 外加已批准的占位 GIF 渲染器。验收：
 
-1. `cargo test` 全绿（含 CI 级 SyncTest ≥1 万 tick 与 golden replay）。
-2. `sand-harness synctest`：同场景 1 线程 vs N 线程、休眠跳过开 vs 关，10 万 tick 哈希流零分叉。
-3. 双机（台式机 × 笔记本）`sand-harness hashrun` 输出逐字一致（用户手动执行）。
+1. `cargo test` 全绿（含 CI 级 SyncTest 与 golden replay）。
+2. `sand-harness synctest`：同场景 1 线程 vs N 线程、休眠跳过开 vs 关，**2 万 tick 密集场景**哈希流零分叉（2026-08-30 总纲翻案 5：原 10 万 tick 降级为 M5/M6 发布门 soak；M0 实际已按 10 万过关）。
+3. 双机（台式机 × 笔记本）`sand-harness hashrun` 输出逐字一致（用户手动执行，同场景）。
 4. `sand-harness render` 产出沙堆 + 倒水场景 GIF，肉眼行为正确。
 
 ### 明确不做（M0 之外）

@@ -1,12 +1,14 @@
-// 验收场景（spec §0 第 2/3 条）：640×384（charter 基准 640×360 向上取整），
-// 盆地 + 三路浇注 + 阶梯障碍。用法：
-//   sand-harness synctest data/scenarios/acceptance.ron --ticks 100000
-//   sand-harness hashrun  data/scenarios/acceptance.ron --ticks 100000   （双机 diff）
+// 里程碑验收场景（总纲 §11 翻案 5：2 万 tick 密集版）：640×384，
+// 浇注(0–8k) → 沉降入睡 → 两波长睡唤醒(12k/16k)。事件覆盖：多 chunk 缝隙、
+// 沙水混合、chunk 入睡与唤醒、世代戳绕回(78 圈)。用法：
+//   sand-harness synctest data/scenarios/acceptance.ron           （里程碑验收，~10 分钟）
+//   sand-harness hashrun  data/scenarios/acceptance.ron > h.txt   （双机 diff，~2 分钟）
+//   sand-harness synctest data/scenarios/acceptance.ron --ticks 100000   （M5/M6 发布门 soak）
 Scenario(
     name: "acceptance",
     world: (10, 6),
     seed: 0x5EED_2026,
-    ticks: 100000,
+    ticks: 20000,
     setup: [
         Fill(material: "wall", x0: 0, y0: 360, x1: 639, y1: 383),   // 底部（360 以下按 spec 填墙）
         Fill(material: "wall", x0: 0, y0: 200, x1: 7, y1: 359),      // 左壁
@@ -18,8 +20,8 @@ Scenario(
         Every(from: 0, until: 8000, step: 3, op: Brush(material: "sand", x: 220, y: 16, r: 2)),
         Every(from: 0, until: 8000, step: 4, op: Brush(material: "water", x: 100, y: 16, r: 2)),
         Every(from: 0, until: 8000, step: 4, op: Brush(material: "water", x: 480, y: 16, r: 2)),
-        // 后期扰动：静置世界上再来两波，压测休眠唤醒
-        Every(from: 40000, until: 41000, step: 5, op: Brush(material: "sand", x: 430, y: 16, r: 2)),
-        Every(from: 70000, until: 71000, step: 5, op: Brush(material: "water", x: 320, y: 16, r: 2)),
+        // 长睡唤醒 ×2：静置入睡后再来两波，压测休眠唤醒语义
+        Every(from: 12000, until: 13000, step: 5, op: Brush(material: "sand", x: 430, y: 16, r: 2)),
+        Every(from: 16000, until: 17000, step: 5, op: Brush(material: "water", x: 320, y: 16, r: 2)),
     ],
 )
