@@ -12,10 +12,10 @@
 
 ## 当前优先队列
 
-1. **M0 收尾**：双机 hashrun 验收（用户手动，见 `sessions/2026-08-30-m0-implementation.md`）。其余验收项已过，代码在 `crates/`。
-2. **M1 门口：O1 chunk 内活矩形**（`proposals/2026-08-30-noita-derived-optimizations.md`）——回收 Noita 式 sub-chunk 跳过，SyncTest 加第 5 配置执法。
-3. **M1 粒子层**：脱格/落格闭环、DDA 碰撞、容量限流（先 brainstorming 出 spec；顺手评估 O3 粉末惯性）。
-4. M2 场层与反应表（spec 里裁决 O2 场降本）→ M3 刚体 → M5 时启用 O4 运行时周期哈希（详见总纲 §11 与上述提案）。
+1. **M0 收尾**：双机 hashrun 验收（用户手动，见 `sessions/2026-08-30-m0-implementation.md`）。其余验收项已过，代码在 `crates/`。O1 活矩形已落地（commit `90dcf20`）。
+2. **M1 粒子层**（brainstorming 进行中，2026-08-30 已裁决范围）：**最小闭环**——场景发射器（瀑布）+ 爆炸 Op（网格 cell → 带速粒子 = 脱格）+ DDA + 串行落格 + 容量限流；Layer G 语义零改动。**Layer G 速度积分（格内移速 ≤4、超限自然脱格）后置为独立提案**——它顶在 r≤16 并行论证上，须单独立项/过 §11/跑 SyncTest（Noita 双系统实锤见 `reference/noita-deep-dive.md:200,208`）。O3 粉末惯性同理不入 M1。M1 动工前先建 `perf/` 正式 Rust bench 基线。
+3. **Layer G 速度积分提案**（M1 后）：上一条后置的债，Cell 位段速度位预留规划随 M1 spec 一起出。
+4. M2 场层与反应表（spec 里裁决 O2 场降本 + O3 时点）→ M3 刚体 → M5 时启用 O4 运行时周期哈希（详见总纲 §11 与上述提案）。
 
 ## 目录分工
 

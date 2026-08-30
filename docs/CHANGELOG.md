@@ -7,6 +7,9 @@
 
 ## 2026-08-30
 
+### Changed
+- **M1 粒子层范围裁决（用户批准，brainstorming 进行中）**：M1 走**最小闭环**——粒子来源 = 场景发射器（瀑布）+ 爆炸 Op（半径内网格 cell 轰成带外向速度的粒子，即真实脱格路径），Layer G 语义零改动、golden 不作废；DDA / 串行按 id 落格 / 64k 容量限流照总纲。**Layer G 速度积分**（格内移速 ≤4、超限自然脱格——总纲 §4 Layer G/P 衔接的原文语义）**后置为 M1 之后的独立提案**：它直接顶在 r≤16 并行安全论证上，须单独立项、过 §11、跑 SyncTest；此为分期实施而非翻案。依据：Noita 实为"网格速度积分 + 脱格粒子"双系统（官方 32px/帧上限锚点 `docs/reference/noita-deep-dive.md:200`、GDC 原话同文 208-210），网格速度是迟早要还的债，记账不弃账。O3 粉末惯性同理不入 M1（一次只动一个语义层，M0 tick-583 教训）。M1 动工前先落 `docs/perf/` 正式 bench 基线。`docs/README.md` 优先队列同步。
+
 ### Added
 - **O1 chunk 内活矩形实施完成**（spec `docs/superpowers/specs/2026-08-30-o1-live-rect-design.md` → Implemented）：`ScanMode { Full, ChunkSleep, LiveRect }` 替换 `sleep_skip`（`crates/sand-core/src/lib.rs`）；单代码路径动态边界扫描（`rules.rs::update_chunk`——起始矩形参数化，Full/ChunkSleep 传 FULL 时扩张自然无效）；WriteWindow 任务本地活矩形追踪（`window.rs`）；调度起始矩形 = dirty ∪ next_dirty 快照（`scheduler.rs`）。等价性论证核心 = 以全扫访问序定义"前方"，过度包含永远安全（spec §1）。**双证**：既有 golden 用 LiveRect 重放哈希一字不变 + SyncTest 升级六配置（{1,N 线程}×{Full,ChunkSleep,LiveRect}）全绿。收益（`docs/perf/` O1 节）：稀疏 2.7×、worst 1.2×、睡眠持平。新增 `data/scenarios/sparse.ron` bench 场景与 harness `--scan full|sleep|live` 开关。
 - **M0 骨架与执法实施完成**（spec `2026-08-29-m0-skeleton-design.md` → Implemented）：
