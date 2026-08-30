@@ -5,6 +5,11 @@
 
 ## [Unreleased]
 
+## 2026-08-31
+
+### Changed
+- **M1 验收闭环：GIF 目检经用户确认通过**（验收 §0 第 4 项，此前结论留用户；确认版本为爆炸手感收口后 `66cea0a`..`33ab3da`）。M1 至此仅剩双机 hashrun（跨机项，移交下一会话首项，M0/M1 场景一起跑）。`docs/sessions/2026-08-30-m1-particle-layer.md` 验收表、`docs/README.md` 优先队列同步（下一步二选一待用户裁决：Layer G 速度积分提案 vs M2 场层与反应表）。
+
 ## 2026-08-30
 
 ### Changed
