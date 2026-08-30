@@ -105,7 +105,9 @@ pub const G_ACCEL: u8 = 1;              // 0.25 格/tick²
 
 ### 3.1 数据
 
-`data/materials.ron` 每材质加 `dispersion: u8`，缺省 1。加载期在 `crates/sand-harness/src/scenario.rs` 校验 `1 <= d <= DISPERSION_MAX(8)`，越界 `Err`——体例仿既有 `quantize_vaporize_threshold` 与 `MAX_EMIT_JITTER_RAW` 校验（I/O 层是唯一校验点，`material.rs` 侧不做取值校验，同 `blast_cost` 先例，见 `crates/sand-core/src/material.rs:37`）。
+`data/materials.ron` 每材质加 `dispersion: u8`，缺省 1。加载期在 `crates/sand-harness/src/scenario.rs` 校验 `1 <= d <= DISPERSION_MAX(8)`，越界 `Err`——体例仿既有 `quantize_vaporize_threshold` 与 `MAX_EMIT_JITTER_RAW` 校验。
+
+**但 core 侧不能像 `blast_cost` 那样完全免校验**（2026-08-31 评审修订）：`blast_cost` 配错只是爆炸手感不对，`dispersion` 配错（绕过 harness 直接构表塞超界值）会让 `side()` 写出 WriteWindow——debug 构建撞 `window.rs:105` 窗口断言 panic，release 构建变成同相邻 chunk 的数据竞争 → SyncTest 分叉。这是破坏 P4 写域论证的字段，不是手感旋钮，§5 的编译期断言只锁常量、锁不住数据。故 `side()` 的循环上界取 `dispersion.min(DISPERSION_MAX)`（`DISPERSION_MAX` 落 core 侧，与 §5 断言共用同一常量）——把契约从"数据必须合法"降为"代码自证半径 ≤ DISPERSION_MAX"。harness 校验照做（用户可见的报错仍在 I/O 层），clamp 是 core 的最后防线。
 
 初值：`water = 5`（Noita 调研 `docs/reference/noita-deep-dive.md:242` 的参考值：水 ≈5、油更低、岩浆 1–2），`sand` / `wall` / `air` 吃缺省 1。
 
@@ -116,7 +118,7 @@ pub const G_ACCEL: u8 = 1;              // 0.25 格/tick²
 ```
 fn side(x, y, c, d) -> bool:
     far = x
-    for i in 1..=dispersion(c.material()):
+    for i in 1..=min(dispersion(c.material()), DISPERSION_MAX):   // clamp = P4 最后防线（§3.1）
         if win.get(x + d*i, y).material() != MAT_AIR: break
         far = x + d*i
     if far == x: return false
@@ -141,6 +143,7 @@ fn side(x, y, c, d) -> bool:
 - 遇阻即停：路径第 3 格是 wall 时必须落在第 2 格；
 - 方向记忆不变量：移动后 `dir()` == 实际移动方向；翻向路径同样成立；
 - 加载期校验：`dispersion = 0` 与 `dispersion = 9` 各一条拒绝测试；
+- core 侧 clamp（§3.1 修订）：绕过 harness 直接构造 `dispersion = 20` 的表，断言水的单 tick 水平位移仍 ≤ `DISPERSION_MAX`；
 - 缺省行为：未声明 `dispersion` 的材质行为与改动前逐位相同（sand 场景 golden 应零扰动）。
 
 ### 3.5 golden 预期
@@ -255,9 +258,9 @@ const _: () = assert!(
 
 三条全中才脱格：
 
-1. `stalled == true`（§4.1，本 tick 撞停）；
+1. `stalled == true`（§4.1，本 tick 撞停）——**`Blocked` 与 `MovedSide` 均触发，是有意为之**（2026-08-31 评审修订）：瀑布砸进水面走的正是"下方被挡 → 色散走开"路径（`MovedSide`），这恰是目标 4 要的水花来源。副作用是高速水贴地横流也可能冒向上的水花——此项列入 Task 3 目检清单（§7.1），若目检认为不对，改成"仅 `Blocked` 触发"是一行判别的事；
 2. `v1 >= SPLASH_MIN_SPEED`（初值 `2 * VEL_ONE` = 2.0 格/tick）；
-3. `rng_u32(fseed, STREAM_SPLASH, x, y, 0, 0)` 的量化值 `< splash_chance[material]`。
+3. `rng_u32(fseed, STREAM_SPLASH, sx, sy, 0, 0)` 的量化值 `< splash_chance[material]`，**key 用该 cell 本 tick 的起始坐标 `(sx, sy)`，不是撞停坐标**（2026-08-31 评审修订）。撞停坐标同 tick 内不唯一：cell A 撞停脱格后原格变 AIR（盖戳不阻止它被 `displace` 当目标），上方 cell B 同 tick 落入同格再撞停，若 key 用撞停坐标则掷出同一值——同材质则 A 溅 B 必溅，整列连锁全脱或全停，正是总纲 §11 翻案 4 点名的"同帧同格多骰同值"偏置。起始坐标每 tick 每 cell 唯一（§4.2③ frac_roll 的同一论证），撞停位置只决定粒子出生点，不进 RNG key。
 
 ### 6.2 数据
 
@@ -272,7 +275,7 @@ const _: () = assert!(
 - 位置 = 撞停格中心；
 - `vy` = `−v1 × SPLASH_RESTITUTION`（初值 0.5，向上反弹）；
 - `vx` = 水平抖动，直接复用 `emit.rs:92` 的 `emit_jitter`（已是 `pub(crate)`，爆炸路径已复用同一套数学）；
-- 抖动掷骰的 `attempt` 用 `SPLASH_ROLL_VX` / `SPLASH_ROLL_VY` 常量区分两骰，体例同 `EXPLODE_ROLL_VX` / `EXPLODE_ROLL_VY`（`rng.rs:32` 注释）。
+- 抖动掷骰的 `attempt` 用 `SPLASH_ROLL_VX` / `SPLASH_ROLL_VY` 常量区分两骰，体例同 `EXPLODE_ROLL_VX` / `EXPLODE_ROLL_VY`（`rng.rs:32` 注释）；坐标 key 与 §6.1 触发骰同口径——**起始坐标 `(sx, sy)`**，否则同 tick 同撞停点的两颗溅射粒子抖动完全重合。
 
 ### 6.4 核心工程：并行 pass 的确定性生成序
 
@@ -304,6 +307,7 @@ const _: () = assert!(
 ### 6.7 测试
 
 - 三条触发条件各一条测试（`stalled` 为假不溅射 / 速度不足不溅射 / 概率为 0 不溅射）；
+- RNG key 用起始坐标（§6.1 修订）：构造"A 撞停脱格、B 同 tick 落入同格再撞停"的连锁场景，断言两次触发骰值不同（各自独立），且骰值与撞停坐标无关；
 - **线程数不变性**（验收 §0 第 3 项）：同场景 1 / 8 / 16 线程，粒子 id 序列与 `state_hash` 序列逐位相同；
 - per-chunk 限流：构造单 chunk 内 100 次同 tick 撞击，断言恰好 64 颗脱格、其余照旧停住；
 - 脱格后网格为 air 且粒子数 +1（质量账对齐）；
@@ -326,7 +330,7 @@ const _: () = assert!(
 | 单测 | §3.4 | §4.4 | §6.7 |
 | golden | 重录①（预期见 §3.5） | 重录② | 重录③ |
 | SyncTest | waterfall + mixed 2 万 tick 六配置 | 同上 | + explosion_splash |
-| 目检 | 水面锯齿是否消失 | 加速下落手感 + §4.2④ 子裁决 | 瀑布砸地水花 |
+| 目检 | 水面锯齿是否消失 | 加速下落手感 + §4.2④ 子裁决 | 瀑布砸地水花 + §6.1① 子裁决（横流水花是否过量） |
 | bench | 对照 M0/M1 基线，记录活跃 cell 更新次数涨幅 | 同左（Task 2 是涨幅主要来源） | 同左 |
 
 **性能预期**：子步循环只对**正在下落**的 cell 生效（静止堆体恒 `n = 1`），故 dense 场景实际涨幅应远小于最坏 ×4。这是预期不是结论——按总纲纪律，须跑 harness-bench 实测并落 `docs/perf/`，超预算如实记录。
@@ -354,3 +358,6 @@ const _: () = assert!(
 | 7 | r 契约固化为编译期断言而非人肉纪律 | §5 |
 | 8 | 不预建 `Op::Impulse` | §1.3；无真实调用方 |
 | 9 | 斜滑是否清零速度 | **待定**，Task 2 目检后裁决（§4.2④） |
+| 10 | 溅射两骰（触发 + 抖动）的 RNG key 用起始坐标而非撞停坐标 | §6.1③/§6.3；撞停坐标同 tick 不唯一（脱格后同格可被二次占据），撞车即翻案 4 偏置。2026-08-31 评审修订 |
+| 11 | `side()` 循环上界 core 侧 clamp 到 `DISPERSION_MAX` | §3.1；`dispersion` 越界破坏 P4 写域论证（release 数据竞争），与 `blast_cost` 手感旋钮不同类，不能只靠 I/O 校验。2026-08-31 评审修订 |
+| 12 | `MovedSide` 撞停也触发溅射（暂定） | §6.1①；瀑布入水的水花正走此路径。横流水花是否过量**待 Task 3 目检**后终裁 |

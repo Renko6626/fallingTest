@@ -11,6 +11,17 @@
 - **M1 验收闭环：GIF 目检经用户确认通过**（验收 §0 第 4 项，此前结论留用户；确认版本为爆炸手感收口后 `66cea0a`..`33ab3da`）。M1 至此仅剩双机 hashrun（跨机项，移交下一会话首项，M0/M1 场景一起跑）。`docs/sessions/2026-08-30-m1-particle-layer.md` 验收表、`docs/README.md` 优先队列同步（下一步二选一待用户裁决：Layer G 速度积分提案 vs M2 场层与反应表）。
 
 ### Proposed
+- **Layer G spec 评审修订两处（Fable 5 交叉评审，源码锚点逐一核验后用户裁决落笔）**：
+  `docs/superpowers/specs/2026-08-31-layer-g-velocity-design.md`（Status 仍为 Proposed）。
+  ① **溅射两骰（触发 + 抖动）的 RNG key 从撞停坐标改为起始坐标**（§6.1③/§6.3，决策记录
+  #10）：撞停坐标同 tick 不唯一——cell A 撞停脱格后原格变 AIR，上方 cell B 同 tick 落入
+  同格再撞停，key 用撞停坐标则两骰同值 → 同材质整列连锁全脱或全停，正是总纲 §11 翻案 4
+  点名的偏置；起始坐标每 tick 每 cell 唯一（frac_roll §4.2③ 同一论证）。② **`side()` 循环
+  上界 core 侧 clamp 到 `DISPERSION_MAX`**（§3.1/§3.2，决策记录 #11）：`dispersion` 越界
+  会写出 WriteWindow（debug 撞 `window.rs:105` 断言，release 变同相数据竞争 → SyncTest
+  分叉），属破坏 P4 写域论证的字段而非 `blast_cost` 式手感旋钮，不能只靠 I/O 层校验。
+  另将"`MovedSide` 撞停也触发溅射"从隐含行为提为显式暂定裁决（决策记录 #12，横流水花
+  是否过量待 Task 3 目检终裁），§3.4/§6.7 测试清单与 §7.1 目检清单同步补条目。
 - **Layer G 运动语义重做 spec（M1 遗留债立项，brainstorming 完成，用户裁决 2026-08-31）**：
   `docs/superpowers/specs/2026-08-31-layer-g-velocity-design.md`（Status: Proposed）。范围
   = 液体色散 ≤8 + 重力速度积分 + 撞击溅射脱格，**分三 Task 独立落地**（色散打头，各自重录
