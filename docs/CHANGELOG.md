@@ -11,6 +11,39 @@
 - **GIF 帧延迟与采样率解耦**（用户目检发现帧率异常）：`render.rs` 原公式 delay = every×100/60（墙钟等速），`--every 100` 时 1.67 秒/帧成幻灯片——M1 验收两张 GIF 即中招。默认仍等速但 clamp [2,10]cs（稀疏采样自动转延时摄影），新增 `--fps` 显式覆盖回放帧率；3 项 `frame_delay` 金值单测；`out/waterfall.gif`、`out/explosion_splash.gif` 已重渲（10cs/帧 ≈ 20 秒）。`crates/sand-harness/src/{render,main}.rs`，commit `d982c70`。
 
 ### Added
+- **爆炸近心汽化 `vaporize_threshold`（用户裁决 2026-08-30）**：严格质量守恒
+  （每格必生成一颗粒子）在爆心附近观感不对——"近心没了、外圈飞溅"改由每
+  材质新增 `vaporize_threshold` 字段实现：射线剩余能量比例（与既有速度衰减
+  公式同一口径的 `remaining`）**严格超过**该阈值即汽化（置 air、不入生成
+  队列、质量确定性蒸发），否则照旧摧毁+溅射。数据：RON 写 `0.0..=1.0`
+  十进制，缺省 `1.0`（永不汽化），加载期经 `quantize_vaporize_threshold`
+  一次性 `×255 round` 量化为 `u8`（负值/超界报错，仿 `quantize_fx` 先例）；
+  `data/materials.ron` 初值 `water 0.4`（量化 102）、`sand 0.7`（量化
+  179）、`air`/`wall` 吃缺省。诊断计数 `World::vaporized_total`（私有字段 +
+  访问器，仿 `Particles::rejected_total`/`buried_total` 先例）不参与
+  `hash::state_hash`，不影响 SyncTest。挖坑守恒断言口径同步改为"摧毁格数
+  == 生成粒子数 + 汽化计数"；新增沙水混合目标测试锁定 water 汽化比例高于
+  sand（阈值更低）。golden 影响：`materials.ron` 内容哈希变 → 4 个 golden
+  的 `materials_fp` 行全部重录；`explosion_ci` 额外因爆炸语义变更导致状态
+  哈希全变（重录），`sand_pile`/`mixed`/`waterfall_ci` 无爆炸，重录前 diff
+  确认状态哈希逐位不变（改动完全隔离在爆炸路径内）。测试新增 10 项（core
+  5 + harness 5），`cargo test --workspace` 137 项全绿，
+  `cargo clippy --workspace --all-targets` 无警告。涉及：
+  `crates/sand-core/src/{material,world}.rs`、
+  `crates/sand-harness/src/scenario.rs`、`data/materials.ron`、
+  `crates/sand-harness/tests/golden/*.golden`、
+  `docs/superpowers/specs/2026-08-30-m1-particle-layer-design.md` §6.1/§13
+  决策记录第 7 条。
+
+- **`explosion_splash.ron` 沙丘几何裁决（用户目检三轮，2026-08-30）**：M1
+  验收爆炸溅射场景的目标几何从"厚沙板"迭代到"沙丘"——①厚沙板深埋爆点
+  （`y=220`/`r=40`）导致粒子被自己炸出的坑壁困死，无侧向飞溅；②抬到板面
+  （`y=155`）后只有正上方 ±40° 锥角能从"烟囱口"逃逸，侧向/斜上仍撞
+  440 宽厚板的墙；③改阶梯沙丘、爆点置于丘顶，侧向射线约 30 格即出丘壁，
+  粒子带约 90% 速度进入开阔空气、抛物线落两侧水池——达成"火山口喷发"
+  画面。裁决史记入场景文件注释，此前未落 CHANGELOG，本次补记。
+  `data/scenarios/explosion_splash.ron`。
+
 - **M1 粒子层（Layer P）实施完成，spec → Implemented**（`docs/superpowers/specs/2026-08-30-m1-particle-layer-design.md`，
   Task 1–7 全部完成，验收标准 §0 五项全过）。跨 Task 1–6 的完整产出：`crates/sand-core/src/fixed.rs`
   （手写 Q16.16 定点：add/sub/neg/mul/mul_int/from_ratio/to_cell/isqrt，全部配金值单测）、

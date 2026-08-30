@@ -1,11 +1,21 @@
-// 爆炸溅射场景（M1 验收，spec §6/§10）：640×384，沙墙 + 水池 + script 定期
-// Op::Explode（19 次，tick 500..18500，step 1000）。2 万 tick：验收 M1 的
-// "挖坑 + 溅射 + 脱格"三合一路径，长程反复观察沙墙逐步坍塌、溅落物落入
-// 水池、水面重新摊平。不进 CI（同 waterfall.ron 先例，20000 tick 太重）；
-// 用小图同构版 `explosion_ci.ron` 覆盖 CI + golden。
+// 爆炸溅射场景（M1 验收，spec §6/§10）：640×384，沙丘 + 两侧水池 + script
+// 定期 Op::Explode（19 次，tick 500..18500，step 1000）。2 万 tick：验收 M1
+// 的"挖坑 + 溅射 + 脱格"三合一路径，长程反复观察沙丘被逐步炸矮、溅落物
+// 落水、水面重新摊平。
+//
+// 几何裁决史（2026-08-30 用户目检三轮）：
+//   1. 厚沙板深埋爆点（y=220/r=40）→ 粒子被自己的坑壁困死，无侧向飞溅；
+//   2. 抬到板面（y=155）→ 只有正上方 ±40° 锥角能从"烟囱口"逃逸，
+//      侧向/斜上仍撞壁——只要沙体是 440 宽厚板，侧向永远是墙；
+//   3. 改沙丘 + 爆点在丘顶：侧向射线 ~30 格即出丘壁，粒子带 ~90% 速度
+//      入开阔空气，抛物线落两侧水池——经典"火山口喷发"画面。
+// 不进 CI（同 waterfall.ron 先例，20000 tick 太重）；CI + golden 用小图
+// 同构版 `explosion_ci.ron`。
 // 用法：
 //   sand-harness synctest data/scenarios/explosion_splash.ron          （六配置验收）
 //   sand-harness render   data/scenarios/explosion_splash.ron -o explosion_splash.gif
+//   sand-harness render   data/scenarios/explosion_splash.ron -o closeup.gif \
+//       --from 450 --ticks 1700 --every 2 --scale 2                    （爆炸特写实时版）
 Scenario(
     name: "explosion_splash",
     world: (10, 6),
@@ -15,11 +25,16 @@ Scenario(
         Fill(material: "wall", x0: 0, y0: 360, x1: 639, y1: 383),    // 盆地底
         Fill(material: "wall", x0: 0, y0: 100, x1: 7, y1: 359),      // 左壁
         Fill(material: "wall", x0: 632, y0: 100, x1: 639, y1: 359),  // 右壁
-        Fill(material: "sand", x0: 100, y0: 150, x1: 540, y1: 300),  // 大沙墙（爆炸目标）
-        Fill(material: "water", x0: 100, y0: 310, x1: 540, y1: 359), // 水池（承接溅落 + 检验遮挡后水面摊平）
+        // 阶梯沙丘（落在盆底上，边缘按安息角自然塌成坡）
+        Fill(material: "sand", x0: 220, y0: 280, x1: 420, y1: 359),  // 丘基 200 宽
+        Fill(material: "sand", x0: 260, y0: 230, x1: 380, y1: 279),  // 丘腰
+        Fill(material: "sand", x0: 290, y0: 190, x1: 350, y1: 229),  // 丘顶 60 宽
+        // 两侧水池（承接侧向溅落）
+        Fill(material: "water", x0: 8,   y0: 330, x1: 219, y1: 359),
+        Fill(material: "water", x0: 421, y0: 330, x1: 631, y1: 359),
     ],
     script: [
         Every(from: 500, until: 19500, step: 1000,
-              op: Explode(x: 320, y: 220, r: 40, power: 600)),
+              op: Explode(x: 320, y: 210, r: 60, power: 600)),
     ],
 )

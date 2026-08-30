@@ -165,6 +165,39 @@ tick 的 `scheduler::step` 才会被合并进 `dirty` 生效——粒子落格�
 
 此路径同时是"挖坑 + 溅射 + 脱格"三合一，也是 M4 法术命中结算的原型。
 
+### 6.1 近心汽化（`vaporize_threshold`，用户裁决 2026-08-30）
+
+严格质量守恒（每个被摧毁格子都生成一颗粒子）在爆心附近观感不对：近心格子
+"应该没了"，而不是原地变成一颗慢速飘散的粒子。裁决：材料表新增每材质字段
+`vaporize_threshold`，射线剩余能量比例**严格超过**该阈值时格子直接汽化——
+删除、不生成粒子，质量确定性蒸发。
+
+- **数据**：RON 写 `0.0..=1.0` 十进制，缺省 `1.0`（永不汽化）。加载期经
+  `sand-harness::scenario::quantize_vaporize_threshold` 一次性 `×255 round`
+  量化为 `u8`；负值/超界（round 后落在 `[0,255]` 之外）报错。core
+  （`MaterialDef::vaporize_threshold`）只见量化后的整数，不做取值校验
+  （同 `blast_cost` 先例）。`data/materials.ron` 初值：`water 0.4`
+  （量化 102）、`sand 0.7`（量化 179，沙比水更耐炸）；`air`/`wall` 不写，
+  吃缺省 255（`air` 从不进入摧毁分支，`wall` 免疫爆炸，字段本就无意义）。
+- **判定**（`world.rs::fire_ray`）：摧毁分支内，`remaining`（`cost` 扣减后
+  的剩余能量——与紧随其后的 `speed_ratio` 用的是**同一个变量**，口径钉死
+  不做区分）纯整数比较 `remaining*255 > power*threshold` 成立即汽化：置
+  air、**不**入生成队列、`World::vaporized_total` 计数 +1。严格大于是关键：
+  `threshold=255`（缺省 1.0）时条件退化为 `remaining > power`，而
+  `remaining <= power` 恒成立，故缺省材质在任何输入下都不汽化。
+- **诊断计数**：`vaporized_total` 挂在 `World`（私有字段 + `pub fn` 访问器），
+  仿 `Particles::rejected_total`/`buried_total` 先例——不参与
+  `hash::state_hash`（该函数只读 `tick` + `chunks`），不影响 SyncTest 哈希
+  比对，但本身仍是（状态,输入）的确定性函数，测试可直接断言。
+- **守恒口径变更**：原"挖坑守恒 = 摧毁格数 == 生成粒子数"改为"摧毁格数 ==
+  生成粒子数 + 汽化计数"——汽化格既不生成粒子也不算遗漏，质量在此确定性
+  蒸发（不返还、不进粒子池）。
+- **golden 影响**：`vaporize_threshold` 进材料表 → `data/materials.ron`
+  内容哈希变 → 全部 golden 的 `materials_fp` 行重录。`explosion_ci`
+  额外因爆炸语义变更导致状态哈希全变（重录）；`sand_pile`/`mixed`/
+  `waterfall_ci` 无爆炸，状态哈希逐位不变（重录前 diff 验证，证明改动只
+  影响爆炸路径）。
+
 ## 7. 发射器：`Op::Emit` + 场景 script
 
 core 只认 Op；"发射器"完全由既有场景 script 机制表达，**harness 零新概念**：
@@ -245,3 +278,4 @@ charter §11 翻案 4 纪律。
 | 4 | 发射器 = script Every + Op::Emit，harness 零新概念 | §7 |
 | 5 | 哈希格式变更 → golden 按 §9 两步程序重录 | §9 |
 | 6 | 废除"全占转悬浮"，改五邻格全占后向上兜底搜索、搜到世界顶仍无 air 则出界 | §5；Task 4 评审 2026-08-30 修复轮 1 实证活锁（C1），悬浮路径在静态堆场景两 tick 死循环 |
+| 7 | 爆炸引入近心汽化 `vaporize_threshold`（每材质字段，严格质量守恒放宽为"守恒 + 汽化计数"）：射线剩余能量比例超过材质阈值即删除、不生成粒子 | §6.1；用户裁决 2026-08-30，观感诉求"近心没了、外圈飞溅" |

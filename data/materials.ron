@@ -7,11 +7,22 @@
 // durability/hardness 后替换，设计 §12）。字段新增非语义变更：既有场景的
 // 网格演化逻辑不受影响，但本文件内容哈希（materials_fp）随之改变——受影响
 // golden 的 materials_fp 行已按 spec §9 程序重录（状态哈希序列本身验证不变）。
+//
+// vaporize_threshold（spec §6 汽化小节，用户裁决 2026-08-30）：爆炸射线剩余
+// 能量比例（remaining/power）严格超过此阈值即汽化（删除、不生成粒子），做出
+// "近心没了、外圈飞溅"的观感。RON 写 0.0..=1.0 十进制，加载期经
+// `sand-harness::scenario::quantize_vaporize_threshold` 量化为 u8（×255
+// round）；不写即缺省 1.0（永不汽化，量化后 255）。初值：water 0.4（量化
+// 102，水更易被炸干净）、sand 0.7（量化 179，沙更耐炸）；air/wall 不写，
+// 吃缺省（air 从不进入摧毁分支，wall 免疫爆炸，字段无意义）。同 blast_cost
+// 先例：本文件内容哈希再次改变，全部 golden 的 materials_fp 行已重录；
+// explosion_ci 因爆炸语义变更状态哈希全变，sand_pile/mixed/waterfall_ci
+// 无爆炸，状态哈希逐位不变（重录前 diff 验证）。
 (
     materials: [
         (id: 0, name: "air",   category: Static, density: 0,   color: (16, 16, 24),    blast_cost: 0),
         (id: 1, name: "wall",  category: Static, density: 100, color: (110, 106, 118), blast_cost: 4294967295),
-        (id: 2, name: "sand",  category: Powder, density: 40,  color: (214, 176, 96),  blast_cost: 2),
-        (id: 3, name: "water", category: Liquid, density: 16,  color: (48, 108, 220),  blast_cost: 1),
+        (id: 2, name: "sand",  category: Powder, density: 40,  color: (214, 176, 96),  blast_cost: 2, vaporize_threshold: 0.7),
+        (id: 3, name: "water", category: Liquid, density: 16,  color: (48, 108, 220),  blast_cost: 1, vaporize_threshold: 0.4),
     ],
 )

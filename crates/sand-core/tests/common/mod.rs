@@ -17,6 +17,7 @@ pub fn test_table() -> MaterialTable {
         density,
         color: (0, 0, 0),
         blast_cost,
+        vaporize_threshold: 255,
     };
     MaterialTable::new(vec![
         def(0, "air", Category::Static, 0, 0),

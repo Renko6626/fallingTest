@@ -12,6 +12,12 @@ fn default_blast_cost() -> u32 {
     1
 }
 
+/// `MatSpec::vaporize_threshold` 的 serde 缺省值（spec §6 汽化小节，用户裁决
+/// 2026-08-30）：RON 缺省 1.0 = 永不汽化（量化后 255）。
+fn default_vaporize_threshold() -> f64 {
+    1.0
+}
+
 // ---------- materials.ron ----------
 
 #[derive(Deserialize)]
@@ -32,6 +38,12 @@ struct MatSpec {
     /// 的 materials_fp 行按 spec §9 程序重录）。
     #[serde(default = "default_blast_cost")]
     blast_cost: u32,
+    /// 近心汽化阈值（spec §6 汽化小节，用户裁决 2026-08-30）：RON 写
+    /// `0.0..=1.0` 十进制，缺省 1.0（永不汽化）。加载期经
+    /// [`quantize_vaporize_threshold`] 一次性 round 量化为 u8——core 边界
+    /// 只见量化后的整数，同 `blast_cost`/`Op::Emit` 的 `Fx` 先例。
+    #[serde(default = "default_vaporize_threshold")]
+    vaporize_threshold: f64,
 }
 
 #[derive(Deserialize)]
@@ -51,20 +63,45 @@ pub fn load_materials(path: &str) -> Result<(MaterialTable, u64), String> {
     let defs = file
         .materials
         .into_iter()
-        .map(|m| MaterialDef {
-            id: m.id,
-            name: m.name,
-            category: match m.category {
-                CatSpec::Static => Category::Static,
-                CatSpec::Powder => Category::Powder,
-                CatSpec::Liquid => Category::Liquid,
-            },
-            density: m.density,
-            color: m.color,
-            blast_cost: m.blast_cost,
+        .map(|m| -> Result<MaterialDef, String> {
+            Ok(MaterialDef {
+                id: m.id,
+                name: m.name.clone(),
+                category: match m.category {
+                    CatSpec::Static => Category::Static,
+                    CatSpec::Powder => Category::Powder,
+                    CatSpec::Liquid => Category::Liquid,
+                },
+                density: m.density,
+                color: m.color,
+                blast_cost: m.blast_cost,
+                vaporize_threshold: quantize_vaporize_threshold(m.vaporize_threshold).map_err(|e| {
+                    format!("材料 '{}'（id={}）的 vaporize_threshold 非法：{e}", m.name, m.id)
+                })?,
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>, String>>()?;
     Ok((MaterialTable::new(defs)?, fp))
+}
+
+/// 近心汽化阈值 RON 表面值（`0.0..=1.0` 十进制）→ 量化 u8（spec §6 汽化
+/// 小节，用户裁决 2026-08-30）：`v * 255.0` 四舍五入到最近整数即目标字节。
+/// **round 语义与范围校验**均照抄 [`quantize_fx`] 的先例（同一份"I/O 边界
+/// 唯一允许浮点运算"纪律）：`f64::round` 对 `.5` 边界走"绝对值远离零"，
+/// 结果必须落在 `[0, 255]`（对应输入必须落在约 `[-0.00196, 1.00196]`，
+/// 但校验对象是 **round 之后的值**而非输入本身——同 `quantize_fx` 文档
+/// 阐述的理由：避免"输入在近似阈值附近、round 后才越界"的边界疏漏）。
+pub fn quantize_vaporize_threshold(v: f64) -> Result<u8, String> {
+    if !v.is_finite() {
+        return Err(format!("vaporize_threshold 量化失败：{v} 不是有限数"));
+    }
+    let raw = (v * 255.0).round();
+    if !(0.0..=255.0).contains(&raw) {
+        return Err(format!(
+            "vaporize_threshold 量化失败：{v} 超出 [0.0, 1.0] 可表示范围（四舍五入后 raw={raw}，需落在 [0, 255]）"
+        ));
+    }
+    Ok(raw as u8)
 }
 
 // ---------- 场景文件 ----------
@@ -310,9 +347,9 @@ mod tests {
 
     fn table_with_water() -> MaterialTable {
         MaterialTable::new(vec![
-            MaterialDef { id: 0, name: "air".into(), category: Category::Static, density: 0, color: (0, 0, 0), blast_cost: 0 },
-            MaterialDef { id: 1, name: "wall".into(), category: Category::Static, density: 100, color: (0, 0, 0), blast_cost: sand_core::BLAST_COST_INFINITE },
-            MaterialDef { id: 2, name: "water".into(), category: Category::Liquid, density: 16, color: (0, 0, 0), blast_cost: 1 },
+            MaterialDef { id: 0, name: "air".into(), category: Category::Static, density: 0, color: (0, 0, 0), blast_cost: 0, vaporize_threshold: 255 },
+            MaterialDef { id: 1, name: "wall".into(), category: Category::Static, density: 100, color: (0, 0, 0), blast_cost: sand_core::BLAST_COST_INFINITE, vaporize_threshold: 255 },
+            MaterialDef { id: 2, name: "water".into(), category: Category::Liquid, density: 16, color: (0, 0, 0), blast_cost: 1, vaporize_threshold: 255 },
         ])
         .unwrap()
     }
@@ -425,6 +462,53 @@ mod tests {
         std::fs::remove_file(&path).ok();
         assert_eq!(t.blast_cost(0), 1, "未声明 blast_cost 的材料应缺省为 1");
         assert_eq!(t.blast_cost(1), 1);
+    }
+
+    // ==================== MatSpec：vaporize_threshold 缺省 1.0（spec §6 汽化小节，用户裁决 2026-08-30）====================
+
+    #[test]
+    fn materials_ron_without_vaporize_threshold_field_defaults_to_255() {
+        let ron = "(materials:[\
+            (id:0,name:\"air\",category:Static,density:0,color:(0,0,0)),\
+            (id:1,name:\"wall\",category:Static,density:100,color:(0,0,0)),\
+        ])";
+        let path = std::env::temp_dir().join(format!(
+            "sand_harness_test_materials_default_vaporize_threshold_{}.ron",
+            std::process::id()
+        ));
+        std::fs::write(&path, ron).unwrap();
+        let (t, _fp) = load_materials(path.to_str().unwrap()).unwrap();
+        std::fs::remove_file(&path).ok();
+        assert_eq!(t.vaporize_threshold(0), 255, "未声明 vaporize_threshold 的材料应缺省量化为 255（1.0=永不汽化）");
+        assert_eq!(t.vaporize_threshold(1), 255);
+    }
+
+    // ==================== quantize_vaporize_threshold：round 金值（materials.ron 初值）====================
+
+    #[test]
+    fn quantize_vaporize_threshold_gold_values_match_materials_ron_seed_data() {
+        // data/materials.ron 初值：water 0.4、sand 0.7（用户裁决 2026-08-30）。
+        assert_eq!(quantize_vaporize_threshold(0.4).unwrap(), 102);
+        assert_eq!(quantize_vaporize_threshold(0.7).unwrap(), 179);
+    }
+
+    #[test]
+    fn quantize_vaporize_threshold_endpoints() {
+        assert_eq!(quantize_vaporize_threshold(0.0).unwrap(), 0);
+        assert_eq!(quantize_vaporize_threshold(1.0).unwrap(), 255, "缺省值 1.0 必须量化为 255（永不汽化）");
+    }
+
+    #[test]
+    fn quantize_vaporize_threshold_rejects_non_finite() {
+        assert!(quantize_vaporize_threshold(f64::NAN).is_err());
+        assert!(quantize_vaporize_threshold(f64::INFINITY).is_err());
+        assert!(quantize_vaporize_threshold(f64::NEG_INFINITY).is_err());
+    }
+
+    #[test]
+    fn quantize_vaporize_threshold_rejects_negative_and_above_one() {
+        assert!(quantize_vaporize_threshold(-0.01).is_err(), "负值必须被拒绝");
+        assert!(quantize_vaporize_threshold(1.01).is_err(), "超过 1.0（四舍五入后 > 255）必须被拒绝");
     }
 
     // ==================== resolve_op：Emit 解析 + 量化落地 + 校验 ====================

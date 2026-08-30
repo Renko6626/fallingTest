@@ -25,7 +25,9 @@ pub enum Op {
     /// 爆炸（spec §6，Noita 射线模型）：以 `(x, y)` 为圆心、半径 `r` 格的
     /// Bresenham 圆周每格发一条 DDA 射线，射线初始能量 `power`，逐格消耗
     /// `MaterialTable::blast_cost`，能量 ≥ 格消耗即摧毁该格（置 air + 溅射
-    /// 粒子），能量耗尽或撞 `BLAST_COST_INFINITE` 材料（M1 里即 wall）断线。
+    /// 粒子，或按 `MaterialTable::vaporize_threshold` 判定汽化——删除、不
+    /// 溅射，用户裁决 2026-08-30，见 `fire_ray` 文档），能量耗尽或撞
+    /// `BLAST_COST_INFINITE` 材料（M1 里即 wall）断线。
     /// 整数签名——圆心/半径是格坐标，不经过 `Fx` 量化（与 `Op::Emit` 的
     /// 连续坐标不同，爆炸是格对齐的离散几何）。
     Explode { x: i32, y: i32, r: i32, power: u32 },
@@ -227,8 +229,9 @@ fn push_octant_mirror(offsets: &mut Vec<(i32, i32)>, a: i32, b: i32) {
 }
 
 /// 单条爆炸射线（spec §6 point 2/3）：从圆心 `(cx, cy)` 出发，沿方向
-/// `(dx, dy)` 逐格消耗能量，能量 ≥ 格消耗即摧毁（置 air + 溅射粒子），能量
-/// 不足或撞 `BLAST_COST_INFINITE` 材料即断线。
+/// `(dx, dy)` 逐格消耗能量，能量 ≥ 格消耗即摧毁（置 air + 溅射粒子，或按
+/// `MaterialTable::vaporize_threshold` 判定汽化——置 air、不溅射，见下方
+/// "近心汽化"节），能量不足或撞 `BLAST_COST_INFINITE` 材料即断线。
 ///
 /// **爆心格自身的口径**（任务书 + spec §6 point 1"起点格按第一格计费处理"）：
 /// `(cx, cy)` 本身作为该射线的第一格纳入能量结算——与 [`CellWalk`]"不含
@@ -242,6 +245,12 @@ fn push_octant_mirror(offsets: &mut Vec<(i32, i32)>, a: i32, b: i32) {
 /// （`remaining = energy_before - cost`）参与速度合成——"剩余能量/power"
 /// 随射线深入单调递减，天然实现"爆心附近溅得快、边缘溅得慢"的线性衰减
 /// （spec §6 point 3）。
+///
+/// **近心汽化**（`vaporize_threshold`，spec §6 汽化小节，用户裁决
+/// 2026-08-30）：同一个 `remaining`（即上一段的剩余能量，两处共享同一变量、
+/// 不做区分）若使比例 `remaining/power` 严格超过材质阈值，该格直接删除、
+/// **不**产出 `SpawnRequest`——做出"近心没了、外圈飞溅"的观感，质量在此
+/// 确定性蒸发（`World::vaporized_total` 计数，不入哈希）。
 ///
 /// `salt = op_idx`（充分性论证见 `rng.rs::STREAM_EXPLODE` 文档：坐标本身
 /// `(gx, gy)` 已经是"一次 Explode 应用内至多摧毁一次"的天然唯一键，
@@ -286,6 +295,26 @@ fn fire_ray(
             continue; // 已是 air（原生或已被前序射线炸掉）：计零费、不重复溅射。
         }
 
+        // 近心汽化（vaporize_threshold，spec §6 汽化小节，用户裁决
+        // 2026-08-30）：`energy` 此刻已完成 `cost` 扣减——这正是下面
+        // `speed_ratio` 用的同一个"剩余能量"值，口径钉死不做区分（不存在
+        // "扣费前"的候选口径：`fire_ray_vaporize_*` 单测锁定这一点）。比例
+        // `energy/power` 一旦**严格超过**材质阈值 `threshold/255`，格子直接
+        // 删除、不产出 `SpawnRequest`（质量确定性蒸发，`vaporized_total`
+        // 计数，不入哈希）——纯整数比较避免除法：
+        // `energy/power > threshold/255` 等价于 `energy*255 > power*threshold`
+        // （`power != 0` 已由函数入口 `debug_assert` 保证，两侧同乘不改变
+        // 不等号方向；两边最大约 `u32::MAX * 255 ≈ 1.1e12`，`i64` 内不会溢出）。
+        // 严格大于是关键：`threshold=255`（RON 缺省 1.0）时条件退化为
+        // `energy > power`，而 `energy <= power` 恒成立（`cost` 是无符号扣减），
+        // 故缺省材质永不汽化，即便 `energy == power`（`cost == 0`）也不触发。
+        let threshold = table.vaporize_threshold(material);
+        if (energy as i64) * 255 > (power as i64) * (threshold as i64) {
+            world.set_cell_stamped(table, gx, gy, MAT_AIR, stamp);
+            world.vaporized_total += 1;
+            continue; // 汽化：不生成粒子，跳过下面的速度合成与 spawn。
+        }
+
         let speed_ratio = Fx::from_ratio(energy as i32, power as i32);
         let speed_mag = MAX_SPEED.mul(speed_ratio);
         let rx = rng::rng_u32(fseed, rng::STREAM_EXPLODE, gx, gy, salt, emit_attempt(stamp, EXPLODE_ROLL_VX));
@@ -310,6 +339,13 @@ pub struct World {
     pub chunks: Vec<Chunk>,
     pub tick: u64,
     pub seed: u64,
+    /// 爆炸近心汽化诊断计数（vaporize_threshold，用户裁决 2026-08-30）：
+    /// `fire_ray` 判定某格汽化（删除、不入生成队列）时 +1。纯诊断计数器，
+    /// 仿 `Particles::rejected_total`/`buried_total` 先例——**不参与**
+    /// `hash::state_hash`（该函数只读 `tick` + `chunks`，见 hash.rs:23-33），
+    /// 不影响 SyncTest 哈希比对，但本身仍是（状态,输入）的确定性函数，可供
+    /// 测试直接断言。
+    vaporized_total: u64,
 }
 
 impl World {
@@ -321,7 +357,12 @@ impl World {
             c.dirty = DirtyRect::FULL; // 启动 tick 全扫（spec §1.4）
             chunks.push(c);
         }
-        World { width_chunks, height_chunks, chunks, tick: 0, seed }
+        World { width_chunks, height_chunks, chunks, tick: 0, seed, vaporized_total: 0 }
+    }
+
+    /// 爆炸近心汽化诊断计数（见字段文档）。
+    pub fn vaporized_total(&self) -> u64 {
+        self.vaporized_total
     }
 
     pub fn width(&self) -> i32 {
@@ -518,6 +559,10 @@ mod tests {
             density,
             color: (0, 0, 0),
             blast_cost,
+            // 255 = 永不汽化：本表供 blast_cost/断线/守恒等既有行为测试复用，
+            // 不应引入意料之外的汽化分支——专门测汽化差异的用例另建材料表
+            // （见下方"vaporize_threshold"分节）。
+            vaporize_threshold: 255,
         };
         MaterialTable::new(vec![
             def(0, "air", Category::Static, 0, 0),
@@ -828,6 +873,97 @@ mod tests {
         assert!(spawns.is_empty());
     }
 
+    // ==================== fire_ray：近心汽化（vaporize_threshold，用户裁决 2026-08-30）====================
+
+    /// 两个材质专为边界测试构造：`blast_cost` 分别精确算到 power=255 时
+    /// `remaining` 落在阈值 128 的正上方一格（129）与恰好持平（128）——
+    /// 隔离出"严格大于"判定的两侧，不受材质其他属性干扰。
+    fn vaporize_boundary_table() -> MaterialTable {
+        use crate::material::BLAST_COST_INFINITE;
+        let def = |id: u8, name: &str, category: Category, blast_cost: u32, vaporize_threshold: u8| MaterialDef {
+            id,
+            name: name.into(),
+            category,
+            density: 40,
+            color: (0, 0, 0),
+            blast_cost,
+            vaporize_threshold,
+        };
+        MaterialTable::new(vec![
+            def(0, "air", Category::Static, 0, 255),
+            def(1, "wall", Category::Static, BLAST_COST_INFINITE, 255),
+            // power=255 时 remaining=255-127=128，恰好等于阈值 128。
+            def(2, "target_at_threshold", Category::Powder, 127, 128),
+            // power=255 时 remaining=255-126=129，比阈值多 1。
+            def(3, "target_above_threshold", Category::Powder, 126, 128),
+        ])
+        .unwrap()
+    }
+
+    #[test]
+    fn fire_ray_vaporize_boundary_remaining_at_threshold_does_not_vaporize() {
+        // remaining(128)*255 == power(255)*threshold(128)：判定是"严格大于"，
+        // 持平不算，仍走正常摧毁 + 溅射路径。
+        let t = vaporize_boundary_table();
+        let mut w = World::new(1, 1, 0);
+        let (cx, cy) = (10, 10);
+        w.set_cell_stamped(&t, cx, cy, 2, 0);
+        let fseed = rng::frame_seed(w.seed, w.tick);
+        let mut spawns = Vec::new();
+        fire_ray(&mut w, &t, cx, cy, 1, 0, 255, 0, fseed, 0, &mut spawns);
+        assert_eq!(spawns.len(), 1, "阈值恰好持平，不应汽化");
+        assert_eq!(w.vaporized_total(), 0);
+        assert_eq!(w.cell(cx, cy).material(), MAT_AIR, "仍应正常摧毁为 air");
+    }
+
+    #[test]
+    fn fire_ray_vaporize_boundary_remaining_just_above_threshold_vaporizes() {
+        // remaining(129)*255 > power(255)*threshold(128)：越过阈值一格即汽化。
+        let t = vaporize_boundary_table();
+        let mut w = World::new(1, 1, 0);
+        let (cx, cy) = (10, 10);
+        w.set_cell_stamped(&t, cx, cy, 3, 0);
+        let fseed = rng::frame_seed(w.seed, w.tick);
+        let mut spawns = Vec::new();
+        fire_ray(&mut w, &t, cx, cy, 1, 0, 255, 0, fseed, 0, &mut spawns);
+        assert!(spawns.is_empty(), "越过阈值应汽化，不生成粒子");
+        assert_eq!(w.vaporized_total(), 1);
+        assert_eq!(w.cell(cx, cy).material(), MAT_AIR, "汽化仍需清空格子（质量蒸发）");
+    }
+
+    #[test]
+    fn fire_ray_default_threshold_255_never_vaporizes_even_at_remaining_equals_power() {
+        // RON 缺省 1.0 → 量化 255。blast_cost=0（非 air/wall 材质里的边界配置，
+        // 纯为逼出 remaining==power 这个比例=1.0 的极端输入，现实材质不会
+        // 这样配）依然不触发汽化——"严格大于"是关键：threshold=255 时条件
+        // 退化为 `remaining > power`，而 `remaining <= power` 恒成立（cost
+        // 是无符号扣减），故缺省材质在任何输入下都不汽化。
+        use crate::material::BLAST_COST_INFINITE;
+        let def = |id: u8, name: &str, category: Category, blast_cost: u32| MaterialDef {
+            id,
+            name: name.into(),
+            category,
+            density: 40,
+            color: (0, 0, 0),
+            blast_cost,
+            vaporize_threshold: 255,
+        };
+        let t = MaterialTable::new(vec![
+            def(0, "air", Category::Static, 0),
+            def(1, "wall", Category::Static, BLAST_COST_INFINITE),
+            def(2, "target_zero_cost", Category::Powder, 0),
+        ])
+        .unwrap();
+        let mut w = World::new(1, 1, 0);
+        let (cx, cy) = (10, 10);
+        w.set_cell_stamped(&t, cx, cy, 2, 0);
+        let fseed = rng::frame_seed(w.seed, w.tick);
+        let mut spawns = Vec::new();
+        fire_ray(&mut w, &t, cx, cy, 1, 0, 1000, 0, fseed, 0, &mut spawns);
+        assert_eq!(spawns.len(), 1, "缺省阈值下 remaining==power 也不应汽化");
+        assert_eq!(w.vaporized_total(), 0);
+    }
+
     // ==================== Op::Explode：apply_op 行为测试（spec §10）====================
 
     fn explode_spawn_positions(spawns: &[SpawnRequest]) -> Vec<(i32, i32)> {
@@ -881,7 +1017,11 @@ mod tests {
 
     #[test]
     fn explode_pit_conservation_destroyed_cells_equal_spawn_count() {
-        // 挖坑守恒（任务书）：炸掉的格数 == queue_spawn 提交数（容量内）。
+        // 挖坑守恒（任务书；口径随 vaporize_threshold 更新，用户裁决
+        // 2026-08-30）：炸掉的格数 == 生成的溅射请求数 + 汽化计数
+        // （汽化格既不生成粒子也不算"未处理"，质量确定性蒸发）。`test_table()`
+        // 全部材质 `vaporize_threshold=255`（永不汽化），故本例
+        // `vaporized_total` 恒为 0——断言写成通用形式，覆盖两条路径。
         let t = test_table();
         let mut w = World::new(2, 2, 0);
         let (cx, cy) = (60, 60);
@@ -901,7 +1041,11 @@ mod tests {
 
         let destroyed = before - after;
         assert!(destroyed > 0, "应至少摧毁一些沙格");
-        assert_eq!(destroyed, spawns.len(), "摧毁格数必须等于生成的溅射请求数");
+        assert_eq!(
+            destroyed,
+            spawns.len() + w.vaporized_total() as usize,
+            "摧毁格数必须等于（生成的溅射请求数 + 汽化计数）"
+        );
         // 每个 spawn 必须落在一个"曾是沙、现在是 air"的坐标上，且坐标互不重复
         // （每格至多被摧毁一次，spec §6 point 4）。
         let positions = explode_spawn_positions(&spawns);
@@ -911,6 +1055,74 @@ mod tests {
         for &(x, y) in &positions {
             assert_eq!(w.cell(x, y).material(), MAT_AIR, "spawn 坐标处网格应已是 air");
         }
+    }
+
+    // ==================== Op::Explode：材质差异化汽化（用户裁决 2026-08-30）====================
+
+    /// 与 `data/materials.ron` 初值同口径：water 阈值 0.4（量化 102），
+    /// sand 阈值 0.7（量化 179）。
+    fn mixed_vaporize_table() -> MaterialTable {
+        use crate::material::BLAST_COST_INFINITE;
+        let def = |id: u8, name: &str, category: Category, density: u16, blast_cost: u32, vaporize_threshold: u8| {
+            MaterialDef { id, name: name.into(), category, density, color: (0, 0, 0), blast_cost, vaporize_threshold }
+        };
+        MaterialTable::new(vec![
+            def(0, "air", Category::Static, 0, 0, 255),
+            def(1, "wall", Category::Static, 100, BLAST_COST_INFINITE, 255),
+            def(2, "water", Category::Liquid, 16, 1, 102),
+            def(3, "sand", Category::Powder, 40, 2, 179),
+        ])
+        .unwrap()
+    }
+
+    #[test]
+    fn explode_mixed_water_sand_target_vaporizes_more_water_than_sand() {
+        // 沙水混合目标（任务书要求）：同一次 Op::Explode 命中两种材质，water
+        // 阈值（0.4）比 sand（0.7）低，预期 water 的汽化比例更高。几何：圆心
+        // 左侧（dx<=0）填水、右侧（dx>0）填沙——每条射线沿固定方向走，dx 的
+        // 符号沿途不变，故每条射线全程只穿一种材质，互不干扰。
+        //
+        // 参数口径（power=100）：water cost=1，remaining=100-d，
+        // ratio>0.4 等价 d<60——目标区域内所有射线 d 远小于 60，water 应
+        // 全汽化；sand cost=2，remaining=100-2d，ratio>0.702 等价 d<14.9，
+        // 目标区域 d 覆盖到 ~26+，故 sand 应"近心汽化、远心正常溅射"两段
+        // 都有——用整数交叉相乘比较汽化比例，不引入浮点。
+        let t = mixed_vaporize_table();
+        let mut w = World::new(2, 2, 0);
+        let (cx, cy) = (60, 60);
+        let r = 24;
+        for dy in -(r + 2)..=(r + 2) {
+            for dx in -(r + 2)..=(r + 2) {
+                let mat = if dx <= 0 { 2 } else { 3 };
+                w.set_cell_stamped(&t, cx + dx, cy + dy, mat, 0);
+            }
+        }
+        let before_water = w.count_material(2);
+        let before_sand = w.count_material(3);
+        let fseed = rng::frame_seed(w.seed, w.tick);
+        let op = Op::Explode { x: cx, y: cy, r, power: 100 };
+        let mut spawns = Vec::new();
+        w.apply_op(&t, &op, 0, fseed, 0, &mut spawns);
+        let after_water = w.count_material(2);
+        let after_sand = w.count_material(3);
+
+        let destroyed_water = before_water - after_water;
+        let destroyed_sand = before_sand - after_sand;
+        let spawn_water = spawns.iter().filter(|s| s.material == 2).count();
+        let spawn_sand = spawns.iter().filter(|s| s.material == 3).count();
+        let vaporized_water = destroyed_water - spawn_water;
+        let vaporized_sand = destroyed_sand - spawn_sand;
+
+        assert!(destroyed_water > 0 && destroyed_sand > 0, "两种材质都应被摧毁一些");
+        assert!(vaporized_water > 0, "water 阈值更低，近心应有汽化");
+        assert!(spawn_sand > 0, "sand 阈值更高，远心应有未汽化、正常溅射的部分");
+        // vaporized_water/destroyed_water > vaporized_sand/destroyed_sand
+        // <=> 交叉相乘（两边都是非负整数，不改变不等号方向）。
+        assert!(
+            vaporized_water * destroyed_sand > vaporized_sand * destroyed_water,
+            "water 汽化比例应高于 sand：water {vaporized_water}/{destroyed_water}，\
+             sand {vaporized_sand}/{destroyed_sand}"
+        );
     }
 
     #[test]

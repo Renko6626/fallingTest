@@ -31,6 +31,16 @@ pub struct MaterialDef {
     /// 的 serde 默认），字段本身在 core 侧不做取值校验——错误配置的后果只是
     /// 打出手感不对的爆炸，不影响确定性红线。
     pub blast_cost: u32,
+    /// 近心汽化阈值（spec §6 汽化小节，用户裁决 2026-08-30）：`world::fire_ray`
+    /// 摧毁该材质格子时，若"扣费后剩余能量 / power"的比例**严格超过**此阈
+    /// 值，格子直接删除、不生成粒子（质量确定性蒸发，计入
+    /// `World::vaporized_total` 诊断计数，不入哈希）。量化域是 u8：RON 里写
+    /// `0.0..=1.0` 十进制，`sand-harness::scenario::quantize_vaporize_threshold`
+    /// 在加载期一次性 `×255 round`，core 边界只见这个整数——字段本身在 core
+    /// 侧不做取值校验，同 `blast_cost` 先例。**255 = RON 缺省 1.0 = 永不
+    /// 汽化**（`fire_ray` 里 `remaining <= power` 恒成立，`remaining*255 >
+    /// power*255` 即 `remaining > power` 恒假）。
+    pub vaporize_threshold: u8,
 }
 
 #[derive(Clone, Debug)]
@@ -91,6 +101,11 @@ impl MaterialTable {
     pub fn blast_cost(&self, id: u8) -> u32 {
         self.defs[id as usize].blast_cost
     }
+
+    /// 近心汽化阈值（spec §6 汽化小节）；量化后的 u8，255 = 永不汽化。
+    pub fn vaporize_threshold(&self, id: u8) -> u8 {
+        self.defs[id as usize].vaporize_threshold
+    }
 }
 
 #[cfg(test)]
@@ -98,7 +113,7 @@ mod tests {
     use super::*;
 
     fn def(id: u8, name: &str, category: Category, density: u16) -> MaterialDef {
-        MaterialDef { id, name: name.into(), category, density, color: (0, 0, 0), blast_cost: 1 }
+        MaterialDef { id, name: name.into(), category, density, color: (0, 0, 0), blast_cost: 1, vaporize_threshold: 255 }
     }
 
     #[test]
@@ -132,9 +147,28 @@ mod tests {
             density: 0,
             color: (0, 0, 0),
             blast_cost: cost,
+            vaporize_threshold: 255,
         };
         let t = MaterialTable::new(vec![mk(0, "air", 0), mk(1, "wall", BLAST_COST_INFINITE)]).unwrap();
         assert_eq!(t.blast_cost(0), 0);
         assert_eq!(t.blast_cost(1), BLAST_COST_INFINITE);
+    }
+
+    // ==================== vaporize_threshold（近心汽化，用户裁决 2026-08-30）====================
+
+    #[test]
+    fn vaporize_threshold_accessor_returns_declared_value() {
+        let mk = |id, name, threshold| MaterialDef {
+            id,
+            name: String::from(name),
+            category: Category::Static,
+            density: 0,
+            color: (0, 0, 0),
+            blast_cost: 1,
+            vaporize_threshold: threshold,
+        };
+        let t = MaterialTable::new(vec![mk(0, "air", 255), mk(1, "wall", 102)]).unwrap();
+        assert_eq!(t.vaporize_threshold(0), 255);
+        assert_eq!(t.vaporize_threshold(1), 102);
     }
 }
