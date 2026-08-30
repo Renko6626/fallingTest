@@ -1,9 +1,13 @@
 //! DDA 网格穿越（M1 spec §5，逐句执行）：从 `pos` 到 `pos + vel`，按跨越边界顺序
 //! 逐格检查；边界跨越比较用 i64 交叉相乘，全程无除法。
 //!
-//! **只检查离开起点格之后进入的格子**——起点格本身永不检查（spec §5 明文：
-//! "悬浮输家可能位于非 air 格内"，即上一 tick 冲突降级重置到 L 格中心的粒子，
-//! 若该格此刻已非 air，下一 tick DDA 仍必须允许它从此处正常出发）。
+//! **只检查离开起点格之后进入的格子**——起点格本身永不检查（spec §5 明文）。
+//! 起点格完全可能非 air：例如某粒子这一 tick 速度太小、`pos+vel` 没跨出本格
+//! （零穿越，见下方 `step==0`/`vel==(0,0)` 情形），而网格四相在本 tick 早些
+//! 时候恰好把材料移进了这一格——粒子仍在其中"漂浮"一瞬，下一 tick DDA 必须
+//! 允许它从此处正常出发，不能因为起点非 air 就误判为立即阻挡（Task 4 修复轮
+//! 1 C1 教训：起点豁免与落格冲突消解的交互一旦想当然会活锁，见
+//! `particle.rs::resolve_landing` 文档）。
 //!
 //! 出界与阻挡是两个不同结局：世界边界外一律 [`Trace::Gone`]（哪怕沿途一直在
 //! 网格内，只是终点越界也算出界，不算阻挡）；阻挡专指网格内的非 air 格
@@ -99,6 +103,12 @@ pub(crate) fn trace(pos: (Fx, Fx), vel: (Fx, Fx), world: &World) -> Trace {
 
     let mut ax = axis_init(pos.0, vel.0);
     let mut ay = axis_init(pos.1, vel.1);
+    // 初值 = 起点格。起点格从不检查（本文件顶部注释），所以这个初值完全可能
+    // 本身就是非 air（见顶部注释的零穿越场景）。若离开起点后第一步就撞阻挡，
+    // `Blocked` 会原样把这个非 air 的起点格当候选返回；调用方
+    // （`particle::resolve_landing`）因此不能假设候选默认可落，必须重新判定
+    // 候选本身是否 air——这正是 Task 4 修复轮 1 C1 活锁的根源之一（另一半在
+    // 旧版"全占转悬浮"路径，已废除，见 `particle.rs::resolve_landing` 文档）。
     let mut last_air = (cx, cy);
 
     // 安全上限：MAX_SPEED=16 时单轴最坏跨越数 ~17，双轴交织最坏 ~34；
@@ -217,8 +227,9 @@ mod tests {
 
     #[test]
     fn start_cell_is_never_checked_even_if_blocking() {
-        // 粒子悬浮重置后可能就位于非 air 格（spec §5 明文）；起点是墙，
-        // 但只要离开后进入的格子是 air，就必须正常 Clear，不能因起点非 air 而误判阻挡。
+        // 粒子可能就位于非 air 格（本文件顶部注释：零穿越 tick + 网格四相
+        // 同 tick 移料进格）；起点是墙，但只要离开后进入的格子是 air，就必须
+        // 正常 Clear，不能因起点非 air 而误判阻挡。
         let w = world_with_walls(2, 2, &[(5, 5)]);
         let r = trace((fx(5), fx(5)), (fx(3), Fx::ZERO), &w);
         assert_eq!(r, Trace::Clear { end_pos: (fx(8), fx(5)) });
@@ -282,15 +293,10 @@ mod tests {
     #[test]
     fn negative_diagonal_blocked() {
         // 左上方向对角线：从 (10,10) 走向 (7,7)，(8,8) 放墙。
+        // 手工推演穿越序（tie 定 x 先跨）：(9,10)(9,9)(8,9)(8,8)==墙；
+        // 候选 = 撞墙前最后一个 air 格 = (8,9)（M4：钉死具体坐标而非范围断言）。
         let w = world_with_walls(3, 3, &[(8, 8)]);
         let r = trace((fx(10), fx(10)), (fx(-3), fx(-3)), &w);
-        match r {
-            Trace::Blocked { land_cell } => {
-                // 候选必须是撞墙前最后一个 air 格，且严格早于 (8,8)。
-                assert!(land_cell.0 >= 8 && land_cell.1 >= 8, "候选格 {land_cell:?} 不应早于起点侧");
-                assert_ne!(land_cell, (8, 8), "候选格不能是墙本身");
-            }
-            other => panic!("期望 Blocked，实际 {other:?}"),
-        }
+        assert_eq!(r, Trace::Blocked { land_cell: (8, 9) });
     }
 }

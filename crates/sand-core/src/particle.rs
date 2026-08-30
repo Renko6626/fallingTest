@@ -43,6 +43,11 @@ pub struct Particles {
     next_id: u32,
     /// 容量拒绝次数：诊断用，**不入哈希**。
     rejected_total: u64,
+    /// 落格候选与向上兜底搜索都找不到空位的粒子数：诊断用，**不入哈希**
+    /// （Task 4 修复轮 1 C1：替换掉会活锁的"全占转悬浮"路径后，这类粒子
+    /// 直接判定为出界般移除，此计数器只供性能/密度调参观测，只有极端拥挤
+    /// 的静态堆场景才会非零）。
+    buried_total: u64,
 }
 
 impl Particles {
@@ -80,8 +85,17 @@ impl Particles {
         self.rejected_total
     }
 
-    /// 按下标写回位置与速度（Task 4 提交阶段：Fly 位置推进、悬浮降级重置用）。
-    /// 材料在飞行/悬浮期间不变，故不在此设置。
+    /// 落格兜底搜索耗尽的诊断计数（不入哈希，见字段文档）。
+    pub fn buried_total(&self) -> u64 {
+        self.buried_total
+    }
+
+    fn mark_buried(&mut self) {
+        self.buried_total += 1;
+    }
+
+    /// 按下标写回位置与速度（Task 4 提交阶段：`Fly` 结局原样写回）。材料在
+    /// 飞行期间不变，故不在此设置。
     fn set_state(&mut self, i: usize, x: Fx, y: Fx, vx: Fx, vy: Fx) {
         self.x[i] = x;
         self.y[i] = y;
@@ -158,14 +172,20 @@ struct ParticleView {
     vy: Fx,
 }
 
-/// 粒子积分结局（spec §4b、§5）。`Land`/`Fly` 都携带 `pos`：`Fly.pos` 是真正要
-/// 写回 SoA 的新坐标；`Land.pos` 是撞击前的连续坐标（`pos + vel`，未夹到格心），
-/// 提交阶段只认 `cx,cy` 作为候选格，`pos` 留作诊断/未来法术命中结算复用
-/// （`kernel-charter.md:65`），当前不影响提交逻辑。
+/// 粒子积分结局（spec §4b、§5）。
+///
+/// - `Fly.pos` / `Fly.vel`：真正要写回 SoA 的新坐标与新速度。重力+clamp 只在
+///   `integrate` 内部算一次，结果随 `vel` 一并传给 `commit`——`commit` 原样
+///   写回，不重算（Task 4 修复轮 1 M2：两处各算一次同一件事，曾是潜在的
+///   "两份实现必须手动保持一致"隐患，改为单一算点更直接）。
+/// - `Land.pos`：**未受阻时的积分终点**（`pos + vel`，若这一步没被挡本该到
+///   达的地方），**不是**撞击点、也不是候选格坐标——真正的落格目标看
+///   `cx,cy`。`commit` 当前不消费这个字段，暂留作诊断/未来法术命中结算的
+///   挂钩点（`kernel-charter.md:65`），语义等 M4 法术层落地时再定型。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Outcome {
     Land { cx: i32, cy: i32, pos: (Fx, Fx) },
-    Fly { pos: (Fx, Fx) },
+    Fly { pos: (Fx, Fx), vel: (Fx, Fx) },
     Gone,
 }
 
@@ -192,23 +212,28 @@ fn integrate(p: ParticleView, world: &World) -> Outcome {
     let (vx, vy) = apply_gravity_and_clamp(p.vx, p.vy);
     match dda::trace((p.x, p.y), (vx, vy), world) {
         dda::Trace::Gone => Outcome::Gone,
-        dda::Trace::Clear { end_pos } => Outcome::Fly { pos: end_pos },
+        dda::Trace::Clear { end_pos } => Outcome::Fly { pos: end_pos, vel: (vx, vy) },
         dda::Trace::Blocked { land_cell } => {
             Outcome::Land { cx: land_cell.0, cy: land_cell.1, pos: (p.x + vx, p.y + vy) }
         }
     }
 }
 
-/// 格 (cx,cy) 的中心连续坐标（Q16.16：格左上角 + 半格）。
-fn cell_center(cx: i32, cy: i32) -> (Fx, Fx) {
-    let half = Fx(1 << 15);
-    (Fx::from_int(cx) + half, Fx::from_int(cy) + half)
-}
-
-/// 候选格 (cx,cy) 的落格消解（spec §5 提交期冲突）：候选仍是 air 直接用；
-/// 否则按固定邻格序【上、左、右、左上、右上】（相对候选格）搜第一个 air 格
-/// 降级；全占返回 `None`（调用方转悬浮）。出界邻格视为不可用（既非候选也不
-/// 计入搜索命中）。
+/// 候选格 (cx,cy) 的落格消解（spec §5 提交期冲突，Task 4 修复轮 1 C1 改判）。
+///
+/// 候选本身是 air 直接用（候选恒是 DDA 已验证过在界内的格子；即便万一传入
+/// 越界坐标，`World::cell` 对越界坐标兜底返回 `WALL_SENTINEL`，material 非
+/// air，自然落入下面的"非 air"分支而不会误判为可落——M5 提示）。否则按固定
+/// 邻格序【上、左、右、左上、右上】搜第一个 air 格降级；五邻格仍全占，则
+/// 沿候选正上方继续逐格向上找空位，直到世界顶（Noita 同款方案：写回点被占
+/// 时向上找空格，`docs/reference/noita-deep-dive.md:226`）。
+///
+/// **不再有"全占转悬浮"这条路**——那是原设计的活锁根源：悬浮粒子被重置到
+/// 候选格中心后，下 tick DDA 因起点格豁免检查会在同一个已判定"全占"的候选
+/// 格上原地复现同一局面，两 tick 死循环（Task 4 评审实测：40 颗同位同速
+/// 粒子里 32 颗永久卡死，池不排空）。向上找到世界顶仍无 air，返回 `None`：
+/// 调用方按出界处理（不写网格），计入 [`Particles::buried_total`] 诊断计数
+/// ——`Outcome::Land` 现在必然终止于"落格"或"出界"，无第三态。
 fn resolve_landing(world: &World, cx: i32, cy: i32) -> Option<(i32, i32)> {
     if world.cell(cx, cy).material() == MAT_AIR {
         return Some((cx, cy));
@@ -226,13 +251,23 @@ fn resolve_landing(world: &World, cx: i32, cy: i32) -> Option<(i32, i32)> {
             return Some((nx, ny));
         }
     }
+    // 五邻格全占：邻格序里 (cx, cy-1) 已经查过且被占，从再上一格（cy-2）起
+    // 继续向上找，直到世界顶（`in_bounds` 为 false 时停止，None）。
+    let mut y = cy - 2;
+    while world.in_bounds(cx, y) {
+        if world.cell(cx, y).material() == MAT_AIR {
+            return Some((cx, y));
+        }
+        y -= 1;
+    }
     None
 }
 
 /// 串行提交（spec §5 c/d）：按下标（= id）序应用 `outcomes`，返回保留掩码
-/// （`false` = Land 已写入网格 / Gone 出界销毁，供 `compact` 使用）。拆成独立
-/// 函数（而非内联进 [`advance`]）是为了让单测能直接注入合成 `Outcome`，验证
-/// 冲突消解顺序而不必依赖真实重力积分的确切落格时机。
+/// （`false` = 已从池中移除——Land 落格写入网格 / Land 兜底搜索耗尽 / Gone
+/// 出界，三者都不再是自由粒子；供 `compact` 使用）。拆成独立函数（而非内联
+/// 进 [`advance`]）是为了让单测能直接注入合成 `Outcome`，验证冲突消解顺序
+/// 而不必依赖真实重力积分的确切落格时机。
 fn commit(
     particles: &mut Particles,
     world: &mut World,
@@ -245,19 +280,17 @@ fn commit(
     for (i, outcome) in outcomes.iter().enumerate() {
         match *outcome {
             Outcome::Gone => keep[i] = false,
-            Outcome::Fly { pos } => {
-                let (vx, vy) = apply_gravity_and_clamp(particles.vx(i), particles.vy(i));
-                particles.set_state(i, pos.0, pos.1, vx, vy);
+            Outcome::Fly { pos, vel } => {
+                particles.set_state(i, pos.0, pos.1, vel.0, vel.1);
             }
             Outcome::Land { cx, cy, .. } => {
-                if let Some((lx, ly)) = resolve_landing(world, cx, cy) {
-                    world.set_cell_stamped(table, lx, ly, particles.material(i), stamp);
-                    keep[i] = false;
-                } else {
-                    // 全占：继续飞——候选格中心、速度清零（spec §5）。下 tick
-                    // 重力重启寻底，每 tick 成本一次短 DDA，有界。
-                    let center = cell_center(cx, cy);
-                    particles.set_state(i, center.0, center.1, Fx::ZERO, Fx::ZERO);
+                // Land 必然终止于落格或出界（Task 4 修复轮 1 C1：悬浮路径已废除）。
+                keep[i] = false;
+                match resolve_landing(world, cx, cy) {
+                    Some((lx, ly)) => {
+                        world.set_cell_stamped(table, lx, ly, particles.material(i), stamp);
+                    }
+                    None => particles.mark_buried(),
                 }
             }
         }
@@ -460,24 +493,38 @@ mod tests {
     }
 
     #[test]
-    fn commit_conflict_all_five_neighbors_occupied_downgrades_to_fly() {
+    fn commit_conflict_all_five_neighbors_occupied_climbs_upward_to_find_air() {
+        // C1 回归：候选格 + 全部 5 个邻格都占满，且正上方再高一格（5,3）也占满，
+        // 迫使兜底搜索至少跨两步；(5,2) 留空，必须落在那里，不得转悬浮/活锁。
         let t = test_table();
         let mut w = World::new(1, 1, 0);
-        // 候选格 + 全部 5 个邻格（上/左/右/左上/右上）预先占满。
-        for (dx, dy) in [(0, 0), (0, -1), (-1, 0), (1, 0), (-1, -1), (1, -1)] {
+        for (dx, dy) in [(0, 0), (0, -1), (-1, 0), (1, 0), (-1, -1), (1, -1), (0, -2)] {
             w.set_cell_stamped(&t, 5 + dx, 5 + dy, 1, 0);
         }
-        let mut p = Particles::new();
-        // 非零初值，验证悬浮重置确实覆盖旧状态而非保留。
-        p.spawn(2, fx(99), fx(99), fx(3), fx(-2));
+        let mut p = spawn_n(1);
         let outcomes = vec![Outcome::Land { cx: 5, cy: 5, pos: (Fx::ZERO, Fx::ZERO) }];
         let keep = commit(&mut p, &mut w, &t, 0, &outcomes);
-        assert_eq!(keep, vec![true], "全占应转悬浮（继续飞），不得移除");
-        let (ccx, ccy) = cell_center(5, 5);
-        assert_eq!(p.x(0), ccx, "悬浮位置必须是候选格中心");
-        assert_eq!(p.y(0), ccy);
-        assert_eq!(p.vx(0), Fx::ZERO, "悬浮必须清零速度");
-        assert_eq!(p.vy(0), Fx::ZERO);
+        assert_eq!(keep, vec![false], "找到空位应正常落格移除，不悬浮");
+        assert_eq!(w.cell(5, 2).material(), 2, "应向上爬两格找到唯一的空位");
+        assert_eq!(p.buried_total(), 0);
+    }
+
+    #[test]
+    fn commit_conflict_fully_boxed_near_world_top_becomes_gone_and_counts_buried() {
+        // C1 回归：候选格贴着世界顶（cy=1），5 邻格全占，兜底向上搜索一步
+        // （y=cy-2=-1）就出界——必须判 Gone（移除、不写网格）且计入 buried_total，
+        // 绝不允许悬浮/活锁。
+        let t = test_table();
+        let mut w = World::new(1, 1, 0);
+        for (dx, dy) in [(0, 0), (0, -1), (-1, 0), (1, 0), (-1, -1), (1, -1)] {
+            w.set_cell_stamped(&t, 5 + dx, 1 + dy, 1, 0);
+        }
+        let mut p = spawn_n(1);
+        let outcomes = vec![Outcome::Land { cx: 5, cy: 1, pos: (Fx::ZERO, Fx::ZERO) }];
+        let keep = commit(&mut p, &mut w, &t, 0, &outcomes);
+        assert_eq!(keep, vec![false], "兜底搜索耗尽必须移除粒子（判 Gone），不得悬浮");
+        assert_eq!(w.count_material(2), 0, "没有空位可写，不应污染网格");
+        assert_eq!(p.buried_total(), 1, "必须计入诊断计数器");
     }
 
     #[test]
@@ -494,20 +541,44 @@ mod tests {
     }
 
     #[test]
-    fn commit_fly_advances_position_and_applies_gravity_to_velocity() {
+    fn commit_fly_writes_position_and_velocity_verbatim_from_outcome() {
+        // M2：commit 不再重算 apply_gravity_and_clamp——Outcome::Fly 携带的
+        // vel 就是最终要写回的速度，原样落地即可（重力/clamp 只在 integrate
+        // 内部算一次）。用一个刻意不满足"vy = 输入vy + GRAVITY"的 vel，证明
+        // commit 确实是直接写回而非重新计算。
         let t = test_table();
         let mut w = World::new(1, 1, 0);
         let mut p = Particles::new();
-        p.spawn(2, Fx::ZERO, Fx::ZERO, Fx::ZERO, fx(2));
-        let outcomes = vec![Outcome::Fly { pos: (fx(1), fx(2)) }];
+        p.spawn(2, Fx::ZERO, Fx::ZERO, fx(9), fx(9)); // 初始速度对结果无影响
+        let outcomes = vec![Outcome::Fly { pos: (fx(1), fx(2)), vel: (fx(-3), fx(7)) }];
         let keep = commit(&mut p, &mut w, &t, 0, &outcomes);
         assert_eq!(keep, vec![true]);
         assert_eq!(p.x(0), fx(1));
         assert_eq!(p.y(0), fx(2));
-        // commit 内重算的重力+clamp 必须与 outcome 生成时用的是同一份实现：
-        // vy 从 2 加上 GRAVITY(0.25) 应为 2.25。
-        assert_eq!(p.vy(0), fx(2) + GRAVITY);
-        assert_eq!(p.vx(0), Fx::ZERO);
+        assert_eq!(p.vx(0), fx(-3));
+        assert_eq!(p.vy(0), fx(7));
+    }
+
+    #[test]
+    fn integrate_applies_gravity_and_clamp_exactly_once_for_fly() {
+        // M2 对应的 integrate 侧覆盖：重力+clamp 只在这里算一次，结果随
+        // Outcome::Fly::vel 传出，commit 不再重算（见上一测试）。
+        let w = World::new(1, 1, 0);
+        let view = ParticleView { x: fx(2), y: fx(2), vx: fx(3), vy: fx(4) };
+        match integrate(view, &w) {
+            Outcome::Fly { vel, .. } => assert_eq!(vel, (fx(3), fx(4) + GRAVITY)),
+            other => panic!("期望 Fly，实际 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn integrate_clamps_fly_velocity_to_max_speed() {
+        let w = World::new(1, 1, 0);
+        let view = ParticleView { x: fx(2), y: fx(2), vx: MAX_SPEED + fx(5), vy: Fx::ZERO };
+        match integrate(view, &w) {
+            Outcome::Fly { vel, .. } => assert_eq!(vel.0, MAX_SPEED, "vx 必须被 clamp 到上限"),
+            other => panic!("期望 Fly，实际 {other:?}"),
+        }
     }
 
     #[test]
