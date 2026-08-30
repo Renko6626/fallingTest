@@ -32,7 +32,7 @@ Python 当年没踩坑是因为 M0.5 决策①直接删了 static 跳过。
 | # | 项 | 状态 |
 |---|---|---|
 | 1 | cargo test 全绿 | ✅ 22 项 |
-| 2 | synctest 10 万 tick 零分叉 | ✅ release 版 acceptance 场景（640×384 四配置） |
+| 2 | synctest 10 万 tick 零分叉 | ✅ release 版 acceptance 场景（640×384 四配置，实跑 2993s，scenario_fp `f5a093e75d6e67c1`） |
 | 3 | 双机 hashrun 逐字一致 | ⬜ **待用户执行**：两台机器各跑 `./target/release/sand-harness hashrun data/scenarios/acceptance.ron --ticks 100000 > hashes.txt` 后 diff |
 | 4 | render GIF 目检 | ✅ `out/mixed.gif`：安息角、沙沉水、液面摊平、三路浇注 |
 
