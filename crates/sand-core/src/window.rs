@@ -9,11 +9,32 @@
 
 use crate::cell::Cell;
 use crate::chunk::{Chunk, DirtyRect, CHUNK};
+use crate::material::DISPERSION_MAX;
 use crate::world::WALL_SENTINEL;
 
-/// 影响半径上限（charter §4 r≤16 契约）。M0 实际移动半径 = 1。
-/// 新增任何移动/探测规则必须自证半径 ≤ HALO 并复审脏矩形扩张常数（spec §3.3）。
+/// 影响半径上限（charter §4 r≤16 契约）。
+///
+/// 实际用掉多少（2026-08-31，Layer G Task 1 后）：竖直移速仍恒 1（速度积分是
+/// Task 2 的范围），水平最大位移 = 液体色散 [`DISPERSION_MAX`] = 8，加
+/// `mark_dirty_around` 的 ±1 ⇒ **实际 r = 9 ≤ 16，余量 7**。
+///
+/// 下面的编译期断言把这条不等式从人肉纪律变成契约：谁把 `DISPERSION_MAX`
+/// 提到 16 以上，编译直接不过。Task 2 引入格内移速后，本断言按 spec §5 扩写为
+/// `(V_MAX_CELL/VEL_ONE − 1) + DISPERSION_MAX + 1 <= HALO`（色散走到即撞停，
+/// 故两项是"同一 tick 内先斜下后色散"的串接而非各自独立取最大）。
+///
+/// 断言覆盖不到的部分仍需自证：新增**其他**移动/探测规则时，必须论证自己的
+/// 读写半径 ≤ HALO 并复审脏矩形扩张常数（spec §3.3）。
 pub const HALO: i32 = 16;
+
+/// 单次 cell 更新实际用掉的最大读写半径（Layer G Task 1 时点）：色散距离
+/// 上限 + `mark_dirty_around` 的 ±1。Task 2 加入格内移速后按 spec §5 扩写。
+pub const MAX_WRITE_RADIUS: i32 = DISPERSION_MAX as i32 + 1;
+
+const _: () = assert!(
+    MAX_WRITE_RADIUS <= HALO,
+    "r<=16 契约破裂：DISPERSION_MAX + 1（mark_dirty_around 的 ±1）必须 <= HALO"
+);
 
 #[derive(Clone, Copy)]
 pub(crate) struct ChunksPtr(pub *mut Chunk);

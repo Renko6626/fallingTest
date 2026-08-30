@@ -330,6 +330,7 @@ mod tests {
             // 不应引入意料之外的汽化分支——专门测汽化差异的用例另建材料表
             // （见下方"vaporize_threshold"分节）。
             vaporize_threshold: 255,
+            dispersion: 1,
         };
         MaterialTable::new(vec![
             def(0, "air", Category::Static, 0, 0),
@@ -462,6 +463,7 @@ mod tests {
             color: (0, 0, 0),
             blast_cost,
             vaporize_threshold,
+            dispersion: 1,
         };
         MaterialTable::new(vec![
             def(0, "air", Category::Static, 0, 255),
@@ -521,6 +523,7 @@ mod tests {
             color: (0, 0, 0),
             blast_cost,
             vaporize_threshold: 255,
+            dispersion: 1,
         };
         let t = MaterialTable::new(vec![
             def(0, "air", Category::Static, 0),
@@ -638,7 +641,7 @@ mod tests {
     fn mixed_vaporize_table() -> MaterialTable {
         use crate::material::BLAST_COST_INFINITE;
         let def = |id: u8, name: &str, category: Category, density: u16, blast_cost: u32, vaporize_threshold: u8| {
-            MaterialDef { id, name: name.into(), category, density, color: (0, 0, 0), blast_cost, vaporize_threshold }
+            MaterialDef { id, name: name.into(), category, density, color: (0, 0, 0), blast_cost, vaporize_threshold, dispersion: 1 }
         };
         MaterialTable::new(vec![
             def(0, "air", Category::Static, 0, 0, 255),

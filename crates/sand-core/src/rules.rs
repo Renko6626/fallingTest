@@ -2,7 +2,7 @@
 
 use crate::cell::Cell;
 use crate::chunk::DirtyRect;
-use crate::material::{Category, MaterialTable, MAT_AIR};
+use crate::material::{Category, MaterialTable, DISPERSION_MAX, MAT_AIR};
 use crate::rng::{rng_u32, STREAM_DIAG};
 use crate::window::WriteWindow;
 
@@ -104,20 +104,43 @@ impl Ctx<'_> {
         if self.displace(x, y, c, x + s, y + 1) || self.displace(x, y, c, x - s, y + 1) {
             return;
         }
-        // 横移 1 格，仅入 AIR；方向承诺不变量：侧移成功后记忆 = 实际移动方向
-        // （2026-06-14 液面冻结修复的 Rust 版语义，spec §4.3）
+        // 横移至多 dispersion 格（Layer G Task 1），仅入 AIR；方向承诺不变量：
+        // 侧移成功后记忆 = 实际移动方向（2026-06-14 液面冻结修复的 Rust 版语义，
+        // M0 spec §4.3）。失败则翻向再试一次——翻向后同样吃满色散距离。
         let d = c.dir();
         let _ = self.side(x, y, c, d) || self.side(x, y, c, -d);
     }
 
+    /// 沿方向 `d` 探至多 `dispersion` 格，遇非 AIR 即停，移到**最远可达空格**
+    /// （Layer G Task 1，spec §3.2）。
+    ///
+    /// **clamp 不是防御性编程而是 P4 写域论证的一部分**（spec §3.1 评审修订）：
+    /// 本函数的探测半径 = 写入半径 = 色散距离，越界即写出 `WriteWindow`——
+    /// debug 撞窗口断言、release 变同相数据竞争 → SyncTest 分叉。harness 加载期
+    /// 有 `1..=DISPERSION_MAX` 校验，但那只是用户可见报错，直接构表的调用方
+    /// （测试、未来的程序化材料表）绕得过去，故半径上界在**使用点**兜死。
+    ///
+    /// 掠过的中途格子不写入、不标脏——它们的内容确实没变（spec §3.2 脏矩形条）。
+    /// `dispersion` 缺省 1 时与改动前逐位等价：循环只跑 i=1 一轮，`far_cell`
+    /// 就是原来的 `t`。
     fn side(&self, x: i32, y: i32, c: Cell, d: i32) -> bool {
-        let t = self.win.get(x + d, y);
-        if t.material() == MAT_AIR {
-            self.win.set(x + d, y, c.with_dir(d > 0).with_stamp(self.stamp));
-            self.win.set(x, y, t.with_stamp(self.stamp));
-            true
-        } else {
-            false
+        let reach = self.table.dispersion(c.material()).min(DISPERSION_MAX) as i32;
+        let mut far = x;
+        let mut far_cell = Cell::AIR;
+        for i in 1..=reach {
+            let t = self.win.get(x + d * i, y);
+            if t.material() != MAT_AIR {
+                break;
+            }
+            far = x + d * i;
+            far_cell = t;
         }
+        if far == x {
+            return false;
+        }
+        // 方向承诺不变量：记忆 = 实际移动方向（2026-06-14 液面冻结修复语义）
+        self.win.set(far, y, c.with_dir(d > 0).with_stamp(self.stamp));
+        self.win.set(x, y, far_cell.with_stamp(self.stamp));
+        true
     }
 }

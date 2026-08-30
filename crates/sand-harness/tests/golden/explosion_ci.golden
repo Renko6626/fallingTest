@@ -1,9 +1,9 @@
 scenario explosion_ci
 scenario_fp 59e964af026a14a7
-materials_fp 5977406d3fb29322
+materials_fp c1558de1ce2c433e
 world 256x192 seed 3798995166 ticks 1200
-tick      256 hash 9d32d988e5d4dda9
-tick      512 hash 6da0f10525ff5761
-tick      768 hash bb48fefcf0a986f0
-tick     1024 hash 5795272073d3f67d
-final 5beb24c1358aafb5
+tick      256 hash 53440d8b127cae72
+tick      512 hash ba9ddea37499d880
+tick      768 hash 94e65413d9709103
+tick     1024 hash 34de109ce142e992
+final 4861b6dcd7a5208a

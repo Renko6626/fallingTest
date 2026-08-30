@@ -5,7 +5,9 @@
 use serde::Deserialize;
 use xxhash_rust::xxh3::{xxh3_64, Xxh3};
 
-use sand_core::{Category, Fx, MaterialDef, MaterialTable, Op, MAX_EMIT_JITTER_RAW};
+use sand_core::{
+    Category, Fx, MaterialDef, MaterialTable, Op, DISPERSION_MAX, MAX_EMIT_JITTER_RAW,
+};
 
 /// `MatSpec::blast_cost` 的 serde 缺省值（spec §6："RON 缺省 1"）。
 fn default_blast_cost() -> u32 {
@@ -16,6 +18,12 @@ fn default_blast_cost() -> u32 {
 /// 2026-08-30）：RON 缺省 1.0 = 永不汽化（量化后 255）。
 fn default_vaporize_threshold() -> f64 {
     1.0
+}
+
+/// `MatSpec::dispersion` 的 serde 缺省值（Layer G Task 1，spec §3）：
+/// RON 缺省 1 = 改动前的单格横移语义。
+fn default_dispersion() -> u8 {
+    1
 }
 
 // ---------- materials.ron ----------
@@ -44,6 +52,13 @@ struct MatSpec {
     /// 只见量化后的整数，同 `blast_cost`/`Op::Emit` 的 `Fx` 先例。
     #[serde(default = "default_vaporize_threshold")]
     vaporize_threshold: f64,
+    /// 液体单 tick 横移（色散）距离，单位格（Layer G Task 1，spec §3）。
+    /// 缺省 1 = 改动前语义。取值域 `1..=DISPERSION_MAX`，越界在
+    /// [`load_materials`] 报错——**不是**手感旋钮而是 P4 写域论证的输入
+    /// （见 `sand_core::DISPERSION_MAX` 文档），故不走 `blast_cost` 那条
+    /// "core 侧不校验"的先例。
+    #[serde(default = "default_dispersion")]
+    dispersion: u8,
 }
 
 #[derive(Deserialize)]
@@ -78,10 +93,34 @@ pub fn load_materials(path: &str) -> Result<(MaterialTable, u64), String> {
                 vaporize_threshold: quantize_vaporize_threshold(m.vaporize_threshold).map_err(|e| {
                     format!("材料 '{}'（id={}）的 vaporize_threshold 非法：{e}", m.name, m.id)
                 })?,
+                dispersion: validate_dispersion(m.dispersion).map_err(|e| {
+                    format!("材料 '{}'（id={}）的 dispersion 非法：{e}", m.name, m.id)
+                })?,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
     Ok((MaterialTable::new(defs)?, fp))
+}
+
+/// 液体色散距离的加载期取值域校验（Layer G Task 1，spec §3.1）：
+/// `1 <= d <= DISPERSION_MAX`。
+///
+/// 下界 1 而非 0——0 意为"一格都不许横移"，与缺省语义（1）差一格却毫无用途，
+/// 出现即配置事故。上界是 [`DISPERSION_MAX`]：越界会撑爆 spec §5 的
+/// `r <= HALO` 不等式。
+///
+/// **与 `blast_cost`/`vaporize_threshold` 的先例不同**，core 侧并非"不做取值
+/// 校验"：`rules::side` 另有 clamp 兜底（见 [`DISPERSION_MAX`] 文档）。两道
+/// 防线分工明确——这里给用户可读的报错（配错了要知道错在哪），core 那道保证
+/// 即便绕过本函数直接构表也不会破坏 P4 写域论证。
+pub fn validate_dispersion(d: u8) -> Result<u8, String> {
+    if !(1..=DISPERSION_MAX).contains(&d) {
+        return Err(format!(
+            "dispersion={d} 超出取值域 [1, {DISPERSION_MAX}]（0 无意义；\
+             超上界会撑爆 r <= HALO 影响半径契约）"
+        ));
+    }
+    Ok(d)
 }
 
 /// 近心汽化阈值 RON 表面值（`0.0..=1.0` 十进制）→ 量化 u8（spec §6 汽化
@@ -347,9 +386,9 @@ mod tests {
 
     fn table_with_water() -> MaterialTable {
         MaterialTable::new(vec![
-            MaterialDef { id: 0, name: "air".into(), category: Category::Static, density: 0, color: (0, 0, 0), blast_cost: 0, vaporize_threshold: 255 },
-            MaterialDef { id: 1, name: "wall".into(), category: Category::Static, density: 100, color: (0, 0, 0), blast_cost: sand_core::BLAST_COST_INFINITE, vaporize_threshold: 255 },
-            MaterialDef { id: 2, name: "water".into(), category: Category::Liquid, density: 16, color: (0, 0, 0), blast_cost: 1, vaporize_threshold: 255 },
+            MaterialDef { id: 0, name: "air".into(), category: Category::Static, density: 0, color: (0, 0, 0), blast_cost: 0, vaporize_threshold: 255, dispersion: 1 },
+            MaterialDef { id: 1, name: "wall".into(), category: Category::Static, density: 100, color: (0, 0, 0), blast_cost: sand_core::BLAST_COST_INFINITE, vaporize_threshold: 255, dispersion: 1 },
+            MaterialDef { id: 2, name: "water".into(), category: Category::Liquid, density: 16, color: (0, 0, 0), blast_cost: 1, vaporize_threshold: 255, dispersion: 1 },
         ])
         .unwrap()
     }
@@ -509,6 +548,67 @@ mod tests {
     fn quantize_vaporize_threshold_rejects_negative_and_above_one() {
         assert!(quantize_vaporize_threshold(-0.01).is_err(), "负值必须被拒绝");
         assert!(quantize_vaporize_threshold(1.01).is_err(), "超过 1.0（四舍五入后 > 255）必须被拒绝");
+    }
+
+    // ==================== dispersion 加载期校验（Layer G Task 1，spec §3.1）====================
+
+    fn write_temp_materials(tag: &str, water_line: &str) -> std::path::PathBuf {
+        let ron = format!(
+            "(materials:[\
+             (id:0,name:\"air\",category:Static,density:0,color:(0,0,0)),\
+             (id:1,name:\"wall\",category:Static,density:100,color:(0,0,0)),\
+             {water_line}\
+             ])"
+        );
+        let path = std::env::temp_dir()
+            .join(format!("sand_harness_test_dispersion_{}_{tag}.ron", std::process::id()));
+        std::fs::write(&path, ron).unwrap();
+        path
+    }
+
+    #[test]
+    fn materials_ron_without_dispersion_field_defaults_to_one() {
+        let path = write_temp_materials("default", "");
+        let (t, _fp) = load_materials(path.to_str().unwrap()).unwrap();
+        std::fs::remove_file(&path).ok();
+        assert_eq!(t.dispersion(0), 1, "未声明 dispersion 的材料应缺省为 1（= 改动前语义）");
+        assert_eq!(t.dispersion(1), 1);
+    }
+
+    #[test]
+    fn materials_ron_accepts_dispersion_within_range() {
+        let path = write_temp_materials(
+            "ok",
+            "(id:2,name:\"water\",category:Liquid,density:16,color:(0,0,0),dispersion:5),",
+        );
+        let (t, _fp) = load_materials(path.to_str().unwrap()).unwrap();
+        std::fs::remove_file(&path).ok();
+        assert_eq!(t.dispersion(2), 5);
+    }
+
+    #[test]
+    fn load_materials_rejects_dispersion_zero() {
+        // 0 = "一格都不许走"，是配置事故而非合法语义（缺省是 1）。
+        let path = write_temp_materials(
+            "zero",
+            "(id:2,name:\"water\",category:Liquid,density:16,color:(0,0,0),dispersion:0),",
+        );
+        let r = load_materials(path.to_str().unwrap());
+        std::fs::remove_file(&path).ok();
+        assert!(r.is_err(), "dispersion=0 必须在加载期被拒绝");
+    }
+
+    #[test]
+    fn load_materials_rejects_dispersion_above_max() {
+        // 越界会撑爆 §5 的 r ≤ HALO 不等式；core 侧另有 clamp 兜底，但用户
+        // 可见的报错必须在这里给出（体例同 MAX_EMIT_JITTER_RAW）。
+        let path = write_temp_materials(
+            "over",
+            "(id:2,name:\"water\",category:Liquid,density:16,color:(0,0,0),dispersion:9),",
+        );
+        let r = load_materials(path.to_str().unwrap());
+        std::fs::remove_file(&path).ok();
+        assert!(r.is_err(), "dispersion=9（> DISPERSION_MAX=8）必须在加载期被拒绝");
     }
 
     // ==================== resolve_op：Emit 解析 + 量化落地 + 校验 ====================

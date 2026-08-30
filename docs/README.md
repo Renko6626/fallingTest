@@ -14,9 +14,15 @@
 
 1. **下一会话首项：双机 hashrun**（M0 起挂账的唯一跨机验收项，用户手动；M0/M1 场景一起跑——
    `hashrun` 用法见 `sessions/2026-08-30-m0-implementation.md`，两机各跑后 diff 逐字比对）。
-2. **Layer G 运动语义重做（已立项，spec: Proposed）**——`superpowers/specs/2026-08-31-layer-g-velocity-design.md`。
-   范围 = 液体色散 ≤8 + 重力速度积分 + 撞击溅射脱格，分三 Task 独立落地（色散打头）。待办：spec 用户复审 →
-   `writing-plans` 出实施计划 → 逐 Task 实施。落地时须同步总纲 §11 与 §4 Layer G 措辞。
+2. **Layer G 运动语义重做（实施中，spec: Proposed）**——`superpowers/specs/2026-08-31-layer-g-velocity-design.md`。
+   范围 = 液体色散 ≤8 + 重力速度积分 + 撞击溅射脱格，分三 Task 独立落地。
+   - **Task 1 液体色散 ≤8：代码与验收已完成（2026-08-31），仅剩 GIF 目检结论待用户**——`materials.ron` 加
+     `dispersion` 字段（water 5），`rules::side` 改"最远可达空格"+ `DISPERSION_MAX` clamp。单测 10 条、golden
+     重录（`sand_pile` 逐 tick 哈希逐位不变，仅 `materials_fp` 变）、SyncTest waterfall+mixed 各 2 万 tick 六配置
+     零分叉、bench 见 `perf/2026-08-31-layer-g-task1-dispersion.md`。目检 GIF：`out/waterfall_disp{1,5}.gif`、
+     `out/mixed_disp{1,5}.gif`（改动前/后对照，看水面锯齿与摊平速度）。总纲 §4、§11 已同步。
+   - **Task 2 重力速度积分**（下一步）：Cell 位段 17–21 存竖直速度 + 子步循环；关键取证是 `G_ACCEL=0` 逐位回归。
+   - **Task 3 撞击溅射脱格**：并行 pass 新增 `spawns` 写入源，须落总纲 §11。
 3. **M2 场层与反应表**（Layer G 三 Task 之后）：spec 里裁决 O2 场降本 + O3 粉末惯性时点 + durability/hardness
    字段化 + 粒子穿水/弹跳评估 + M1 遗留两条测试补强（见 `sessions/2026-08-30-m1-particle-layer.md`"留给后续"；
    其中 Task 6 minor ①②③⑤ 已由 commit `098fe23` 修掉，剩 ④⑥ 两条测试债）。

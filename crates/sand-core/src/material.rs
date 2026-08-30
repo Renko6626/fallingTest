@@ -12,6 +12,16 @@ pub const MAT_WALL: u8 = 1;
 /// M2 反应表引入 durability/hardness 后此字段语义细化替换（设计 §12）。
 pub const BLAST_COST_INFINITE: u32 = u32::MAX;
 
+/// 液体单 tick 横移（色散）距离上限（Layer G Task 1，spec §3 / §5）。
+///
+/// **这个常量是 P4 写域论证的一部分，不是手感旋钮**：`rules::side` 的探测与
+/// 写入半径直接等于色散距离，越界即写出 `WriteWindow`——debug 构建撞窗口
+/// 断言 panic，release 构建变成同相邻 chunk 的数据竞争 → SyncTest 分叉。
+/// 故 `side` 无条件把材料声明值 clamp 到本常量（spec §3.1 评审修订），
+/// harness 加载期的 `1..=DISPERSION_MAX` 校验只是给用户的可见报错，不是
+/// 唯一防线。改动本常量必须同步复审 `window.rs` 的 r ≤ HALO 编译期断言。
+pub const DISPERSION_MAX: u8 = 8;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Category {
     Static,
@@ -41,6 +51,13 @@ pub struct MaterialDef {
     /// 汽化**（`fire_ray` 里 `remaining <= power` 恒成立，`remaining*255 >
     /// power*255` 即 `remaining > power` 恒假）。
     pub vaporize_threshold: u8,
+    /// 液体单 tick 横移（色散）距离，单位格（Layer G Task 1，spec §3）。
+    /// RON 缺省 1 = 改动前的单格横移语义；harness 加载期校验
+    /// `1..=DISPERSION_MAX`。**与 `blast_cost`/`vaporize_threshold` 不同**：
+    /// 越界值不只是手感不对，而会破坏 P4 写域论证，故 `rules::side` 另有
+    /// clamp 兜底（见 [`DISPERSION_MAX`]）。只对 `Category::Liquid` 有意义
+    /// （粉末不走 `side`，spec §1.3 Non-goals）。
+    pub dispersion: u8,
 }
 
 #[derive(Clone, Debug)]
@@ -106,6 +123,13 @@ impl MaterialTable {
     pub fn vaporize_threshold(&self, id: u8) -> u8 {
         self.defs[id as usize].vaporize_threshold
     }
+
+    /// 液体色散距离（spec §3）。返回材料声明的**原始值**——clamp 由
+    /// `rules::side` 在使用点施加（见 [`DISPERSION_MAX`]），这里不做修饰，
+    /// 便于加载期校验与诊断读到用户真正写下的值。
+    pub fn dispersion(&self, id: u8) -> u8 {
+        self.defs[id as usize].dispersion
+    }
 }
 
 #[cfg(test)]
@@ -113,7 +137,7 @@ mod tests {
     use super::*;
 
     fn def(id: u8, name: &str, category: Category, density: u16) -> MaterialDef {
-        MaterialDef { id, name: name.into(), category, density, color: (0, 0, 0), blast_cost: 1, vaporize_threshold: 255 }
+        MaterialDef { id, name: name.into(), category, density, color: (0, 0, 0), blast_cost: 1, vaporize_threshold: 255, dispersion: 1 }
     }
 
     #[test]
@@ -148,6 +172,7 @@ mod tests {
             color: (0, 0, 0),
             blast_cost: cost,
             vaporize_threshold: 255,
+            dispersion: 1,
         };
         let t = MaterialTable::new(vec![mk(0, "air", 0), mk(1, "wall", BLAST_COST_INFINITE)]).unwrap();
         assert_eq!(t.blast_cost(0), 0);
@@ -166,6 +191,7 @@ mod tests {
             color: (0, 0, 0),
             blast_cost: 1,
             vaporize_threshold: threshold,
+            dispersion: 1,
         };
         let t = MaterialTable::new(vec![mk(0, "air", 255), mk(1, "wall", 102)]).unwrap();
         assert_eq!(t.vaporize_threshold(0), 255);

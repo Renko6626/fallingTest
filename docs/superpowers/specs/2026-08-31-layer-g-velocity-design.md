@@ -3,7 +3,24 @@
 > 文档路径：`docs/superpowers/specs/2026-08-31-layer-g-velocity-design.md`
 > 运行时版本：Rust（内核）+ Godot 4 + gdext（表现层）
 > 最近更新：2026-08-31 (UTC+8)
-> **Status**: Proposed
+> **Status**: Proposed（Task 1 已落地；三 Task 全完才转 Implemented，见 §0）
+
+---
+
+## 实施进度
+
+| Task | 状态 | 落账 |
+|---|---|---|
+| 1 · 液体色散 ≤8 | ✅ **代码与验收完成（2026-08-31）**，仅 GIF 目检结论待用户 | CHANGELOG 2026-08-31 块；perf `docs/perf/2026-08-31-layer-g-task1-dispersion.md` |
+| 2 · 重力速度积分 | 未开始 | — |
+| 3 · 撞击溅射脱格 | 未开始 | — |
+
+**Task 1 实测 vs 预期**：§3.5 的 golden 预期全部兑现（`sand_pile` 逐 tick 哈希逐位不变、仅 `materials_fp` 行变；三个含水场景状态哈希全变）。摊平速度 254 → 96 tick（2.6×）。两处与本文原计划的偏离，均已记 CHANGELOG：
+
+1. **§3.3 说 Task 1「不碰 `window.rs`」，实际动了**——`window.rs:14` 的"M0 实际移动半径 = 1"注释被色散写失效，顺手把 §5 的 r 契约做了色散那一半（`MAX_WRITE_RADIUS = DISPERSION_MAX + 1 <= HALO`，现值 9 ≤ 16）。Task 2 按 §5 扩写为完整不等式。零行为变更。
+2. **§3.4 的"缺省行为逐位相同"拿到了比计划更强的证据**：代码改完、`materials.ron` 未动时，四个 golden **原样全绿**——证明 `side()` 重构在 `dispersion=1` 时逐位等价，不依赖任何新写的测试。
+
+**Task 2 开工前须知**：§4.2④（斜滑是否清零速度）与 §6.1①（`MovedSide` 是否触发溅射）两个待定子裁决仍未决，分别在 Task 2 / Task 3 目检后终裁。
 
 ---
 

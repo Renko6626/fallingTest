@@ -167,6 +167,7 @@ mod tests {
             // 不应引入意料之外的汽化分支——专门测汽化差异的用例另建材料表
             // （见下方"vaporize_threshold"分节）。
             vaporize_threshold: 255,
+            dispersion: 1,
         };
         MaterialTable::new(vec![
             def(0, "air", Category::Static, 0, 0),

@@ -7,6 +7,57 @@
 
 ## 2026-08-31
 
+### Added
+- **Layer G Task 1 落地：液体色散 ≤8**（spec `docs/superpowers/specs/2026-08-31-layer-g-velocity-design.md` §3；
+  三 Task 的第一个，色散打头）。`crates/sand-core/src/rules.rs:126` 的 `side()` 从"探 1 格"改为
+  "沿方向探至多 `dispersion` 格、遇非 AIR 即停、移到**最远可达空格**"；`material.rs` 加 `dispersion`
+  字段 + 访问器 + `DISPERSION_MAX=8` 常量；`sand-harness::scenario` 加 serde 缺省 1 与
+  `validate_dispersion`（取值域 `[1, 8]`）；`data/materials.ron` 给 water 定 `dispersion: 5`
+  （Noita 调研 `docs/reference/noita-deep-dive.md:242` 参考值），其余材质吃缺省 1。
+  方向记忆不变量（2026-06-14 液面冻结修复语义）一字未动。
+
+  **实际效果（本 Task 的目标，不是性能优化）**：水面摊平从 **254 tick 降到 96 tick，2.6× 提速**
+  （`rules_behavior.rs::higher_dispersion_levels_water_faster`，192×128 盆地判据 = 最高水面行降到
+  y ≥ 118）。该测试写成"两个 dispersion 配置的相对比较"而非魔法 tick 数，改动前必然失败
+  （`side()` 不读该字段 ⇒ 两次运行逐位相同，实测两边都是 254）。视觉结论留用户目检：
+  `out/waterfall_disp{1,5}.gif`、`out/mixed_disp{1,5}.gif`（同参数改动前/后对照）。
+
+  **验收五项**（spec §7.1）：① `cargo test --workspace` 153 项全绿、`cargo clippy --workspace
+  --all-targets` 零警告；② golden 重录——**预期先落再验，实测完全兑现**：`sand_pile`（唯一不含
+  water 的 golden）逐 tick 哈希与 final **逐位不变**，文件里只有 `materials_fp` 一行变；
+  `mixed`/`waterfall_ci`/`explosion_ci` 状态哈希全变（语义变更，预期内）。取证手段是重录**前**
+  先跑 `hashrun --grid-only` 做 before/after diff（M1 那次同款程序）；③ SyncTest 零分叉——
+  `waterfall` 与 `mixed` **各 2 万 tick 六配置**（1/8 线程 × Full/ChunkSleep/LiveRect），
+  分别 598s / 175s；④ bench 无回退，见下条；⑤ GIF 目检**结论待用户**。
+
+  **两条实施期发现**（均已落文档）：
+  - **`dispersion` 不适用 `blast_cost` 的"core 侧不校验"先例**——已立为总纲 §11 实施期决策第 2 条。
+    取值直接决定 `WriteWindow` 读写半径的字段，越界后果是 release 下同相邻 chunk 数据竞争 →
+    SyncTest 分叉，即**破坏 P4 写域论证本身**，不是"手感不对"。故两道防线：I/O 层给可读报错，
+    core 在使用点无条件 clamp（`side()` 的 `.min(DISPERSION_MAX)`）。回归测试
+    `water_dispersion_is_clamped_to_max_inside_core` 刻意绕过 harness 直接构表来打这道防线。
+  - **`window.rs:14` 的"M0 实际移动半径 = 1"注释被本改动写失效**，顺手把 r 契约从人肉纪律
+    升级为编译期断言（`MAX_WRITE_RADIUS = DISPERSION_MAX + 1 <= HALO`，现值 9 ≤ 16，余量 7）。
+    这是把 spec §5 计划在 Task 2 做的事先做了色散那一半——Task 2 引入格内移速后按 spec §5
+    扩写为完整不等式。**属超出 spec §3.3「Task 1 不碰 window.rs」的范围**，理由是留着失效注释
+    + 无保护的半径常量跨越整个 Task 2 周期不值当；零行为变更（golden 与 SyncTest 已证）。
+
+  受影响文件：`crates/sand-core/src/{rules,material,window,lib}.rs`、
+  `crates/sand-core/tests/{rules_behavior.rs,common/mod.rs}`、`crates/sand-harness/src/scenario.rs`、
+  `crates/sand-harness/tests/golden/*.golden`（4 个全部重录）、`data/materials.ron`、
+  总纲 §4 + §11、`docs/README.md`。（`dda/emit/explode/particle.rs` 只是测试构造器补字段。）
+
+- **Layer G Task 1 性能对照文档**：`docs/perf/2026-08-31-layer-g-task1-dispersion.md`。
+  **无回退，大场景显著变快**：`acceptance`（640×384，最接近总纲 §7 目标量级）LiveRect 下
+  1/8/16 线程一致提速 27%/55%/48%，ChunkSleep 下 −25%..+3.5%；`sparse` 基本持平；
+  `mixed`（256×192）8/16 线程 +2.6%..+16.8% 的**真实小幅劣化**（不粉饰为噪声：1500 tick 里
+  0–900 全是浇注段，`side()` 的 5 格探测成本收不回来，绝对值 ≤ 0.05ms/tick）。机制是
+  "水更快摊平入睡 ⇒ 稳态活跃 cell 少" 与 "浇注段每 cell 探测成本涨" 的相对大小之争。
+  **口径升级**：本次用 `git worktree` 在 `HEAD` 另建工作树独立编译 before 侧二进制、
+  交替执行，是同机同轮次对照，比跨天比对基线文档表格可信；16 线程列信噪比最差
+  （本机常态倒挂，M0 基线文档已记录），不单独下结论。**注意**：这不是加速优化的成果而是
+  语义变更的副产品，Task 2 速度积分预期净增成本，别把这里的余量当可继承。
+
 ### Changed
 - **M1 验收闭环：GIF 目检经用户确认通过**（验收 §0 第 4 项，此前结论留用户；确认版本为爆炸手感收口后 `66cea0a`..`33ab3da`）。M1 至此仅剩双机 hashrun（跨机项，移交下一会话首项，M0/M1 场景一起跑）。`docs/sessions/2026-08-30-m1-particle-layer.md` 验收表、`docs/README.md` 优先队列同步（下一步二选一待用户裁决：Layer G 速度积分提案 vs M2 场层与反应表）。
 

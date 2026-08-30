@@ -448,6 +448,7 @@ mod tests {
             color: (0, 0, 0),
             blast_cost,
             vaporize_threshold: 255,
+            dispersion: 1,
         };
         MaterialTable::new(vec![
             def(0, "air", Category::Static, 0, 0),
