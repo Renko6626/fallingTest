@@ -10,6 +10,26 @@
 ### Changed
 - **M1 验收闭环：GIF 目检经用户确认通过**（验收 §0 第 4 项，此前结论留用户；确认版本为爆炸手感收口后 `66cea0a`..`33ab3da`）。M1 至此仅剩双机 hashrun（跨机项，移交下一会话首项，M0/M1 场景一起跑）。`docs/sessions/2026-08-30-m1-particle-layer.md` 验收表、`docs/README.md` 优先队列同步（下一步二选一待用户裁决：Layer G 速度积分提案 vs M2 场层与反应表）。
 
+### Proposed
+- **Layer G 运动语义重做 spec（M1 遗留债立项，brainstorming 完成，用户裁决 2026-08-31）**：
+  `docs/superpowers/specs/2026-08-31-layer-g-velocity-design.md`（Status: Proposed）。范围
+  = 液体色散 ≤8 + 重力速度积分 + 撞击溅射脱格，**分三 Task 独立落地**（色散打头，各自重录
+  golden + 跑 SyncTest + 目检；依据是 golden 哈希 diff 只有在单一语义变更下才可诊断，总纲
+  §11 tick-583 教训）。关键裁决：① 采纳"逐步 step 循环 + Cell 位段存竖直速度"（jason.today /
+  Noita `docs/reference/noita-deep-dive.md:168` 路线），否决 DDA 竖直冲刺（会改变已被 golden
+  锁住的沙堆安息角）与材质常量落速（拿不到加速感）——采纳理由是**行为连续性**：`n = max(1, …)`
+  使 `v=0` 时退化为今日语义，`G_ACCEL=0` 即可做逐位回归取证；② 脱格触发 = 外部冲量 +
+  高速撞击溅射，重力 clamp 在 4 格/tick，自由落体本身不脱格，粒子数正比于撞击面宽度而非
+  下落体积；③ Cell 位段总规划一次定死（bits 17–21 竖直速度 Q3.2、22 预留 O3 free-falling、
+  23–31 留白）。两条实施期发现记入 spec：**速度无条件写回会毁掉 chunk 休眠**（静止堆体速度
+  从 0 涨起 → 每 tick `set()` → `mark_dirty_around` → 整图永不入睡，M0 稀疏性能作废），
+  故立"只在值变化时写回"为正确性红线并配休眠不变量测试；**色散与子步循环相乘会撑爆 HALO**
+  （4×8=32 > 16），但现有 `liquid_step` 结构使色散走到即撞停 break，最坏水平位移收敛到
+  `(n−1)+8 = 11`，加探测 ±1 = 12 ≤ 16，余量 4——该不等式固化为 `window.rs` 编译期
+  `const _: () = assert!(...)`，取代"新增规则须自证半径"的人肉纪律。落地时须同步总纲 §11
+  实施期决策（位段规划 + HALO 编译期契约 + 网格 pass 新增 `spawns` 写入源）与 §4 Layer G
+  措辞。`docs/README.md` 优先队列同步。
+
 ## 2026-08-30
 
 ### Changed

@@ -14,15 +14,17 @@
 
 1. **下一会话首项：双机 hashrun**（M0 起挂账的唯一跨机验收项，用户手动；M0/M1 场景一起跑——
    `hashrun` 用法见 `sessions/2026-08-30-m0-implementation.md`，两机各跑后 diff 逐字比对）。
-2. **裁决先后（二选一，用户定）**：**Layer G 速度积分提案**——M1 spec §1/§12 后置的债，单独立项/过总纲 §11/跑
-   SyncTest（顶在 r≤16 并行论证上，Noita 双系统实锤见 `reference/noita-deep-dive.md:200,208`），Cell 位段速度位
-   预留规划随提案一起出；**或直接推进 M2 场层与反应表**（spec 里裁决 O2 场降本 + O3 粉末惯性时点 + durability/hardness
-   字段化 + 粒子穿水/弹跳评估 + M1 遗留两条测试补强，见 `sessions/2026-08-30-m1-particle-layer.md`"留给后续"）。
-3. **M1 粒子层：已完成并经用户验收（2026-08-31）**（spec → Implemented，会话总账 `sessions/2026-08-30-m1-particle-layer.md`）：
+2. **Layer G 运动语义重做（已立项，spec: Proposed）**——`superpowers/specs/2026-08-31-layer-g-velocity-design.md`。
+   范围 = 液体色散 ≤8 + 重力速度积分 + 撞击溅射脱格，分三 Task 独立落地（色散打头）。待办：spec 用户复审 →
+   `writing-plans` 出实施计划 → 逐 Task 实施。落地时须同步总纲 §11 与 §4 Layer G 措辞。
+3. **M2 场层与反应表**（Layer G 三 Task 之后）：spec 里裁决 O2 场降本 + O3 粉末惯性时点 + durability/hardness
+   字段化 + 粒子穿水/弹跳评估 + M1 遗留两条测试补强（见 `sessions/2026-08-30-m1-particle-layer.md`"留给后续"；
+   其中 Task 6 minor ①②③⑤ 已由 commit `098fe23` 修掉，剩 ④⑥ 两条测试债）。
+4. **M1 粒子层：已完成并经用户验收（2026-08-31）**（spec → Implemented，会话总账 `sessions/2026-08-30-m1-particle-layer.md`）：
    脱格/落格闭环、DDA、`Op::Emit`/`Op::Explode`（Noita 射线模型 + 近心汽化 + 密度冲量 + 方向涨落）、容量限流；验收 §0
    五项全过（GIF 目检经用户四轮迭代后确认）。后续爆炸手感收口 + `world.rs` 拆分 `explode.rs`/`emit.rs` 见 CHANGELOG
    2026-08-30 块（commits `66cea0a`..`33ab3da`）。
-4. M3 刚体 → M5 时启用 O4 运行时周期哈希（详见总纲 §11 与相关提案）。
+5. M3 刚体 → M5 时启用 O4 运行时周期哈希（详见总纲 §11 与相关提案）。
 
 ## 目录分工
 
