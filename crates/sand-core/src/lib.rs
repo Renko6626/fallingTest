@@ -16,6 +16,7 @@ pub mod chunk;
 pub mod fixed;
 pub mod hash;
 pub mod material;
+pub mod particle;
 pub mod rng;
 mod rules;
 pub mod scheduler;
@@ -23,7 +24,9 @@ mod window;
 pub mod world;
 
 pub use cell::Cell;
+pub use fixed::Fx;
 pub use material::{Category, MaterialDef, MaterialTable, MAT_AIR, MAT_WALL};
+pub use particle::{Particles, MAX_PARTICLES};
 pub use world::{Op, World};
 
 /// 扫描模式（O1 spec §2.1）。三种模式**语义逐位等价**（SyncTest 六配置执法）；
@@ -49,13 +52,26 @@ pub struct InitConfig {
     pub scan: ScanMode,
 }
 
-/// 模拟实例门面：World + MaterialTable + 线程池。
+/// 生成队列条目（M1 spec §4 第 3 步 a）：`Op::Explode` / `Op::Emit`（Task 4/5）
+/// 与测试代码经 [`Sim::queue_spawn`] 压入，本 tick 粒子相开头按入队序 drain。
+#[derive(Clone, Copy, Debug)]
+struct SpawnRequest {
+    material: u8,
+    x: fixed::Fx,
+    y: fixed::Fx,
+    vx: fixed::Fx,
+    vy: fixed::Fx,
+}
+
+/// 模拟实例门面：World + MaterialTable + 线程池 + 粒子池。
 /// harness 与未来的 sand-session 都经此驱动；`world()` 是 Channel A 只读视图的雏形。
 pub struct Sim {
     world: World,
     table: MaterialTable,
     pool: rayon::ThreadPool,
     scan: ScanMode,
+    particles: Particles,
+    spawn_queue: Vec<SpawnRequest>,
 }
 
 /// setup 期世代戳：≠ tick 0 的戳（0），保证 setup 内容从 tick 0 起可动（spec §4.4）。
@@ -72,7 +88,20 @@ impl Sim {
             table,
             pool,
             scan: cfg.scan,
+            particles: Particles::new(),
+            spawn_queue: Vec::new(),
         })
+    }
+
+    /// 压入一个粒子生成请求，本 tick `step()` 开头按入队序 drain（M1 spec §4）。
+    /// 白名单通信介质：Task 4 的 `Op::Explode`/`Op::Emit` 与测试代码经此复用，
+    /// 粒子层本身不关心生产者是谁。
+    pub fn queue_spawn(&mut self, material: u8, x: fixed::Fx, y: fixed::Fx, vx: fixed::Fx, vy: fixed::Fx) {
+        self.spawn_queue.push(SpawnRequest { material, x, y, vx, vy });
+    }
+
+    pub fn particles(&self) -> &Particles {
+        &self.particles
     }
 
     /// 场景 setup（仅 tick 0 之前调用）；与脚本 brush 共用同一确定性写入路径。
@@ -85,14 +114,29 @@ impl Sim {
 
     pub fn step(&mut self, ops: &[Op]) {
         scheduler::step(&mut self.world, &self.table, &self.pool, self.scan, ops);
+
+        // 粒子相骨架（M1 spec §4 第 3 步；Task 3 占位，无运动——积分/落格/冲突
+        // 消解留 Task 4）。当前仅有生成入口，尚无移除判据，compact 全 keep。
+        for req in self.spawn_queue.drain(..) {
+            self.particles.spawn(req.material, req.x, req.y, req.vx, req.vy);
+        }
+        let keep = vec![true; self.particles.len()];
+        self.particles.compact(&keep);
     }
 
     pub fn tick(&self) -> u64 {
         self.world.tick
     }
 
-    pub fn state_hash(&self) -> u64 {
+    /// 网格哈希树根（spec §9），单独导出用于 golden 重录取证：证明 Layer G
+    /// 在粒子层并入前后逐 tick 位级一致（M1 Task 3 commit 记录了 diff 结果）。
+    pub fn grid_hash(&self) -> u64 {
         hash::state_hash(&self.world)
+    }
+
+    /// 总哈希 = `combine(网格哈希树根, 粒子层哈希)`（spec §9）。
+    pub fn state_hash(&self) -> u64 {
+        hash::combine(self.grid_hash(), self.particles.hash_into())
     }
 
     pub fn world(&self) -> &World {

@@ -36,6 +36,11 @@ pub struct RunReport {
 }
 
 /// 跑完场景，产出哈希流报告。
+///
+/// `grid_only`：用 `Sim::grid_hash()`（网格哈希树根，跳过粒子层折叠）代替
+/// `Sim::state_hash()`。M1 golden 重录取证专用（spec §9 两步程序）——新代码
+/// 以 `grid_only=true` 跑旧 golden 场景，逐 tick 序列须与改动前（`state_hash`
+/// 即等价于当时的 `grid_hash`，因为彼时尚无粒子）一字不差。
 pub fn run(
     sc: &Scenario,
     table: &MaterialTable,
@@ -43,6 +48,7 @@ pub fn run(
     threads: usize,
     scan: ScanMode,
     ticks: u64,
+    grid_only: bool,
 ) -> Result<RunReport, String> {
     let mut sim = build_sim(sc, table, threads, scan)?;
     let mut lines = vec![
@@ -51,6 +57,7 @@ pub fn run(
         format!("materials_fp {materials_fp:016x}"),
         format!("world {}x{} seed {} ticks {}", sc.world.0 * 64, sc.world.1 * 64, sc.seed, ticks),
     ];
+    let hash_of = |sim: &sand_core::Sim| if grid_only { sim.grid_hash() } else { sim.state_hash() };
     let mut total = 0.0f64;
     let mut max_ms = 0.0f64;
     for t in 0..ticks {
@@ -61,10 +68,10 @@ pub fn run(
         total += ms;
         max_ms = max_ms.max(ms);
         if (t + 1) % HASH_EVERY == 0 {
-            lines.push(format!("tick {:>8} hash {:016x}", t + 1, sim.state_hash()));
+            lines.push(format!("tick {:>8} hash {:016x}", t + 1, hash_of(&sim)));
         }
     }
-    lines.push(format!("final {:016x}", sim.state_hash()));
+    lines.push(format!("final {:016x}", hash_of(&sim)));
     Ok(RunReport { lines, avg_ms: total / ticks.max(1) as f64, max_ms })
 }
 

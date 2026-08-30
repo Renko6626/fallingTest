@@ -1,9 +1,12 @@
 //! sand-harness CLI（spec §5.3）。
 //! 用法：
 //!   sand-harness synctest <scenario.ron> [--ticks N] [--threads N] [--materials PATH]
-//!   sand-harness replay   <scenario.ron> [--golden PATH | --write-golden PATH] [--ticks N]
-//!   sand-harness hashrun  <scenario.ron> [--ticks N]
+//!   sand-harness replay   <scenario.ron> [--golden PATH | --write-golden PATH] [--ticks N] [--grid-only]
+//!   sand-harness hashrun  <scenario.ron> [--ticks N] [--grid-only]
 //!   sand-harness render   <scenario.ron> -o out.gif [--every K] [--scale N] [--ticks N]
+//!
+//! `--grid-only`：哈希流用网格哈希树根（跳过粒子层折叠），M1 golden 重录取证专用
+//! （spec §9）——证明粒子层并入前后 Layer G 逐 tick 哈希位级一致。
 
 use std::process::ExitCode;
 
@@ -23,6 +26,7 @@ struct Args {
     every: u64,
     scale: usize,
     scan: sand_core::ScanMode,
+    grid_only: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -41,6 +45,7 @@ fn parse_args() -> Result<Args, String> {
         every: 4,
         scale: 4,
         scan: sand_core::ScanMode::LiveRect,
+        grid_only: false,
     };
     while let Some(flag) = it.next() {
         let mut val = || it.next().ok_or(format!("{flag} 缺参数"));
@@ -53,6 +58,7 @@ fn parse_args() -> Result<Args, String> {
             "-o" => a.out = Some(val()?),
             "--every" => a.every = val()?.parse().map_err(|e| format!("--every: {e}"))?,
             "--scale" => a.scale = val()?.parse().map_err(|e| format!("--scale: {e}"))?,
+            "--grid-only" => a.grid_only = true,
             "--scan" => {
                 a.scan = match val()?.as_str() {
                     "full" => sand_core::ScanMode::Full,
@@ -96,7 +102,8 @@ fn run() -> Result<(), String> {
             println!("SyncTest 通过：{ticks} tick 零分叉（scenario_fp {:016x}）", sc.fingerprint);
         }
         "replay" | "hashrun" => {
-            let report = runner::run(&sc, &table, materials_fp, a.threads, a.scan, ticks)?;
+            let report =
+                runner::run(&sc, &table, materials_fp, a.threads, a.scan, ticks, a.grid_only)?;
             let text = report.lines.join("\n") + "\n";
             if let Some(path) = &a.write_golden {
                 std::fs::write(path, &text).map_err(|e| format!("写 {path} 失败：{e}"))?;

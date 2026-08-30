@@ -7,6 +7,9 @@
 
 ## 2026-08-30
 
+### Added
+- **M1 Task 3 完成：粒子池 SoA + 状态哈希并入 + golden 重录**（spec §3/§9）。`crates/sand-core/src/particle.rs` 新增 `Particles`（x/y/vx/vy: Vec<Fx>、material: Vec<u8>、`next_id`/`rejected_total`），`spawn` 顺序即遍历序、容量满（65536）确定性拒绝、`compact` 保序压缩、`hash_into` 按下标序折叠字段位+`next_id`+粒子数。`lib.rs`：`Sim` 挂 `particles` + `spawn_queue`，`step()` 新增粒子相骨架（drain 生成队列 + 占位式全 keep compact，运动留 Task 4）；`Sim::grid_hash()`（网格哈希树根单独导出）与 `Sim::state_hash()`（= `hash::combine(grid_hash, particles.hash_into())`，`hash.rs` 新函数）。golden 重录按 spec §9 两步程序：harness 新增 `--grid-only` 开关（`sand-harness hashrun <scenario> --grid-only`），改动前后网格层逐 tick 哈希序列 diff 为空（sand_pile.ron、mixed.ron 各 2 组，取证存 `.superpowers/sdd/2026-08-30-m1-particle-layer-plan/task-3-grid-hash-before.txt`），证明 Layer G 零扰动后用 `--write-golden` 重录 `crates/sand-harness/tests/golden/{sand_pile,mixed}.golden` 终态。测试：33 项核心单测（含 5 项新增粒子测试）+ 5 项行为测试 + CI SyncTest（六配置 6000 tick）+ 2 项 golden 全绿；clippy 全绿。详见 `.superpowers/sdd/2026-08-30-m1-particle-layer-plan/task-3-report.md`。
+
 ### Proposed
 - `docs/superpowers/specs/2026-08-30-m1-particle-layer-design.md`：M1 粒子层实现级设计（brainstorming 全节口头批准，待用户过目 spec）。要点：手写 Q16.16 定点（用户裁决维持总纲 §6，浮点四雷区论证入 spec §2）、SoA 顺序即 id 序、并行积分 + 串行按 id 提交、DDA 阻挡一视同仁、**爆炸采 Noita 射线模型**（wiki 查证：ray energy 逐格消耗 + durability 门槛，遮挡免费涌现——替代圆盘扫描）、发射器 = script Every + Op::Emit 零新概念、哈希格式变更 golden 两步重录程序、动工前落 `docs/perf/` 正式基线。
 

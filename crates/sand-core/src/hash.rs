@@ -1,5 +1,9 @@
-//! 状态哈希（spec §5.1）。per-chunk xxh3 为哈希树叶层，
+//! 状态哈希（spec §5.1，粒子层折叠口径见 M1 spec §9）。per-chunk xxh3 为哈希树叶层，
 //! desync 定位（M5）与大世界 per-chunk 序列化（charter §9 缝 2）复用。
+//!
+//! 总哈希 = `combine(网格哈希树根, 粒子层哈希)`（M1 spec §9）。`state_hash(world)`
+//! 本身就是"网格哈希树根"——M1 起对它的调用点不再是终局值，`combine` 才是。
+//! 该函数的位级实现自 M0 起未变（M1 golden 重录取证：见 M1 Task 3 commit）。
 
 use xxhash_rust::xxh3::Xxh3;
 
@@ -25,6 +29,15 @@ pub fn state_hash(world: &World) -> u64 {
             h.update(&ch.to_le_bytes());
         }
     }
+    h.digest()
+}
+
+/// 总哈希折叠：网格哈希树根 + 粒子层哈希 → 单个 u64（M1 spec §9）。
+/// 纯函数，xxh3 折叠两个输入的原始位，无隐藏状态。
+pub fn combine(grid_root: u64, particle_hash: u64) -> u64 {
+    let mut h = Xxh3::new();
+    h.update(&grid_root.to_le_bytes());
+    h.update(&particle_hash.to_le_bytes());
     h.digest()
 }
 
@@ -56,5 +69,12 @@ mod tests {
         a.chunks[3].cells[0] = Cell::pack(2, 0);
         assert_ne!(state_hash(&a), state_hash(&b), "单 cell 差异必须可见");
         assert_eq!(first_diverging_chunk(&a, &b), Some((1, 1)));
+    }
+
+    #[test]
+    fn combine_is_stable_and_sensitive_to_either_input() {
+        assert_eq!(combine(1, 2), combine(1, 2), "同输入必须同值");
+        assert_ne!(combine(1, 2), combine(1, 3), "粒子层哈希差异必须反映到总哈希");
+        assert_ne!(combine(1, 2), combine(9, 2), "网格根差异必须反映到总哈希");
     }
 }
