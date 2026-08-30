@@ -3,7 +3,7 @@
 mod common;
 
 use common::{sim, SAND, WATER};
-use sand_core::{Op, MAT_AIR, MAT_WALL};
+use sand_core::{Op, ScanMode, MAT_AIR, MAT_WALL};
 
 fn floor_op(w: i32, h: i32) -> Op {
     Op::Fill { material: MAT_WALL, x0: 0, y0: h - 4, x1: w - 1, y1: h - 4 }
@@ -11,7 +11,7 @@ fn floor_op(w: i32, h: i32) -> Op {
 
 #[test]
 fn sand_falls_straight_down() {
-    let mut s = sim(2, 2, 1, 1, true);
+    let mut s = sim(2, 2, 1, 1, ScanMode::LiveRect);
     s.apply_setup(&[Op::Brush { material: SAND, x: 40, y: 10, r: 0 }]);
     s.step(&[]);
     assert_eq!(s.world().cell(40, 10).material(), MAT_AIR);
@@ -24,7 +24,7 @@ fn sand_falls_straight_down() {
 
 #[test]
 fn sand_piles_and_is_conserved() {
-    let mut s = sim(2, 2, 2, 1, true);
+    let mut s = sim(2, 2, 2, 1, ScanMode::LiveRect);
     s.apply_setup(&[floor_op(128, 128)]);
     for t in 0..400u64 {
         let ops = if t % 2 == 0 && t < 240 {
@@ -53,7 +53,7 @@ fn sand_piles_and_is_conserved() {
 
 #[test]
 fn sand_sinks_in_water() {
-    let mut s = sim(2, 2, 3, 1, true);
+    let mut s = sim(2, 2, 3, 1, ScanMode::LiveRect);
     s.apply_setup(&[
         floor_op(128, 128),
         Op::Fill { material: WATER, x0: 50, y0: 110, x1: 78, y1: 123 },
@@ -82,7 +82,7 @@ fn sand_sinks_in_water() {
 #[test]
 fn water_levels_out_across_chunk_seam() {
     // 192×128（3×2 chunk）：左侧水柱跨过垂直缝摊平；材质守恒（缝无源汇）
-    let mut s = sim(3, 2, 4, 1, true);
+    let mut s = sim(3, 2, 4, 1, ScanMode::LiveRect);
     s.apply_setup(&[
         floor_op(192, 128),
         Op::Fill { material: MAT_WALL, x0: 0, y0: 80, x1: 0, y1: 123 },
@@ -126,7 +126,7 @@ fn water_levels_out_across_chunk_seam() {
 #[test]
 fn water_direction_commitment() {
     // 单粒水在平地上：向记忆方向走；撞墙后翻转记忆继续走（不打乒乓）
-    let mut s = sim(2, 2, 5, 1, true);
+    let mut s = sim(2, 2, 5, 1, ScanMode::LiveRect);
     s.apply_setup(&[
         floor_op(128, 128),
         Op::Fill { material: MAT_WALL, x0: 20, y0: 100, x1: 20, y1: 123 },

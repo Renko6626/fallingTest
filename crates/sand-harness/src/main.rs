@@ -22,6 +22,7 @@ struct Args {
     out: Option<String>,
     every: u64,
     scale: usize,
+    scan: sand_core::ScanMode,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -39,6 +40,7 @@ fn parse_args() -> Result<Args, String> {
         out: None,
         every: 4,
         scale: 4,
+        scan: sand_core::ScanMode::LiveRect,
     };
     while let Some(flag) = it.next() {
         let mut val = || it.next().ok_or(format!("{flag} 缺参数"));
@@ -51,6 +53,14 @@ fn parse_args() -> Result<Args, String> {
             "-o" => a.out = Some(val()?),
             "--every" => a.every = val()?.parse().map_err(|e| format!("--every: {e}"))?,
             "--scale" => a.scale = val()?.parse().map_err(|e| format!("--scale: {e}"))?,
+            "--scan" => {
+                a.scan = match val()?.as_str() {
+                    "full" => sand_core::ScanMode::Full,
+                    "sleep" => sand_core::ScanMode::ChunkSleep,
+                    "live" => sand_core::ScanMode::LiveRect,
+                    other => return Err(format!("--scan: 未知模式 {other}（full/sleep/live）")),
+                }
+            }
             other => return Err(format!("未知参数 {other}")),
         }
     }
@@ -76,7 +86,7 @@ fn run() -> Result<(), String> {
     match a.cmd.as_str() {
         "synctest" => {
             eprintln!(
-                "SyncTest：{}（{}x{}）× {ticks} tick，四配置（1/{} 线程 × 跳过开关）",
+                "SyncTest：{}（{}x{}）× {ticks} tick，六配置（1/{} 线程 × Full/ChunkSleep/LiveRect）",
                 sc.name,
                 sc.world.0 * 64,
                 sc.world.1 * 64,
@@ -86,7 +96,7 @@ fn run() -> Result<(), String> {
             println!("SyncTest 通过：{ticks} tick 零分叉（scenario_fp {:016x}）", sc.fingerprint);
         }
         "replay" | "hashrun" => {
-            let report = runner::run(&sc, &table, materials_fp, a.threads, true, ticks)?;
+            let report = runner::run(&sc, &table, materials_fp, a.threads, a.scan, ticks)?;
             let text = report.lines.join("\n") + "\n";
             if let Some(path) = &a.write_golden {
                 std::fs::write(path, &text).map_err(|e| format!("写 {path} 失败：{e}"))?;
@@ -104,7 +114,7 @@ fn run() -> Result<(), String> {
         }
         "render" => {
             let out = a.out.ok_or("render 需要 -o 输出路径")?;
-            let mut sim = runner::build_sim(&sc, &table, a.threads, true)?;
+            let mut sim = runner::build_sim(&sc, &table, a.threads, sand_core::ScanMode::LiveRect)?;
             let opts = RenderOpts { every: a.every.max(1), scale: a.scale.max(1), out };
             let frames = render_gif(&sc, &table, &mut sim, ticks, &opts)?;
             println!(

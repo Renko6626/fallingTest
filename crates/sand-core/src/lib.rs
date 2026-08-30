@@ -25,15 +25,27 @@ pub use cell::Cell;
 pub use material::{Category, MaterialDef, MaterialTable, MAT_AIR, MAT_WALL};
 pub use world::{Op, World};
 
+/// 扫描模式（O1 spec §2.1）。三种模式**语义逐位等价**（SyncTest 六配置执法）；
+/// LiveRect 为运行默认，Full/ChunkSleep 是执法对照配置。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ScanMode {
+    /// 全部 chunk 全量扫描（参照语义）。
+    Full,
+    /// chunk 级休眠 + 相位边界唤醒，活跃 chunk 全量扫描（M0 语义）。
+    ChunkSleep,
+    /// chunk 级休眠 + 起始矩形 = dirty ∪ next_dirty 快照 + 扫描中活扩张。
+    LiveRect,
+}
+
 /// 初始状态配方（MatchConfig 的 M0 子集）。
-/// `threads` 是本地自由参数——只影响快慢，不影响结果（architecture §5）。
+/// `threads` 与 `scan` 都是本地自由参数——只影响快慢，不影响结果（architecture §5）。
 #[derive(Clone, Debug)]
 pub struct InitConfig {
     pub width_chunks: usize,
     pub height_chunks: usize,
     pub seed: u64,
     pub threads: usize,
-    pub sleep_skip: bool,
+    pub scan: ScanMode,
 }
 
 /// 模拟实例门面：World + MaterialTable + 线程池。
@@ -42,7 +54,7 @@ pub struct Sim {
     world: World,
     table: MaterialTable,
     pool: rayon::ThreadPool,
-    sleep_skip: bool,
+    scan: ScanMode,
 }
 
 /// setup 期世代戳：≠ tick 0 的戳（0），保证 setup 内容从 tick 0 起可动（spec §4.4）。
@@ -58,7 +70,7 @@ impl Sim {
             world: World::new(cfg.width_chunks, cfg.height_chunks, cfg.seed),
             table,
             pool,
-            sleep_skip: cfg.sleep_skip,
+            scan: cfg.scan,
         })
     }
 
@@ -71,7 +83,7 @@ impl Sim {
     }
 
     pub fn step(&mut self, ops: &[Op]) {
-        scheduler::step(&mut self.world, &self.table, &self.pool, self.sleep_skip, ops);
+        scheduler::step(&mut self.world, &self.table, &self.pool, self.scan, ops);
     }
 
     pub fn tick(&self) -> u64 {

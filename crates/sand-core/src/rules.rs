@@ -14,46 +14,62 @@ struct Ctx<'a> {
     stamp: u8,
 }
 
-/// 扫描一个 chunk（活跃 chunk 全量扫描，spec §1.4 修订）。ox/oy 为 chunk 全局原点。
+/// 扫描一个 chunk。ox/oy 为 chunk 全局原点；`start` 为起始扫描矩形——
+/// Full/ChunkSleep 传 FULL（扩张天然无效），LiveRect 传 dirty ∪ next_dirty 快照。
+///
+/// 单代码路径 + 动态边界（O1 spec §2.2–§2.3）：扫描中本 chunk 的写入 ±1 实时并入
+/// 活矩形（window 追踪），行边界与上边界每步重读——"前方"（上方行、本行未访问侧）
+/// 被本遍接住，"后方/下方"留给 next_dirty 下 tick（全扫按访问序也不回访，逐位等价）。
 pub(crate) fn update_chunk(
     win: &WriteWindow,
     table: &MaterialTable,
     tick: u64,
     fseed: u32,
-    scan: DirtyRect,
+    start: DirtyRect,
     ox: i32,
     oy: i32,
 ) {
-    if scan.is_empty() {
+    if start.is_empty() {
         return;
     }
+    win.seed_live(start);
     let ctx = Ctx { win, table, fseed, stamp: (tick % 256) as u8 };
-    // 自下而上；行内方向按 (y + tick) 奇偶交替（spec §3.2）
-    for ly in (scan.y0..=scan.y1).rev() {
-        let y = oy + ly as i32;
+    // 自下而上；底边在扫描开始时固定（向下写入必属已访问区）
+    let mut ly = start.y1 as i32;
+    while ly >= win.live_rect().y0 as i32 {
+        let y = oy + ly;
         let ltr = (y as u64 + tick) & 1 == 0;
-        let (mut lx, end, step) = if ltr {
-            (scan.x0 as i32, scan.x1 as i32 + 1, 1)
-        } else {
-            (scan.x1 as i32, scan.x0 as i32 - 1, -1)
-        };
-        while lx != end {
-            let x = ox + lx;
-            let c = win.get(x, y);
-            let m = c.material();
-            if !table.is_static(m) && c.stamp() != ctx.stamp {
-                match table.category(m) {
-                    Category::Powder => ctx.powder_step(x, y, c),
-                    Category::Liquid => ctx.liquid_step(x, y, c),
-                    Category::Static => unreachable!(),
-                }
+        let row = win.live_rect();
+        if ltr {
+            let mut lx = row.x0 as i32;
+            while lx <= win.live_rect().x1 as i32 {
+                ctx.eval(ox + lx, y);
+                lx += 1;
             }
-            lx += step;
+        } else {
+            let mut lx = row.x1 as i32;
+            while lx >= win.live_rect().x0 as i32 {
+                ctx.eval(ox + lx, y);
+                lx -= 1;
+            }
         }
+        ly -= 1;
     }
 }
 
 impl Ctx<'_> {
+    fn eval(&self, x: i32, y: i32) {
+        let c = self.win.get(x, y);
+        let m = c.material();
+        if !self.table.is_static(m) && c.stamp() != self.stamp {
+            match self.table.category(m) {
+                Category::Powder => self.powder_step(x, y, c),
+                Category::Liquid => self.liquid_step(x, y, c),
+                Category::Static => unreachable!(),
+            }
+        }
+    }
+
     /// 目标是 AIR → 移入；目标非 Static 且密度更小 → 置换。双方盖戳。
     fn displace(&self, x: i32, y: i32, c: Cell, nx: i32, ny: i32) -> bool {
         let t = self.win.get(nx, ny);

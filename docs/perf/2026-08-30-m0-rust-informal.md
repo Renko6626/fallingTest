@@ -48,6 +48,20 @@ max 尖峰（首 tick 全图脏 + rayon 热身）不计入口径。
   每 tick O(全图) 的**——场层落地后"睡眠让大图免费"不再成立，届时大图成本下限 =
   场层全图 pass，需要实测后重估本节结论。
 
+## O1 活矩形前后对照（2026-08-30 当日实施，spec `2026-08-30-o1-live-rect-design.md`）
+
+同机同口径，8 线程，ChunkSleep（M0 语义）vs LiveRect：
+
+| 场景 | ChunkSleep | LiveRect | 倍率 |
+|---|---|---|---|
+| sparse（640×384 三股细流，`data/scenarios/sparse.ron`） | 0.372 ms | **0.136 ms** | **2.7×** |
+| worst_720p 前 300t 全活跃 | 9.5 ms | 7.8 ms | 1.2×（崩塌期矩形仍 < FULL） |
+| sleep_720p 全静止（3 次重跑区间） | 0.05–0.10 ms | 0.05–0.06 ms | 持平（追踪开销不可见） |
+
+等价性证据：既有 golden 用 LiveRect 重放哈希一字不变；六配置 SyncTest
+（{1,N 线程} × {Full, ChunkSleep, LiveRect}）CI 绿。720p 全活跃最坏从 ~8ms
+改善到 ~7.8ms，稀疏（最常见玩法区间）收益 2.7×——"与 Noita 的最大单项差距"已回收。
+
 ## 与 Noita 对照（参数出处：`docs/reference/noita-deep-dive.md`）
 
 | | Noita | 我们（M0） |

@@ -8,7 +8,7 @@
 //! debug 构建下每次 cell 读写断言坐标落在窗口内——越界即 panic（写域执法）。
 
 use crate::cell::Cell;
-use crate::chunk::{Chunk, CHUNK};
+use crate::chunk::{Chunk, DirtyRect, CHUNK};
 use crate::world::WALL_SENTINEL;
 
 /// 影响半径上限（charter §4 r≤16 契约）。M0 实际移动半径 = 1。
@@ -31,6 +31,11 @@ pub(crate) struct WriteWindow {
     wy0: i32,
     wx1: i32,
     wy1: i32,
+    // 本 chunk 索引（活矩形追踪，O1 spec §2.3）
+    own_ci: usize,
+    /// 任务本地活矩形（本地坐标）：本任务对自己 chunk 的写入 ±1 邻域实时并入。
+    /// 恒常追踪（三模式共用，spec §2.4）；是否消费由扫描起始矩形决定。
+    live: std::cell::Cell<DirtyRect>,
 }
 
 impl WriteWindow {
@@ -54,7 +59,19 @@ impl WriteWindow {
             wy0: (oy - HALO).max(0),
             wx1: (ox + CHUNK as i32 + HALO - 1).min(world_w - 1),
             wy1: (oy + CHUNK as i32 + HALO - 1).min(world_h - 1),
+            own_ci: cy * width_chunks + cx,
+            live: std::cell::Cell::new(DirtyRect::EMPTY),
         }
+    }
+
+    /// 设置扫描起始矩形（rules 在扫描开始时调用）。
+    pub(crate) fn seed_live(&self, start: DirtyRect) {
+        self.live.set(start);
+    }
+
+    /// 当前活矩形（本地坐标；rules 循环边界每步重读）。
+    pub(crate) fn live_rect(&self) -> DirtyRect {
+        self.live.get()
     }
 
     fn contains(&self, x: i32, y: i32) -> bool {
@@ -100,16 +117,25 @@ impl WriteWindow {
         let (cx1, cy1) = (x1 as usize / CHUNK, y1 as usize / CHUNK);
         for cy in cy0..=cy1 {
             for cx in cx0..=cx1 {
+                let ci = cy * self.width_chunks + cx;
                 let bx0 = (cx * CHUNK) as i32;
                 let by0 = (cy * CHUNK) as i32;
-                // SAFETY: next_dirty 是原子字段，共享引用跨线程合并安全（可交换）。
-                let nd = unsafe { &(*self.chunks.0.add(cy * self.width_chunks + cx)).next_dirty };
-                nd.merge_rect(
+                let (lx0, ly0, lx1, ly1) = (
                     (x0.max(bx0) - bx0) as u8,
                     (y0.max(by0) - by0) as u8,
                     (x1.min(bx0 + CHUNK as i32 - 1) - bx0) as u8,
                     (y1.min(by0 + CHUNK as i32 - 1) - by0) as u8,
                 );
+                // SAFETY: next_dirty 是原子字段，共享引用跨线程合并安全（可交换）。
+                let nd = unsafe { &(*self.chunks.0.add(ci)).next_dirty };
+                nd.merge_rect(lx0, ly0, lx1, ly1);
+                // 本 chunk 部分同时并入任务本地活矩形（O1）
+                if ci == self.own_ci {
+                    let mut live = self.live.get();
+                    live.merge_point(lx0, ly0);
+                    live.merge_point(lx1, ly1);
+                    self.live.set(live);
+                }
             }
         }
     }

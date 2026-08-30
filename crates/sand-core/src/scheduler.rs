@@ -9,6 +9,7 @@ use crate::rng;
 use crate::rules;
 use crate::window::{ChunksPtr, WriteWindow};
 use crate::world::{Op, World};
+use crate::ScanMode;
 
 const PHASES: [(usize, usize); 4] = [(0, 0), (1, 0), (1, 1), (0, 1)];
 
@@ -25,7 +26,7 @@ pub fn step(
     world: &mut World,
     table: &MaterialTable,
     pool: &rayon::ThreadPool,
-    sleep_skip: bool,
+    scan: ScanMode,
     ops: &[Op],
 ) {
     let tick = world.tick;
@@ -41,23 +42,31 @@ pub fn step(
     for (px, py) in phase_order(tick) {
         // 休眠为 chunk 粒度，且在每个相位边界重查唤醒：上 tick 脏（dirty）∪
         // 本 tick 更早相位积累的标记（next_dirty）。屏障后原子合并结果与
-        // 调度无关 ⇒ 该判定确定；活跃 chunk 全量扫描，保证 chunk 内链式移动
-        // 与全扫语义一致（tick 583 分叉的修复，见 spec §1.4 修订）。
-        let ids: Vec<usize> = (0..hc)
+        // 调度无关 ⇒ 该判定确定（tick 583 分叉的修复，见 M0 spec §1.4 修订）。
+        // 起始扫描矩形按模式（O1 spec §2.1）：Full/ChunkSleep 全量，LiveRect =
+        // dirty ∪ next_dirty 快照——唤醒判定与起始矩形取同一快照，防漏合。
+        let ids: Vec<(usize, DirtyRect)> = (0..hc)
             .flat_map(|cy| (0..wc).map(move |cx| (cx, cy)))
             .filter(|&(cx, cy)| cx & 1 == px && cy & 1 == py)
-            .map(|(cx, cy)| cy * wc + cx)
-            .filter(|&ci| {
-                if !sleep_skip {
-                    return true;
+            .filter_map(|(cx, cy)| {
+                let ci = cy * wc + cx;
+                if scan == ScanMode::Full {
+                    return Some((ci, DirtyRect::FULL));
                 }
                 // SAFETY: 相位边界单线程语境；并行段尚未开始。
                 let c = unsafe { &*ptr.0.add(ci) };
-                !c.dirty.is_empty() || c.next_dirty.is_marked()
+                let awake = c.dirty.union(c.next_dirty.snapshot());
+                if awake.is_empty() {
+                    return None;
+                }
+                match scan {
+                    ScanMode::LiveRect => Some((ci, awake)),
+                    _ => Some((ci, DirtyRect::FULL)),
+                }
             })
             .collect();
         pool.install(|| {
-            ids.par_iter().for_each(|&ci| {
+            ids.par_iter().for_each(|&(ci, start)| {
                 let (cx, cy) = (ci % wc, ci / wc);
                 let win = WriteWindow::new(ptr, wc, hc, cx, cy);
                 rules::update_chunk(
@@ -65,7 +74,7 @@ pub fn step(
                     table,
                     tick,
                     fseed,
-                    DirtyRect::FULL,
+                    start,
                     (cx * 64) as i32,
                     (cy * 64) as i32,
                 );

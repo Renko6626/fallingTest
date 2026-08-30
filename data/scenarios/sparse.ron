@@ -1,0 +1,18 @@
+// 稀疏活跃场景（O1 bench 口径）：640×384 大图上三股细水流持续流入盆地——
+// 活跃占比低但永不入睡，正是活矩形的受益区间。
+Scenario(
+    name: "sparse",
+    world: (10, 6),
+    seed: 7,
+    ticks: 2000,
+    setup: [
+        Fill(material: "wall", x0: 0, y0: 360, x1: 639, y1: 383),
+        Fill(material: "wall", x0: 0, y0: 200, x1: 7, y1: 359),
+        Fill(material: "wall", x0: 632, y0: 200, x1: 639, y1: 359),
+    ],
+    script: [
+        Every(from: 0, until: 2000, step: 2, op: Brush(material: "water", x: 120, y: 16, r: 0)),
+        Every(from: 0, until: 2000, step: 2, op: Brush(material: "water", x: 320, y: 16, r: 0)),
+        Every(from: 0, until: 2000, step: 3, op: Brush(material: "sand", x: 500, y: 16, r: 0)),
+    ],
+)

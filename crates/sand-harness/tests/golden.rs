@@ -12,7 +12,9 @@ fn repo_path(rel: &str) -> String {
 fn check(scenario: &str, golden: &str) {
     let (table, materials_fp) = load_materials(&repo_path("data/materials.ron")).unwrap();
     let sc = load_scenario(&repo_path(scenario), &table).unwrap();
-    let report = runner::run(&sc, &table, materials_fp, 4, true, sc.ticks).unwrap();
+    // LiveRect 跑 golden：与 M0 时代（ChunkSleep）哈希一字不差是 O1 等价性的最硬证据
+    let report =
+        runner::run(&sc, &table, materials_fp, 4, sand_core::ScanMode::LiveRect, sc.ticks).unwrap();
     let got = report.lines.join("\n") + "\n";
     let want = std::fs::read_to_string(repo_path(golden)).unwrap();
     assert_eq!(got, want, "golden 回归失败：{scenario} 哈希流与 {golden} 不一致");

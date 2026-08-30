@@ -1,15 +1,22 @@
-//! CI 级 SyncTest（spec §5.4 第 2 层）：256×192、6000 tick、四配置
-//! （1/4 线程 × 休眠跳过开/关）逐 tick 全局哈希比对。
-//! 浇注到 tick 4000，其后为沉降与入睡阶段（休眠唤醒语义在此阶段受测）。
+//! CI 级 SyncTest（spec §5.4 第 2 层 + O1 spec §3.2）：256×192、6000 tick、
+//! 六配置（1/4 线程 × Full/ChunkSleep/LiveRect）逐 tick 全局哈希比对。
+//! 浇注到 tick 4000，其后为沉降与入睡阶段（休眠唤醒与活矩形语义在此阶段受测）。
 
 mod common;
 
 use common::{sim, SAND, WATER};
-use sand_core::Op;
+use sand_core::{Op, ScanMode};
 
 #[test]
-fn four_configs_identical_hash_stream() {
-    let configs = [(1usize, true), (4, true), (1, false), (4, false)];
+fn six_configs_identical_hash_stream() {
+    let configs = [
+        (1usize, ScanMode::Full),
+        (4, ScanMode::Full),
+        (1, ScanMode::ChunkSleep),
+        (4, ScanMode::ChunkSleep),
+        (1, ScanMode::LiveRect),
+        (4, ScanMode::LiveRect),
+    ];
     let mut sims: Vec<_> = configs.iter().map(|&(t, sk)| sim(4, 3, 0xC0FFEE, t, sk)).collect();
     let setup = [
         Op::Fill { material: 1, x0: 0, y0: 188, x1: 255, y1: 191 },

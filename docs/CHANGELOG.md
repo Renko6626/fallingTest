@@ -8,6 +8,7 @@
 ## 2026-08-30
 
 ### Added
+- **O1 chunk 内活矩形实施完成**（spec `docs/superpowers/specs/2026-08-30-o1-live-rect-design.md` → Implemented）：`ScanMode { Full, ChunkSleep, LiveRect }` 替换 `sleep_skip`（`crates/sand-core/src/lib.rs`）；单代码路径动态边界扫描（`rules.rs::update_chunk`——起始矩形参数化，Full/ChunkSleep 传 FULL 时扩张自然无效）；WriteWindow 任务本地活矩形追踪（`window.rs`）；调度起始矩形 = dirty ∪ next_dirty 快照（`scheduler.rs`）。等价性论证核心 = 以全扫访问序定义"前方"，过度包含永远安全（spec §1）。**双证**：既有 golden 用 LiveRect 重放哈希一字不变 + SyncTest 升级六配置（{1,N 线程}×{Full,ChunkSleep,LiveRect}）全绿。收益（`docs/perf/` O1 节）：稀疏 2.7×、worst 1.2×、睡眠持平。新增 `data/scenarios/sparse.ron` bench 场景与 harness `--scan full|sleep|live` 开关。
 - **M0 骨架与执法实施完成**（spec `2026-08-29-m0-skeleton-design.md` → Implemented）：
   - `crates/sand-core`：Cell u32 位段（`cell.rs`）、chunk/脏矩形原子合并（`chunk.rs`）、chunk 寻址世界 + brush/fill 共用写入路径（`world.rs`）、SquirrelNoise5 RNG **与 Python 版金值交叉锚定**（`rng.rs`）、WriteWindow unsafe 窗口 + debug 写域断言（`window.rs`）、数据驱动沙/水规则含方向承诺不变量（`rules.rs`）、四相 rayon 调度器（`scheduler.rs`）、xxh3 哈希树叶层（`hash.rs`）、Sim 门面（`lib.rs`）。
   - `crates/sand-harness`：RON 场景/材料加载 + xxh3 指纹（P5）、synctest/replay/hashrun/render 四子命令、golden 回归 ×2 入库、GIF 占位渲染器（消费 `Sim::world()` 只读视图 = Channel A 雏形）。

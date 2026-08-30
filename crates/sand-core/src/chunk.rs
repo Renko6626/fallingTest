@@ -26,6 +26,28 @@ impl DirtyRect {
     pub fn is_empty(&self) -> bool {
         self.x0 > self.x1 || self.y0 > self.y1
     }
+
+    pub fn union(self, other: DirtyRect) -> DirtyRect {
+        if self.is_empty() {
+            return other;
+        }
+        if other.is_empty() {
+            return self;
+        }
+        DirtyRect {
+            x0: self.x0.min(other.x0),
+            y0: self.y0.min(other.y0),
+            x1: self.x1.max(other.x1),
+            y1: self.y1.max(other.y1),
+        }
+    }
+
+    pub fn merge_point(&mut self, x: u8, y: u8) {
+        self.x0 = self.x0.min(x);
+        self.y0 = self.y0.min(y);
+        self.x1 = self.x1.max(x);
+        self.y1 = self.y1.max(y);
+    }
 }
 
 /// 原子累积版脏矩形。merge 只做 fetch_min/fetch_max（Relaxed 足够：
@@ -58,6 +80,17 @@ impl AtomicDirty {
     /// 是否有任何标记（相位边界唤醒检查；merge 只会让 x0 变小，非空 ⟺ x0 ≠ MAX）。
     pub fn is_marked(&self) -> bool {
         self.x0.load(Ordering::Relaxed) != u8::MAX
+    }
+
+    /// 非消费快照（相位边界单线程语境读取；O1 起始矩形用）。
+    pub fn snapshot(&self) -> DirtyRect {
+        let r = DirtyRect {
+            x0: self.x0.load(Ordering::Relaxed),
+            y0: self.y0.load(Ordering::Relaxed),
+            x1: self.x1.load(Ordering::Relaxed),
+            y1: self.y1.load(Ordering::Relaxed),
+        };
+        if r.is_empty() { DirtyRect::EMPTY } else { r }
     }
 
     /// 取出并清空（tick 末封帧调用，单线程语境）。

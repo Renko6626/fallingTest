@@ -2,7 +2,7 @@
 
 use std::time::Instant;
 
-use sand_core::{hash, InitConfig, MaterialTable, Sim};
+use sand_core::{hash, InitConfig, MaterialTable, ScanMode, Sim};
 
 use crate::scenario::Scenario;
 
@@ -13,14 +13,14 @@ pub fn build_sim(
     sc: &Scenario,
     table: &MaterialTable,
     threads: usize,
-    sleep_skip: bool,
+    scan: ScanMode,
 ) -> Result<Sim, String> {
     let cfg = InitConfig {
         width_chunks: sc.world.0,
         height_chunks: sc.world.1,
         seed: sc.seed,
         threads,
-        sleep_skip,
+        scan,
     };
     let mut sim = Sim::new(&cfg, table.clone())?;
     sim.apply_setup(&sc.setup);
@@ -41,10 +41,10 @@ pub fn run(
     table: &MaterialTable,
     materials_fp: u64,
     threads: usize,
-    sleep_skip: bool,
+    scan: ScanMode,
     ticks: u64,
 ) -> Result<RunReport, String> {
-    let mut sim = build_sim(sc, table, threads, sleep_skip)?;
+    let mut sim = build_sim(sc, table, threads, scan)?;
     let mut lines = vec![
         format!("scenario {}", sc.name),
         format!("scenario_fp {:016x}", sc.fingerprint),
@@ -68,15 +68,22 @@ pub fn run(
     Ok(RunReport { lines, avg_ms: total / ticks.max(1) as f64, max_ms })
 }
 
-/// 四配置 SyncTest：1/N 线程 × 休眠跳过开/关，逐 tick 全局哈希比对。
-/// 分叉即返回 Err（含 tick 与首个不一致 chunk 坐标）。
+/// 六配置 SyncTest（O1 spec §3.2）：{1, N 线程} × {Full, ChunkSleep, LiveRect}，
+/// 逐 tick 全局哈希比对。分叉即返回 Err（含 tick 与首个不一致 chunk 坐标）。
 pub fn synctest(
     sc: &Scenario,
     table: &MaterialTable,
     threads_n: usize,
     ticks: u64,
 ) -> Result<(), String> {
-    let configs = [(1usize, true), (threads_n, true), (1, false), (threads_n, false)];
+    let configs = [
+        (1usize, ScanMode::Full),
+        (threads_n, ScanMode::Full),
+        (1, ScanMode::ChunkSleep),
+        (threads_n, ScanMode::ChunkSleep),
+        (1, ScanMode::LiveRect),
+        (threads_n, ScanMode::LiveRect),
+    ];
     let mut sims = configs
         .iter()
         .map(|&(t, sk)| build_sim(sc, table, t, sk))

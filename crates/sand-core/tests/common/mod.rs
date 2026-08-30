@@ -1,6 +1,6 @@
 //! 测试公用：内联材料表（core 测试不读 data/，保持 crate 自包含）。
 
-use sand_core::{Category, InitConfig, MaterialDef, MaterialTable, Sim};
+use sand_core::{Category, InitConfig, MaterialDef, MaterialTable, ScanMode, Sim};
 
 pub const SAND: u8 = 2;
 pub const WATER: u8 = 3;
@@ -22,7 +22,7 @@ pub fn test_table() -> MaterialTable {
     .unwrap()
 }
 
-pub fn sim(width_chunks: usize, height_chunks: usize, seed: u64, threads: usize, sleep_skip: bool) -> Sim {
-    let cfg = InitConfig { width_chunks, height_chunks, seed, threads, sleep_skip };
+pub fn sim(width_chunks: usize, height_chunks: usize, seed: u64, threads: usize, scan: ScanMode) -> Sim {
+    let cfg = InitConfig { width_chunks, height_chunks, seed, threads, scan };
     Sim::new(&cfg, test_table()).unwrap()
 }

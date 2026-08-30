@@ -3,7 +3,7 @@
 > 文档路径：`docs/proposals/2026-08-30-noita-derived-optimizations.md`
 > 运行时版本：Rust（sand-core M0+）
 > 最近更新：2026-08-30 (UTC+8)
-> **Status**: Proposed（2026-08-30 用户令入档；各项时点见表）
+> **Status**: O1 Implemented（2026-08-30，spec `docs/superpowers/specs/2026-08-30-o1-live-rect-design.md`，稀疏 2.7×/worst 1.2×/睡眠持平）；O2–O4 Proposed（各项时点见表）
 > 依据：`docs/perf/2026-08-30-m0-rust-informal.md`（M0 实测）、`docs/reference/noita-deep-dive.md`
 > （Noita 调研）、80.lv / GDC / macuyiko 复查（2026-08-30 会话）
 
