@@ -66,7 +66,7 @@ golden` 全部哈希值已重录；无 Emit 的场景（`sand_pile`/`mixed`）�
 | 1 | `cargo test` 全绿 | ✅ 122 项（core 单测 91 + `particle_behavior` 3 + `rules_behavior` 5 + `synctest_ci` 1 + harness 单测 16 + golden 4 + `synctest` 2 = 91+3+5+1+16+4+2 = 122），`cargo clippy --workspace --all-targets` 无警告 |
 | 2 | SyncTest：waterfall/explosion_splash 各 2 万 tick 六配置零分叉 | ✅ waterfall `scenario_fp 39575dfa5dfed750`（577.8s）；explosion_splash `scenario_fp f229c61b5deb0328`（856.1s）；均 release、`--threads 8` |
 | 3 | golden 重录（旧场景逐 tick 网格哈希零扰动 + 新场景 golden ×2 入库） | ✅ Task 3（`--grid-only` 两步程序，`sand_pile`/`mixed` 零扰动取证）+ Task 6（`explosion_ci` 入库，`sand_pile`/`mixed`/`waterfall_ci` 三个既有 golden 仅 `materials_fp` 一行变化） |
-| 4 | render GIF 目检 | ✅ `out/waterfall.gif`、`out/explosion_splash.gif`（`--every 100 --scale 2`，各 201 帧，覆盖完整 2 万 tick）。见下方目检记录，**结论留给用户** |
+| 4 | render GIF 目检 | ✅ **用户确认通过（2026-08-31）**——确认时点的 GIF 为爆炸手感迭代收口后版本（沙丘几何、汽化 0.95、EXPLODE_SPEED 8、射线涨落、8000 tick/8 炮，commits `66cea0a`..`33ab3da`），期间经用户四轮目检迭代（帧率修复→沙丘几何三轮→汽化/更重/涨落/汽化圈调参）。下方目检记录为 Task 7 时点的客观观察，留档 |
 | 5 | bench：粒子压测对照总纲 §7 预算 | ✅ `docs/perf/2026-08-30-m1-particle-baseline.md`：2 万粒子量级实测 0.586ms/tick（另一独立窗口折算 0.504ms/tick），均低于 0.8ms 预算；mixed/sparse 网格路径无回退，acceptance 1 线程组合超 ±10% 阈值但判定为共享服务器噪声（如实记录，未强行结论） |
 
 ### GIF 目检记录（客观观察，结论留给用户）
