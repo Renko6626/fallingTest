@@ -12,8 +12,9 @@
 // 能量比例（remaining/power）严格超过此阈值即汽化（删除、不生成粒子），做出
 // "近心没了、外圈飞溅"的观感。RON 写 0.0..=1.0 十进制，加载期经
 // `sand-harness::scenario::quantize_vaporize_threshold` 量化为 u8（×255
-// round）；不写即缺省 1.0（永不汽化，量化后 255）。初值：water 0.4（量化
-// 102，水更易被炸干净）、sand 0.7（量化 179，沙更耐炸）；air/wall 不写，
+// round）；不写即缺省 1.0（永不汽化，量化后 255）。现值：water 0.4（量化
+// 102，水更易被炸干净）、sand 0.95（量化 242，2026-08-30 用户目检从初值
+// 0.7 两轮调参收窄汽化圈：0.7→0.9→0.95，沙以溅射为主）；air/wall 不写，
 // 吃缺省（air 从不进入摧毁分支，wall 免疫爆炸，字段无意义）。同 blast_cost
 // 先例：本文件内容哈希再次改变，全部 golden 的 materials_fp 行已重录；
 // explosion_ci 因爆炸语义变更状态哈希全变，sand_pile/mixed/waterfall_ci

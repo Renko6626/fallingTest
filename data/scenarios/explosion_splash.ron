@@ -35,9 +35,11 @@ Scenario(
     ],
     script: [
         Every(from: 500, until: 7500, step: 1000,
-              // power 与 blast_cost 联动决定汽化圈：沙路径剩余比例 = (power−2d)/power，
-              // power=200 → d<30 汽化（>0.7）、30–50 溅射（速度 0.4–0.7×MAX_SPEED）。
-              // power=600 时边缘剩余比例仍 0.8 > 沙阈值，全半径汽化、零溅射（已踩过）。
+              // power 与 blast_cost、vaporize_threshold 联动决定汽化圈：沙路径
+              // 剩余比例 = (power−2d)/power，power=200 + 沙阈值 0.95 → 名义
+              // d<5 汽化、其余溅射（每射线能量 ±25% 涨落会让边界毛糙浮动）。
+              // 教训存档：power=600 时 r=50 边缘剩余比例仍 0.8，若阈值 ≤0.8
+              // 会全半径汽化、零溅射（初值 0.7 时踩过）。
               op: Explode(x: 320, y: 210, r: 50, power: 200)),
     ],
 )
