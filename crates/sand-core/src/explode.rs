@@ -134,14 +134,15 @@ fn push_octant_mirror(offsets: &mut Vec<(i32, i32)>, a: i32, b: i32) {
 /// 单条爆炸射线（spec §6 point 2/3）：从圆心 `(cx, cy)` 出发，沿方向
 /// `(dx, dy)` 逐格消耗能量，能量 ≥ 格消耗即摧毁（置 air + 溅射粒子，或按
 /// `MaterialTable::vaporize_threshold` 判定汽化——置 air、不溅射，见下方
-/// "近心汽化"节），能量不足或撞 `BLAST_COST_INFINITE` 材料即断线。
+/// "近心汽化"节），能量不足、或目标 `durability > max_durability`（门槛免疫，
+/// M2 spec §2.2 双层破坏——原 `BLAST_COST_INFINITE` 哨兵语义的替代）即断线。
 ///
 /// **爆心格自身的口径**（任务书 + spec §6 point 1"起点格按第一格计费处理"）：
 /// `(cx, cy)` 本身作为该射线的第一格纳入能量结算——与 [`CellWalk`]"不含
 /// 起点格"的粒子 DDA 语义相反，这里手动 `std::iter::once((cx, cy))` 前置，
 /// 再接 `CellWalk` 产出的后续格。`r>=1` 时每条射线都独立从爆心起算，第一条
 /// 处理到的射线摧毁爆心（若能量足够）；后续射线到达时爆心已是 air，
-/// `blast_cost(air)=0` 恒满足、且已 air 不重复摧毁/不重复溅射（spec §6
+/// `hp(air)=0` 恒满足、且已 air 不重复摧毁/不重复溅射（spec §6
 /// point 4），对能量预算而言等同免费经过。
 ///
 /// **能量衰减用于溅射速度**：摧毁某格后取*该格消耗完成后的剩余能量*
@@ -167,6 +168,8 @@ fn fire_ray(
     dx: i32,
     dy: i32,
     power: u32,
+    // 操作侧破坏门槛（M2 spec §2.2）：目标 `durability` 超过它即断线。
+    max_durability: u8,
     // 本射线最多走过的格数（含爆心格；`u32::MAX` = 不设限，走满到圆周目标）。
     // 涨落策略在 apply_explode（调用方）结算——fire_ray 保持"给定预算走射线"
     // 的纯原语，白盒测试不受涨落干扰。
@@ -196,9 +199,12 @@ fn fire_ray(
             break; // 出界断线，同"撞不可摧毁材料"一样直接停止该射线。
         }
         let material = world.cell(gx, gy).material();
-        let cost = table.blast_cost(material);
+        if table.durability(material) > max_durability {
+            break; // 门槛免疫（M2 spec §2.2）：等价于原先撞 BLAST_COST_INFINITE 断线。
+        }
+        let cost = table.hp(material);
         if energy < cost {
-            break; // 能量不足以摧毁这一格（含 BLAST_COST_INFINITE 撞线）。
+            break; // 能量不足以摧毁这一格。
         }
         energy -= cost;
         if material == MAT_AIR {
@@ -253,7 +259,7 @@ fn fire_ray(
 /// 只需区分同 tick 内不同 `Op::Explode`，charter §11 翻案 4 + Task 5 I1
 /// 同款纪律）。
 ///
-/// `power == 0`：没有能量可摧毁任何格（哪怕 blast_cost=0 的 air，"摧毁"
+/// `power == 0`：没有能量可摧毁任何格（哪怕 hp=0 的 air，"摧毁"
 /// 逻辑本身不会为 air 触发），且 `fire_ray` 的 `Fx::from_ratio(energy,
 /// power)` 除数不能为零——提前判零，语义上等价于"零能量爆炸 = 无操作"，
 /// 不依赖 fire_ray 内部的分支顺序侥幸绕开除零。
@@ -267,6 +273,7 @@ fn fire_ray(
 /// （drain 序定序、拒绝条件是纯函数），不破坏确定性，但需知悉：拒绝事件
 /// 计入 `Particles::rejected_total()`，可观测、可断言。
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_explode(
     world: &mut World,
     table: &MaterialTable,
@@ -274,6 +281,7 @@ pub(crate) fn apply_explode(
     y: i32,
     r: i32,
     power: u32,
+    max_durability: u8,
     stamp: u8,
     fseed: u32,
     op_idx: usize,
@@ -298,7 +306,7 @@ pub(crate) fn apply_explode(
             let ray_power = ray_fluct(power, rp, true);
             // 射程按半径取单边涨落再 +1 含爆心格。
             let max_cells = ray_fluct(r as u32, rr, false) + 1;
-            fire_ray(world, table, x, y, dx, dy, ray_power, max_cells, stamp, fseed, op_idx, spawns);
+            fire_ray(world, table, x, y, dx, dy, ray_power, max_durability, max_cells, stamp, fseed, op_idx, spawns);
         }
     }
 }
@@ -310,20 +318,18 @@ mod tests {
     use crate::world::Op;
 
     fn test_table() -> MaterialTable {
-        // blast_cost 取 spec §6 的口径值（air 0 / water 1 / sand 2 / wall
-        // 免疫），供本文件的 Op::Explode 测试直接复用；Emit 测试不关心该
-        // 字段取值。
-        use crate::material::BLAST_COST_INFINITE;
-        // 255 = 永不汽化（base 缺省）：本表供 blast_cost/断线/守恒等既有行为
+        // hp 取 spec §6 的口径值（air 0 / water 1 / sand 2），wall 走门槛
+        // 免疫（durability 15 > 测试用 max_durability 10——M2 spec §2.2，
+        // 哨兵退役）。255 = 永不汽化（base 缺省）：本表供断线/守恒等既有行为
         // 测试复用，不应引入意料之外的汽化分支——专门测汽化差异的用例另建
         // 材料表（见"vaporize_threshold"分节）。
-        let def = |id: u8, name: &str, category: Category, density: u16, blast_cost: u32| MaterialDef {
-            blast_cost,
+        let def = |id: u8, name: &str, category: Category, density: u16, hp: u32| MaterialDef {
+            hp,
             ..MaterialDef::base(id, name, category, density)
         };
         MaterialTable::new(vec![
             def(0, "air", Category::Static, 0, 0),
-            def(1, "wall", Category::Static, 100, BLAST_COST_INFINITE),
+            MaterialDef { hp: 100, durability: 15, ..MaterialDef::base(1, "wall", Category::Static, 100) },
             def(2, "water", Category::Liquid, 16, 1),
             def(3, "sand", Category::Powder, 40, 2),
         ])
@@ -394,7 +400,7 @@ mod tests {
         }
         let fseed = rng::frame_seed(w.seed, w.tick);
         let mut spawns = Vec::new();
-        fire_ray(&mut w, &t, cx, cy, 8, 0, 16, u32::MAX, 0, fseed, 0, &mut spawns);
+        fire_ray(&mut w, &t, cx, cy, 8, 0, 16, 10, u32::MAX, 0, fseed, 0, &mut spawns);
 
         assert_eq!(spawns.len(), 6, "6 个沙格应全部被摧毁：{spawns:?}");
         for i in 0..6i32 {
@@ -418,7 +424,7 @@ mod tests {
         w.set_cell_stamped(&t, cx + 4, cy, 3, 0); // sand behind wall
         let fseed = rng::frame_seed(w.seed, w.tick);
         let mut spawns = Vec::new();
-        fire_ray(&mut w, &t, cx, cy, 8, 0, 1000, u32::MAX, 0, fseed, 0, &mut spawns);
+        fire_ray(&mut w, &t, cx, cy, 8, 0, 1000, 10, u32::MAX, 0, fseed, 0, &mut spawns);
 
         assert_eq!(w.cell(cx + 3, cy).material(), 1, "wall 本身不可摧毁");
         assert_eq!(w.cell(cx + 4, cy).material(), 3, "wall 后方沙格应逐格完好（遮挡）");
@@ -428,30 +434,29 @@ mod tests {
     #[test]
     fn fire_ray_already_air_cells_cost_zero_and_do_not_respawn() {
         // 模拟"已被前序射线炸掉"：整条路径预先就是 air，射线应无阻碍走完
-        // 全程且不产出任何 spawn（air 的 blast_cost=0，从不触发摧毁分支）。
+        // 全程且不产出任何 spawn（air 的 hp=0，从不触发摧毁分支）。
         let t = test_table();
         let mut w = World::new(1, 1, 0);
         let fseed = rng::frame_seed(w.seed, w.tick);
         let mut spawns = Vec::new();
-        fire_ray(&mut w, &t, 10, 10, 8, 0, 5, u32::MAX, 0, fseed, 0, &mut spawns);
+        fire_ray(&mut w, &t, 10, 10, 8, 0, 5, 10, u32::MAX, 0, fseed, 0, &mut spawns);
         assert!(spawns.is_empty());
     }
 
     // ==================== fire_ray：近心汽化（vaporize_threshold，用户裁决 2026-08-30）====================
 
-    /// 两个材质专为边界测试构造：`blast_cost` 分别精确算到 power=255 时
+    /// 两个材质专为边界测试构造：`hp` 分别精确算到 power=255 时
     /// `remaining` 落在阈值 128 的正上方一格（129）与恰好持平（128）——
     /// 隔离出"严格大于"判定的两侧，不受材质其他属性干扰。
     fn vaporize_boundary_table() -> MaterialTable {
-        use crate::material::BLAST_COST_INFINITE;
-        let def = |id: u8, name: &str, category: Category, blast_cost: u32, vaporize_threshold: u8| MaterialDef {
-            blast_cost,
+        let def = |id: u8, name: &str, category: Category, hp: u32, vaporize_threshold: u8| MaterialDef {
+            hp,
             vaporize_threshold,
             ..MaterialDef::base(id, name, category, 40)
         };
         MaterialTable::new(vec![
             def(0, "air", Category::Static, 0, 255),
-            def(1, "wall", Category::Static, BLAST_COST_INFINITE, 255),
+            MaterialDef { hp: 100, durability: 15, ..MaterialDef::base(1, "wall", Category::Static, 40) },
             // power=255 时 remaining=255-127=128，恰好等于阈值 128。
             def(2, "target_at_threshold", Category::Powder, 127, 128),
             // power=255 时 remaining=255-126=129，比阈值多 1。
@@ -470,7 +475,7 @@ mod tests {
         w.set_cell_stamped(&t, cx, cy, 2, 0);
         let fseed = rng::frame_seed(w.seed, w.tick);
         let mut spawns = Vec::new();
-        fire_ray(&mut w, &t, cx, cy, 1, 0, 255, u32::MAX, 0, fseed, 0, &mut spawns);
+        fire_ray(&mut w, &t, cx, cy, 1, 0, 255, 10, u32::MAX, 0, fseed, 0, &mut spawns);
         assert_eq!(spawns.len(), 1, "阈值恰好持平，不应汽化");
         assert_eq!(w.vaporized_total(), 0);
         assert_eq!(w.cell(cx, cy).material(), MAT_AIR, "仍应正常摧毁为 air");
@@ -485,7 +490,7 @@ mod tests {
         w.set_cell_stamped(&t, cx, cy, 3, 0);
         let fseed = rng::frame_seed(w.seed, w.tick);
         let mut spawns = Vec::new();
-        fire_ray(&mut w, &t, cx, cy, 1, 0, 255, u32::MAX, 0, fseed, 0, &mut spawns);
+        fire_ray(&mut w, &t, cx, cy, 1, 0, 255, 10, u32::MAX, 0, fseed, 0, &mut spawns);
         assert!(spawns.is_empty(), "越过阈值应汽化，不生成粒子");
         assert_eq!(w.vaporized_total(), 1);
         assert_eq!(w.cell(cx, cy).material(), MAT_AIR, "汽化仍需清空格子（质量蒸发）");
@@ -493,19 +498,18 @@ mod tests {
 
     #[test]
     fn fire_ray_default_threshold_255_never_vaporizes_even_at_remaining_equals_power() {
-        // RON 缺省 1.0 → 量化 255。blast_cost=0（非 air/wall 材质里的边界配置，
+        // RON 缺省 1.0 → 量化 255。hp=0（非 air/wall 材质里的边界配置，
         // 纯为逼出 remaining==power 这个比例=1.0 的极端输入，现实材质不会
         // 这样配）依然不触发汽化——"严格大于"是关键：threshold=255 时条件
         // 退化为 `remaining > power`，而 `remaining <= power` 恒成立（cost
         // 是无符号扣减），故缺省材质在任何输入下都不汽化。
-        use crate::material::BLAST_COST_INFINITE;
-        let def = |id: u8, name: &str, category: Category, blast_cost: u32| MaterialDef {
-            blast_cost,
+        let def = |id: u8, name: &str, category: Category, hp: u32| MaterialDef {
+            hp,
             ..MaterialDef::base(id, name, category, 40)
         };
         let t = MaterialTable::new(vec![
             def(0, "air", Category::Static, 0),
-            def(1, "wall", Category::Static, BLAST_COST_INFINITE),
+            MaterialDef { hp: 100, durability: 15, ..MaterialDef::base(1, "wall", Category::Static, 40) },
             def(2, "target_zero_cost", Category::Powder, 0),
         ])
         .unwrap();
@@ -514,7 +518,7 @@ mod tests {
         w.set_cell_stamped(&t, cx, cy, 2, 0);
         let fseed = rng::frame_seed(w.seed, w.tick);
         let mut spawns = Vec::new();
-        fire_ray(&mut w, &t, cx, cy, 1, 0, 1000, u32::MAX, 0, fseed, 0, &mut spawns);
+        fire_ray(&mut w, &t, cx, cy, 1, 0, 1000, 10, u32::MAX, 0, fseed, 0, &mut spawns);
         assert_eq!(spawns.len(), 1, "缺省阈值下 remaining==power 也不应汽化");
         assert_eq!(w.vaporized_total(), 0);
     }
@@ -537,7 +541,7 @@ mod tests {
         let (cx, cy) = (30, 30);
         w.set_cell_stamped(&t, cx, cy, 3, 0); // 爆心本身预置为沙
         let fseed = rng::frame_seed(w.seed, w.tick);
-        let op = Op::Explode { x: cx, y: cy, r: 3, power: 50 };
+        let op = Op::Explode { x: cx, y: cy, r: 3, power: 50, max_durability: 10 };
         let mut spawns = Vec::new();
         w.apply_op(&t, &op, 0, fseed, 0, &mut spawns);
 
@@ -560,7 +564,7 @@ mod tests {
             w.set_cell_stamped(&t, cx + dx, cy, 3, 0); // 墙后一整排沙
         }
         let fseed = rng::frame_seed(w.seed, w.tick);
-        let op = Op::Explode { x: cx, y: cy, r: 12, power: 10_000 }; // 能量充裕，仍不能穿墙
+        let op = Op::Explode { x: cx, y: cy, r: 12, power: 10_000, max_durability: 10 }; // 能量充裕，仍不能穿墙
         let mut spawns = Vec::new();
         w.apply_op(&t, &op, 0, fseed, 0, &mut spawns);
 
@@ -589,7 +593,7 @@ mod tests {
         }
         let before = w.count_material(3);
         let fseed = rng::frame_seed(w.seed, w.tick);
-        let op = Op::Explode { x: cx, y: cy, r, power: 1000 };
+        let op = Op::Explode { x: cx, y: cy, r, power: 1000, max_durability: 10 };
         let mut spawns = Vec::new();
         w.apply_op(&t, &op, 0, fseed, 0, &mut spawns);
         let after = w.count_material(3);
@@ -617,13 +621,12 @@ mod tests {
     /// 与 `data/materials.ron` 初值同口径：water 阈值 0.4（量化 102），
     /// sand 阈值 0.7（量化 179）。
     fn mixed_vaporize_table() -> MaterialTable {
-        use crate::material::BLAST_COST_INFINITE;
-        let def = |id: u8, name: &str, category: Category, density: u16, blast_cost: u32, vaporize_threshold: u8| {
-            MaterialDef { blast_cost, vaporize_threshold, ..MaterialDef::base(id, name, category, density) }
+        let def = |id: u8, name: &str, category: Category, density: u16, hp: u32, vaporize_threshold: u8| {
+            MaterialDef { hp, vaporize_threshold, ..MaterialDef::base(id, name, category, density) }
         };
         MaterialTable::new(vec![
             def(0, "air", Category::Static, 0, 0, 255),
-            def(1, "wall", Category::Static, 100, BLAST_COST_INFINITE, 255),
+            MaterialDef { hp: 100, durability: 15, ..MaterialDef::base(1, "wall", Category::Static, 100) },
             def(2, "water", Category::Liquid, 16, 1, 102),
             def(3, "sand", Category::Powder, 40, 2, 179),
         ])
@@ -655,7 +658,7 @@ mod tests {
         let before_water = w.count_material(2);
         let before_sand = w.count_material(3);
         let fseed = rng::frame_seed(w.seed, w.tick);
-        let op = Op::Explode { x: cx, y: cy, r, power: 100 };
+        let op = Op::Explode { x: cx, y: cy, r, power: 100, max_durability: 10 };
         let mut spawns = Vec::new();
         w.apply_op(&t, &op, 0, fseed, 0, &mut spawns);
         let after_water = w.count_material(2);
@@ -687,7 +690,7 @@ mod tests {
         let (cx, cy) = (10, 10);
         w.set_cell_stamped(&t, cx, cy, 3, 0);
         let fseed = rng::frame_seed(w.seed, w.tick);
-        let op = Op::Explode { x: cx, y: cy, r: 5, power: 0 };
+        let op = Op::Explode { x: cx, y: cy, r: 5, power: 0, max_durability: 10 };
         let mut spawns = Vec::new();
         w.apply_op(&t, &op, 0, fseed, 0, &mut spawns);
         assert_eq!(w.cell(cx, cy).material(), 3, "power=0 不应摧毁任何格子");
@@ -712,7 +715,7 @@ mod tests {
         let mut wa = build();
         let mut wb = build();
         let fseed = rng::frame_seed(wa.seed, wa.tick);
-        let op = Op::Explode { x: cx, y: cy, r: 4, power: 40 };
+        let op = Op::Explode { x: cx, y: cy, r: 4, power: 40, max_durability: 10 };
 
         let mut a = Vec::new();
         wa.apply_op(&t, &op, 0, fseed, 0, &mut a);
@@ -743,7 +746,7 @@ mod tests {
         let mut wa = build();
         let mut wb = build();
         let fseed = rng::frame_seed(wa.seed, wa.tick);
-        let op = Op::Explode { x: cx, y: cy, r: 3, power: 30 };
+        let op = Op::Explode { x: cx, y: cy, r: 3, power: 30, max_durability: 10 };
 
         let mut a = Vec::new();
         wa.apply_op(&t, &op, 0, fseed, 0, &mut a);
@@ -788,7 +791,7 @@ mod tests {
         }
         let fseed = rng::frame_seed(w.seed, w.tick);
         let mut spawns = Vec::new();
-        fire_ray(&mut w, &t, cx, cy, 9, 0, 1000, 4, 0, fseed, 0, &mut spawns);
+        fire_ray(&mut w, &t, cx, cy, 9, 0, 1000, 10, 4, 0, fseed, 0, &mut spawns);
         assert_eq!(spawns.len(), 3, "max_cells=4 含爆心，应只摧毁 3 格沙");
         assert_eq!(w.cell(cx + 3, cy).material(), MAT_AIR);
         assert_eq!(w.cell(cx + 4, cy).material(), 3, "第 4 格沙应因射程封顶幸存");
@@ -807,7 +810,7 @@ mod tests {
         let fseed = rng::frame_seed(w.seed, w.tick);
         let mut spawns = Vec::new();
         // r=16、power=1000：能量远超 16 格沙的成本，射程涨落是约束项。
-        w.apply_op(&t, &Op::Explode { x: 64, y: 64, r: 16, power: 1000 }, 0, fseed, 0, &mut spawns);
+        w.apply_op(&t, &Op::Explode { x: 64, y: 64, r: 16, power: 1000, max_durability: 10 }, 0, fseed, 0, &mut spawns);
         let extent = |sx: i32, sy: i32| -> i32 {
             let mut d = 0;
             while w.cell(64 + sx * (d + 1), 64 + sy * (d + 1)).material() == MAT_AIR {
@@ -845,8 +848,8 @@ mod tests {
         w.set_cell_stamped(&t, cx - 1, cy, 2, 0); // water（test_table 里 id 自查为准）
         let fseed = rng::frame_seed(w.seed, w.tick);
         let mut spawns = Vec::new();
-        fire_ray(&mut w, &t, cx, cy, 1, 0, 255, u32::MAX, 0, fseed, 0, &mut spawns);
-        fire_ray(&mut w, &t, cx, cy, -1, 0, 255, u32::MAX, 0, fseed, 0, &mut spawns);
+        fire_ray(&mut w, &t, cx, cy, 1, 0, 255, 10, u32::MAX, 0, fseed, 0, &mut spawns);
+        fire_ray(&mut w, &t, cx, cy, -1, 0, 255, 10, u32::MAX, 0, fseed, 0, &mut spawns);
         assert_eq!(spawns.len(), 2, "沙、水各一格应各溅射一颗：{spawns:?}");
         let sand_speed = spawns[0].vx.0.abs();
         let water_speed = spawns[1].vx.0.abs();

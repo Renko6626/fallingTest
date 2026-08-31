@@ -6,11 +6,12 @@ use serde::Deserialize;
 use xxhash_rust::xxh3::{xxh3_64, Xxh3};
 
 use sand_core::{
-    Category, Fx, MaterialDef, MaterialTable, Op, DISPERSION_MAX, MAX_EMIT_JITTER_RAW,
+    Category, Fx, MaterialDef, MaterialTable, Op, ReactionRule, ReactionTable, DISPERSION_MAX,
+    MAX_EMIT_JITTER_RAW,
 };
 
-/// `MatSpec::blast_cost` 的 serde 缺省值（spec §6："RON 缺省 1"）。
-fn default_blast_cost() -> u32 {
+/// `MatSpec::hp` 的 serde 缺省值（原 `blast_cost`，M2 spec §2.2："RON 缺省 1"）。
+fn default_hp() -> u32 {
     1
 }
 
@@ -58,8 +59,12 @@ struct MatSpec {
     /// 若不显式声明该字段仍能解析，但当前版本已给全部材料显式赋值（见该
     /// 文件注释：字段新增非语义变更，materials_fp 因内容变化而改变，golden
     /// 的 materials_fp 行按 spec §9 程序重录）。
-    #[serde(default = "default_blast_cost")]
-    blast_cost: u32,
+    #[serde(default = "default_hp")]
+    hp: u32,
+    /// 破坏门槛（M2 spec §2.2）：`durability > 操作侧 max_durability` ⇒ 免疫。
+    /// 缺省 0 = 谁都打得动；wall 声明 15（高于任何法术上限，哨兵退役）。
+    #[serde(default)]
+    durability: u8,
     /// 近心汽化阈值（spec §6 汽化小节，用户裁决 2026-08-30）：RON 写
     /// `0.0..=1.0` 十进制，缺省 1.0（永不汽化）。加载期经
     /// [`quantize_vaporize_threshold`] 一次性 round 量化为 u8——core 边界
@@ -191,7 +196,8 @@ pub fn load_materials(path: &str) -> Result<(MaterialTable, u64), String> {
                 category,
                 density: m.density,
                 color: m.color,
-                blast_cost: m.blast_cost,
+                hp: m.hp,
+                durability: m.durability,
                 vaporize_threshold: quantize_vaporize_threshold(m.vaporize_threshold).map_err(|e| {
                     format!("材料 '{}'（id={}）的 vaporize_threshold 非法：{e}", m.name, m.id)
                 })?,
@@ -293,6 +299,123 @@ pub fn quantize_vaporize_threshold(v: f64) -> Result<u8, String> {
     Ok(raw as u8)
 }
 
+// ---------- reactions.ron（M2 spec §2.4）----------
+
+#[derive(Deserialize)]
+struct ReactionsFile {
+    reactions: Vec<ReactionSpec>,
+}
+
+/// 反应的 RON 表面形式：`input` 两项可写材质名或 `[tag]`，`output` 只许具体
+/// 材质名（词缀展开列入 Non-goals：解析失败是静默的，违反"加载期显式报错"
+/// 纪律，spec §1.4）。
+#[derive(Deserialize)]
+struct ReactionSpec {
+    /// `Vec` 而非 `[String; 2]`：serde 定长数组在 RON 里是元组语法 `(..)`，
+    /// 而作者格式定的是列表 `["water", "fire"]`（spec §2.4）——长度在
+    /// [`load_reactions`] 显式校验为 2。
+    input: Vec<String>,
+    output: Vec<String>,
+    probability: f64,
+}
+
+/// 反应概率的加载期量化（spec §2.4 契约 4）：`0.0..=1.0` → `0..=255`，
+/// ×255 round。与 splash/vaporize/fire_chance 同数学、不合并（同一条理由：
+/// 报错文案与语义各不相同）。
+pub fn quantize_reaction_probability(v: f64) -> Result<u8, String> {
+    if !v.is_finite() {
+        return Err(format!("probability 量化失败：{v} 不是有限数"));
+    }
+    let raw = (v * 255.0).round();
+    if !(0.0..=255.0).contains(&raw) {
+        return Err(format!(
+            "probability 量化失败：{v} 超出 [0.0, 1.0] 可表示范围（四舍五入后 raw={raw}，需落在 [0, 255]）"
+        ));
+    }
+    Ok(raw as u8)
+}
+
+/// input 一侧展开为 id 集合：材质名 → 单元素；`[tag]` → 成员 id **升序**
+/// （定序，spec §6.2：tag 展开顺序按 id）。引用不存在的材质或 tag ⇒ Err
+/// （spec §2.4 契约 1——Noita 对 unknown 是静默丢弃整条反应，那是给 mod 的
+/// 容错，对我们是双端反应表不一致 → 分叉（P5），必须反着抄）。
+fn expand_reaction_side(name: &str, table: &MaterialTable) -> Result<Vec<u8>, String> {
+    if let Some(tag) = name.strip_prefix('[').and_then(|t| t.strip_suffix(']')) {
+        let members: Vec<u8> = (0..table.len() as u8)
+            .filter(|&id| table.tags_of(id).iter().any(|t| t == tag))
+            .collect();
+        if members.is_empty() {
+            return Err(format!("反应引用的 tag '[{tag}]' 没有任何材质成员（加载期显式报错）"));
+        }
+        Ok(members)
+    } else {
+        Ok(vec![
+            table.id_by_name(name).ok_or(format!("反应引用不存在的材质 '{name}'（加载期显式报错）"))?,
+        ])
+    }
+}
+
+/// 返回（反应表，文件内容指纹）。加载期完成全部四条契约（spec §2.4）：
+/// ① 未知引用报错；② tag 展开成扁平 id 表，core 侧零字符串；③ 发起方规范化
+/// `id_a < id_b` 且正反只注册一次（原型 `reaction.py:44-46` 正反双向注册是
+/// 总纲警告的双结算来源，此处显式修正）；④ 概率一次性量化为整数阈值。
+pub fn load_reactions(path: &str, table: &MaterialTable) -> Result<(ReactionTable, u64), String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("读 {path} 失败：{e}"))?;
+    let fp = xxh3_64(&normalize_for_fingerprint(&bytes));
+    let text = String::from_utf8(bytes).map_err(|e| format!("{path} 不是 UTF-8：{e}"))?;
+    let file: ReactionsFile =
+        ron::from_str(&text).map_err(|e| format!("解析 {path} 失败：{e}"))?;
+    let mut rules = Vec::new();
+    for (si, spec) in file.reactions.iter().enumerate() {
+        let ctx = |e: String| format!("反应条目 #{si}：{e}");
+        if spec.input.len() != 2 || spec.output.len() != 2 {
+            return Err(ctx(format!(
+                "input/output 必须各恰好 2 项（实际 {}/{}）——三元反应列入 Non-goals（spec §1.4）",
+                spec.input.len(),
+                spec.output.len()
+            )));
+        }
+        for o in &spec.output {
+            if o.starts_with('[') {
+                return Err(ctx(format!("output 不许写 tag（'{o}'）——产物必须是具体材质名（spec §1.4）")));
+            }
+        }
+        let out_a = table.id_by_name(&spec.output[0]).ok_or(ctx(format!(
+            "output 引用不存在的材质 '{}'（加载期显式报错）",
+            spec.output[0]
+        )))?;
+        let out_b = table.id_by_name(&spec.output[1]).ok_or(ctx(format!(
+            "output 引用不存在的材质 '{}'（加载期显式报错）",
+            spec.output[1]
+        )))?;
+        let threshold = quantize_reaction_probability(spec.probability).map_err(ctx)?;
+        let side_a = expand_reaction_side(&spec.input[0], table).map_err(ctx)?;
+        let side_b = expand_reaction_side(&spec.input[1], table).map_err(ctx)?;
+        if side_a.len() == 1 && side_b.len() == 1 && side_a[0] == side_b[0] {
+            return Err(ctx(format!(
+                "自反应（'{}' + 自身）不受支持——发起方约定 id_a < id_b 天然排除（spec §1.4）",
+                spec.input[0]
+            )));
+        }
+        // 展开序确定：side_a 外层、side_b 内层，两侧都按 id 升序；tag 自交
+        // （a == b）静默跳过——那是 [burnable]×[burnable] 这类笛卡尔积的预期
+        // 副产物，与上面"显式同名对报错"不同。
+        for &a in &side_a {
+            for &b in &side_b {
+                if a == b {
+                    continue;
+                }
+                rules.push(if a < b {
+                    ReactionRule { a, b, out_a, out_b, threshold }
+                } else {
+                    ReactionRule { a: b, b: a, out_a: out_b, out_b: out_a, threshold }
+                });
+            }
+        }
+    }
+    Ok((ReactionTable::new(table, rules)?, fp))
+}
+
 // ---------- 场景文件 ----------
 
 #[derive(Deserialize)]
@@ -319,8 +442,16 @@ pub enum OpSpec {
     Emit { material: String, x: f64, y: f64, vx: f64, vy: f64, count: u16, jitter: f64 },
     /// `Op::Explode` 的 RON 表面形式（spec §6）：`x/y/r/power` 全部是整数
     /// （圆心格坐标、半径格数、初始能量），无需量化——core 侧 `Op::Explode`
-    /// 本就是纯整数签名，这里原样透传。
-    Explode { x: i32, y: i32, r: i32, power: u32 },
+    /// 本就是纯整数签名，这里原样透传。`max_durability` 缺省 **10**（对齐
+    /// Noita `ConfigExplosion.max_durability_to_destroy` 默认值，M2 spec §2.2）。
+    Explode {
+        x: i32,
+        y: i32,
+        r: i32,
+        power: u32,
+        #[serde(default = "default_max_durability")]
+        max_durability: u8,
+    },
 }
 
 /// 场景 RON 里的十进制小数 → Q16.16 定点（`Fx`），**round**（非截断）语义：
@@ -350,6 +481,11 @@ pub fn quantize_fx(v: f64) -> Result<Fx, String> {
         ));
     }
     Ok(Fx(raw as i32))
+}
+
+/// `OpSpec::Explode::max_durability` 的 serde 缺省（M2 spec §2.2）。
+fn default_max_durability() -> u8 {
+    10
 }
 
 #[derive(Deserialize, Clone)]
@@ -412,7 +548,7 @@ fn resolve_op(spec: &OpSpec, table: &MaterialTable) -> Result<Op, String> {
                 jitter: jitter_fx,
             }
         }
-        OpSpec::Explode { x, y, r, power } => {
+        OpSpec::Explode { x, y, r, power, max_durability } => {
             // 加载期范围校验（终审修复波）：`Op::Explode` 是纯整数签名，不经
             // quantize_fx，但 core 侧仍会静默腐化越界输入——`fire_ray` 用
             // `Fx::from_int(x)`/`Fx::from_int(y)` 把爆心转成 Fx（world.rs
@@ -437,7 +573,7 @@ fn resolve_op(spec: &OpSpec, table: &MaterialTable) -> Result<Op, String> {
                     i32::MAX as u32
                 ));
             }
-            Op::Explode { x: *x, y: *y, r: *r, power: *power }
+            Op::Explode { x: *x, y: *y, r: *r, power: *power, max_durability: *max_durability }
         }
     })
 }
@@ -536,9 +672,9 @@ mod tests {
 
     fn table_with_water() -> MaterialTable {
         MaterialTable::new(vec![
-            MaterialDef { blast_cost: 0, ..MaterialDef::base(0, "air", Category::Static, 0) },
-            MaterialDef { blast_cost: sand_core::BLAST_COST_INFINITE, ..MaterialDef::base(1, "wall", Category::Static, 100) },
-            MaterialDef { blast_cost: 1, ..MaterialDef::base(2, "water", Category::Liquid, 16) },
+            MaterialDef { hp: 0, ..MaterialDef::base(0, "air", Category::Static, 0) },
+            MaterialDef { hp: 100, durability: 15, ..MaterialDef::base(1, "wall", Category::Static, 100) },
+            MaterialDef { hp: 1, ..MaterialDef::base(2, "water", Category::Liquid, 16) },
         ])
         .unwrap()
     }
@@ -594,10 +730,12 @@ mod tests {
     #[test]
     fn resolve_op_explode_passes_integers_through_unquantized() {
         let t = table_with_water();
-        let spec = OpSpec::Explode { x: 100, y: 50, r: 12, power: 40 };
+        let spec = OpSpec::Explode { x: 100, y: 50, r: 12, power: 40, max_durability: 10 };
         let op = resolve_op(&spec, &t).unwrap();
         match op {
-            Op::Explode { x, y, r, power } => assert_eq!((x, y, r, power), (100, 50, 12, 40)),
+            Op::Explode { x, y, r, power, max_durability } => {
+                assert_eq!((x, y, r, power, max_durability), (100, 50, 12, 40, 10));
+            }
             other => panic!("期望 Op::Explode，实际 {other:?}"),
         }
     }
@@ -608,11 +746,11 @@ mod tests {
     fn resolve_op_rejects_explode_radius_out_of_range() {
         let t = table_with_water();
         assert!(
-            resolve_op(&OpSpec::Explode { x: 0, y: 0, r: 0, power: 10 }, &t).is_err(),
+            resolve_op(&OpSpec::Explode { x: 0, y: 0, r: 0, power: 10, max_durability: 10 }, &t).is_err(),
             "r=0（低于下限 1）必须被拒绝"
         );
         assert!(
-            resolve_op(&OpSpec::Explode { x: 0, y: 0, r: 32768, power: 10 }, &t).is_err(),
+            resolve_op(&OpSpec::Explode { x: 0, y: 0, r: 32768, power: 10, max_durability: 10 }, &t).is_err(),
             "r=32768（超出上限 32767）必须被拒绝"
         );
     }
@@ -621,12 +759,12 @@ mod tests {
     fn resolve_op_rejects_explode_power_out_of_range() {
         let t = table_with_water();
         assert!(
-            resolve_op(&OpSpec::Explode { x: 0, y: 0, r: 1, power: 0 }, &t).is_err(),
+            resolve_op(&OpSpec::Explode { x: 0, y: 0, r: 1, power: 0, max_durability: 10 }, &t).is_err(),
             "power=0（低于下限 1）必须被拒绝"
         );
         assert!(
             resolve_op(
-                &OpSpec::Explode { x: 0, y: 0, r: 1, power: i32::MAX as u32 + 1 },
+                &OpSpec::Explode { x: 0, y: 0, r: 1, power: i32::MAX as u32 + 1, max_durability: 10 },
                 &t
             )
             .is_err(),
@@ -634,10 +772,10 @@ mod tests {
         );
     }
 
-    // ==================== MatSpec：blast_cost 缺省 1（spec §6）====================
+    // ==================== MatSpec：hp 缺省 1（原 blast_cost，M2 spec §2.2）====================
 
     #[test]
-    fn materials_ron_without_blast_cost_field_defaults_to_one() {
+    fn materials_ron_without_hp_field_defaults_to_one() {
         let ron = "(materials:[\
             (id:0,name:\"air\",category:Static,density:0,color:(0,0,0)),\
             (id:1,name:\"wall\",category:Static,density:100,color:(0,0,0)),\
@@ -649,8 +787,9 @@ mod tests {
         std::fs::write(&path, ron).unwrap();
         let (t, _fp) = load_materials(path.to_str().unwrap()).unwrap();
         std::fs::remove_file(&path).ok();
-        assert_eq!(t.blast_cost(0), 1, "未声明 blast_cost 的材料应缺省为 1");
-        assert_eq!(t.blast_cost(1), 1);
+        assert_eq!(t.hp(0), 1, "未声明 hp 的材料应缺省为 1");
+        assert_eq!(t.hp(1), 1);
+        assert_eq!(t.durability(0), 0, "未声明 durability 缺省 0");
     }
 
     // ==================== MatSpec：vaporize_threshold 缺省 1.0（spec §6 汽化小节，用户裁决 2026-08-30）====================

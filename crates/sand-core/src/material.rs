@@ -5,13 +5,6 @@
 pub const MAT_AIR: u8 = 0;
 pub const MAT_WALL: u8 = 1;
 
-/// `blast_cost` 哨兵值：代表"当前简化版爆炸免疫"（spec §6：M1 里 wall 的
-/// `blast_cost`），任何有限 `power` 都无法满足 `energy >= cost`——射线撞上
-/// 这类材料必然断线，绝不摧毁。`u32::MAX` 而非某个"足够大"的有限值：语义
-/// 上就是"无限"，不依赖"场景 power 不会超过某个界"这类隐含假设。
-/// M2 反应表引入 durability/hardness 后此字段语义细化替换（设计 §12）。
-pub const BLAST_COST_INFINITE: u32 = u32::MAX;
-
 /// 液体单 tick 横移（色散）距离上限（Layer G Task 1，spec §3 / §5）。
 ///
 /// **这个常量是 P4 写域论证的一部分，不是手感旋钮**：`rules::side` 的探测与
@@ -39,11 +32,17 @@ pub struct MaterialDef {
     pub category: Category,
     pub density: u16,
     pub color: (u8, u8, u8),
-    /// 爆炸射线逐格能量消耗（spec §6）：air 0、water 1、sand 2、wall
-    /// [`BLAST_COST_INFINITE`]。RON 缺省 1（`sand-harness::scenario::MatSpec`
-    /// 的 serde 默认），字段本身在 core 侧不做取值校验——错误配置的后果只是
-    /// 打出手感不对的爆炸，不影响确定性红线。
-    pub blast_cost: u32,
+    /// 爆炸射线逐格能量消耗（M2 spec §2.2，原 `blast_cost` 改名）：Noita
+    /// 双层破坏模型的**能量池**一侧——射线逐格扣减 `hp`，能量不足即断线。
+    /// RON 缺省 1；core 侧不做取值校验（错误配置只是手感不对，不碰确定性）。
+    pub hp: u32,
+    /// 破坏门槛（M2 spec §2.2，Noita 双层破坏模型的**门槛**一侧）：
+    /// `durability > 操作侧 max_durability` ⇒ 完全免疫、射线断线。
+    /// "我能打穿多硬的东西"是操作侧参数（`Op::Explode::max_durability`），
+    /// 门槛不写死在材质侧。RON 缺省 0（谁都打得动）；wall 取 15（高于任何
+    /// 法术上限）——原 `BLAST_COST_INFINITE` 哨兵退役，语义比"无限能量消耗"
+    /// 直白，且不再依赖"power 不会超过某个界"的隐含假设。
+    pub durability: u8,
     /// 近心汽化阈值（spec §6 汽化小节，用户裁决 2026-08-30）：`explode::fire_ray`
     /// 摧毁该材质格子时，若"扣费后剩余能量 / power"的比例**严格超过**此阈
     /// 值，格子直接删除、不生成粒子（质量确定性蒸发，计入
@@ -120,7 +119,8 @@ impl MaterialDef {
             category,
             density,
             color: (0, 0, 0),
-            blast_cost: 1,
+            hp: 1,
+            durability: 0,
             vaporize_threshold: 255,
             dispersion: 1,
             splash_chance: 0,
@@ -208,9 +208,14 @@ impl MaterialTable {
         self.defs[id as usize].color
     }
 
-    /// 爆炸射线逐格能量消耗（spec §6）；[`BLAST_COST_INFINITE`] 代表免疫。
-    pub fn blast_cost(&self, id: u8) -> u32 {
-        self.defs[id as usize].blast_cost
+    /// 爆炸射线逐格能量消耗（M2 spec §2.2 双层破坏模型的能量池一侧）。
+    pub fn hp(&self, id: u8) -> u32 {
+        self.defs[id as usize].hp
+    }
+
+    /// 破坏门槛（M2 spec §2.2）：超过操作侧 `max_durability` 即完全免疫。
+    pub fn durability(&self, id: u8) -> u8 {
+        self.defs[id as usize].durability
     }
 
     /// 近心汽化阈值（spec §6 汽化小节）；量化后的 u8，255 = 永不汽化。
@@ -297,17 +302,20 @@ mod tests {
         assert!(MaterialTable::new(vec![def(0, "wall", Category::Static, 0), def(1, "air", Category::Static, 0)]).is_err());
     }
 
-    // ==================== blast_cost（M1 Task 6）====================
+    // ==================== hp / durability（M2 spec §2.2 双层破坏）====================
 
     #[test]
-    fn blast_cost_accessor_returns_declared_value_including_infinite_sentinel() {
-        let mk = |id, name, cost| MaterialDef {
-            blast_cost: cost,
+    fn hp_and_durability_accessors_return_declared_values() {
+        let mk = |id, name, hp, durability| MaterialDef {
+            hp,
+            durability,
             ..MaterialDef::base(id, name, Category::Static, 0)
         };
-        let t = MaterialTable::new(vec![mk(0, "air", 0), mk(1, "wall", BLAST_COST_INFINITE)]).unwrap();
-        assert_eq!(t.blast_cost(0), 0);
-        assert_eq!(t.blast_cost(1), BLAST_COST_INFINITE);
+        let t = MaterialTable::new(vec![mk(0, "air", 0, 0), mk(1, "wall", 100, 15)]).unwrap();
+        assert_eq!(t.hp(0), 0);
+        assert_eq!(t.hp(1), 100);
+        assert_eq!(t.durability(0), 0);
+        assert_eq!(t.durability(1), 15, "wall 门槛 15：高于任何法术上限（哨兵退役）");
     }
 
     // ==================== vaporize_threshold（近心汽化，用户裁决 2026-08-30）====================

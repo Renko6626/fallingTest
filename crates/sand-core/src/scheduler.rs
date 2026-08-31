@@ -5,6 +5,7 @@ use rayon::prelude::*;
 
 use crate::chunk::DirtyRect;
 use crate::material::MaterialTable;
+use crate::reaction::ReactionTable;
 use crate::rng;
 use crate::rules;
 use crate::window::{ChunksPtr, WriteWindow};
@@ -34,9 +35,11 @@ fn phase_order(tick: u64) -> [(usize, usize); 4] {
 /// `pub(crate)` 类型，本函数保持 `pub` 只会造成"签名公开但外部拿不到实参
 /// 类型"的私有类型泄漏警告，收紧到 `pub(crate)` 与实际可达性一致
 /// （唯一调用方是同 crate 的 `Sim::step`）。
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn step(
     world: &mut World,
     table: &MaterialTable,
+    reactions: &ReactionTable,
     pool: &rayon::ThreadPool,
     scan: ScanMode,
     ops: &[Op],
@@ -88,6 +91,7 @@ pub(crate) fn step(
                 rules::update_chunk(
                     &win,
                     table,
+                    reactions,
                     tick,
                     fseed,
                     start,

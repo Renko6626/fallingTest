@@ -12,12 +12,13 @@ use std::process::ExitCode;
 
 use sand_harness::render::{render_gif, RenderOpts};
 use sand_harness::runner;
-use sand_harness::scenario::{load_materials, load_scenario};
+use sand_harness::scenario::{load_materials, load_reactions, load_scenario};
 
 struct Args {
     cmd: String,
     scenario: String,
     materials: String,
+    reactions: String,
     ticks: Option<u64>,
     threads: usize,
     golden: Option<String>,
@@ -40,6 +41,7 @@ fn parse_args() -> Result<Args, String> {
         cmd,
         scenario,
         materials: "data/materials.ron".into(),
+        reactions: "data/reactions.ron".into(),
         ticks: None,
         threads: std::thread::available_parallelism().map(|n| n.get().min(8)).unwrap_or(4),
         golden: None,
@@ -57,6 +59,7 @@ fn parse_args() -> Result<Args, String> {
         let mut val = || it.next().ok_or(format!("{flag} 缺参数"));
         match flag.as_str() {
             "--materials" => a.materials = val()?,
+            "--reactions" => a.reactions = val()?,
             "--ticks" => a.ticks = Some(val()?.parse().map_err(|e| format!("--ticks: {e}"))?),
             "--threads" => a.threads = val()?.parse().map_err(|e| format!("--threads: {e}"))?,
             "--golden" => a.golden = Some(val()?),
@@ -111,6 +114,7 @@ fn run() -> Result<(), String> {
     }
     let a = parse_args()?;
     let (table, materials_fp) = load_materials(&a.materials)?;
+    let (reactions, reactions_fp) = load_reactions(&a.reactions, &table)?;
     let sc = load_scenario(&a.scenario, &table)?;
     let ticks = a.ticks.unwrap_or(sc.ticks);
 
@@ -123,7 +127,7 @@ fn run() -> Result<(), String> {
                 sc.world.1 * 64,
                 a.threads
             );
-            runner::synctest(&sc, &table, a.threads, ticks)?;
+            runner::synctest(&sc, &table, &reactions, a.threads, ticks)?;
             println!("SyncTest 通过：{ticks} tick 零分叉（scenario_fp {:016x}）", sc.fingerprint);
         }
         "replay" | "hashrun" => {
@@ -131,7 +135,8 @@ fn run() -> Result<(), String> {
                 runner::run(
                     &sc,
                     &table,
-                    materials_fp,
+                    &reactions,
+                    runner::Fingerprints { materials: materials_fp, reactions: reactions_fp },
                     a.threads,
                     a.scan,
                     ticks,
@@ -154,7 +159,7 @@ fn run() -> Result<(), String> {
         }
         "render" => {
             let out = a.out.ok_or("render 需要 -o 输出路径")?;
-            let mut sim = runner::build_sim(&sc, &table, a.threads, sand_core::ScanMode::LiveRect)?;
+            let mut sim = runner::build_sim(&sc, &table, &reactions, a.threads, sand_core::ScanMode::LiveRect)?;
             let opts =
                 RenderOpts { every: a.every.max(1), scale: a.scale.max(1), fps: a.fps, from: a.from, out };
             let frames = render_gif(&sc, &table, &mut sim, ticks, &opts)?;

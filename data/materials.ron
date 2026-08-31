@@ -1,12 +1,13 @@
 // 材料表（P5：数据即确定性输入，内容哈希入指纹）。
 // id 显式声明，禁依赖声明顺序；air 必须 id=0，wall 必须 id=1（core 校验）。
 //
-// blast_cost（M1 Task 6，spec §6）：Op::Explode 射线逐格能量消耗。
-// air 0 / water 1 / sand 2 / wall 4294967295（u32::MAX 哨兵，代表 M1 简化版
-// 爆炸免疫——见 sand-core::material::BLAST_COST_INFINITE；M2 反应表引入
-// durability/hardness 后替换，设计 §12）。字段新增非语义变更：既有场景的
-// 网格演化逻辑不受影响，但本文件内容哈希（materials_fp）随之改变——受影响
-// golden 的 materials_fp 行已按 spec §9 程序重录（状态哈希序列本身验证不变）。
+// hp + durability（M2 spec §2.2，Noita 双层破坏；原 blast_cost 改名 hp）：
+// hp = 射线逐格能量消耗（能量池），durability = 破坏门槛——
+// `durability > Op::Explode.max_durability`（场景 RON 缺省 10）即完全免疫、
+// 射线断线。wall 取 durability 15（高于任何法术上限）替代原 u32::MAX 哨兵
+// （BLAST_COST_INFINITE 已退役）：语义比"无限能量消耗"直白，且不再依赖
+// "power 不会超过某个界"的隐含假设。无爆炸场景 golden 状态哈希逐位不变
+// （2026-08-31 diff 取证），explosion_ci 因门槛语义变更全变（预期内）。
 //
 // vaporize_threshold（spec §6 汽化小节，用户裁决 2026-08-30）：爆炸射线剩余
 // 能量比例（remaining/power）严格超过此阈值即汽化（删除、不生成粒子），做出
@@ -51,22 +52,22 @@
 // 本文件内容哈希（materials_fp）随之改变，全部 golden 已重录。
 (
     materials: [
-        (id: 0, name: "air",   category: Static, density: 0,   color: (16, 16, 24),    blast_cost: 0),
-        (id: 1, name: "wall",  category: Static, density: 100, color: (110, 106, 118), blast_cost: 4294967295),
-        (id: 2, name: "sand",  category: Powder, density: 40,  color: (214, 176, 96),  blast_cost: 2, vaporize_threshold: 0.95, splash_chance: 0.1),
-        (id: 3, name: "water", category: Liquid, density: 16,  color: (48, 108, 220),  blast_cost: 1, vaporize_threshold: 0.4, dispersion: 5, splash_chance: 0.6),
+        (id: 0, name: "air",   category: Static, density: 0,   color: (16, 16, 24),    hp: 0),
+        (id: 1, name: "wall",  category: Static, density: 100, color: (110, 106, 118), hp: 100, durability: 15),
+        (id: 2, name: "sand",  category: Powder, density: 40,  color: (214, 176, 96),  hp: 2, vaporize_threshold: 0.95, splash_chance: 0.1),
+        (id: 3, name: "water", category: Liquid, density: 16,  color: (48, 108, 220),  hp: 1, vaporize_threshold: 0.4, dispersion: 5, splash_chance: 0.6),
         // ---------- M2 材质最小集（spec §1.3，用户裁决 2026-08-31）----------
         // Task 1 先落材质本体与 tag；燃烧参数（fire_hp/lifetime/fire_temp/
         // fire_chance/extinguisher）随 Task 3 一并声明——Task 1 里没人消费它们，
         // 先给会让"golden 只变 fp 行"的逐位取证掺进无意义的噪声。
         // oil：可燃液体，密度低于水（浮油）；色散取 2（Noita 参考：油低于水，
         // noita-deep-dive.md:242）。
-        (id: 4, name: "oil",   category: Liquid, density: 12,  color: (96, 78, 40),   blast_cost: 1, dispersion: 2, tags: ["burnable"]),
+        (id: 4, name: "oil",   category: Liquid, density: 12,  color: (96, 78, 40),   hp: 1, dispersion: 2, tags: ["burnable"]),
         // wood：可燃 Static，未点燃时与 wall 同样零成本退出 eval。
-        (id: 5, name: "wood",  category: Static, density: 60,  color: (122, 86, 48),  blast_cost: 3, tags: ["burnable"]),
+        (id: 5, name: "wood",  category: Static, density: 60,  color: (122, 86, 48),  hp: 3, tags: ["burnable"]),
         // fire/smoke：Gas，上浮 + 水平扩散恒 1 格（不声明 dispersion，加载期
         // 校验禁止；spec §3.1）。fire 密度最低——烟从火焰里穿升不合理。
-        (id: 6, name: "fire",  category: Gas,    density: 1,   color: (236, 120, 24), blast_cost: 0),
-        (id: 7, name: "smoke", category: Gas,    density: 2,   color: (70, 70, 76),   blast_cost: 0),
+        (id: 6, name: "fire",  category: Gas,    density: 1,   color: (236, 120, 24), hp: 0),
+        (id: 7, name: "smoke", category: Gas,    density: 2,   color: (70, 70, 76),   hp: 0),
     ],
 )

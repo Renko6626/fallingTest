@@ -16,7 +16,7 @@
 |---|---|---|
 | 0 | 数据层：材质新字段 + `reactions.ron` + 加载期契约 | ✅ 2026-08-31（材质字段部分；`reactions.ron` 随 Task 2） |
 | 1 | 气体：`Category::Gas` + `gas_step` | ✅ 2026-08-31（GIF 目检待用户） |
-| 2 | 反应表：tag 展开 + 发起方约定 + 结算；`blast_cost` → `hp`+`durability` | ⬜ |
+| 2 | 反应表：tag 展开 + 发起方约定 + 结算；`blast_cost` → `hp`+`durability` | ✅ 2026-08-31 |
 | 3 | 燃烧：`counter` 位段 + 点燃/推进/衰变链 | ⬜ |
 
 Task 0 是 1–3 的共同地基，不单独验收，随 Task 1 一起落地。

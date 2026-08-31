@@ -3,7 +3,7 @@
 //! 仅允许在显式声明"语义变更、hash 序列作废"的变更里更新。
 
 use sand_harness::runner;
-use sand_harness::scenario::{load_materials, load_scenario};
+use sand_harness::scenario::{load_materials, load_reactions, load_scenario};
 
 fn repo_path(rel: &str) -> String {
     format!("{}/../../{rel}", env!("CARGO_MANIFEST_DIR"))
@@ -11,12 +11,14 @@ fn repo_path(rel: &str) -> String {
 
 fn check(scenario: &str, golden: &str) {
     let (table, materials_fp) = load_materials(&repo_path("data/materials.ron")).unwrap();
+    let (reactions, reactions_fp) = load_reactions(&repo_path("data/reactions.ron"), &table).unwrap();
     let sc = load_scenario(&repo_path(scenario), &table).unwrap();
     // LiveRect 跑 golden：与 M0 时代（ChunkSleep）哈希一字不差是 O1 等价性的最硬证据
     let report = runner::run(
         &sc,
         &table,
-        materials_fp,
+        &reactions,
+        runner::Fingerprints { materials: materials_fp, reactions: reactions_fp },
         4,
         sand_core::ScanMode::LiveRect,
         sc.ticks,

@@ -2,8 +2,13 @@
 
 mod common;
 
-use common::{sim, sim_with_table, test_table_with_gas, test_table_with_splash, test_table_with_water_dispersion, SAND, SMOKE, WATER};
+use common::{
+    sim, sim_with_reactions, sim_with_table, test_table_with_gas, test_table_with_splash,
+    test_table_with_water_dispersion, SAND, SMOKE, WATER,
+};
+use sand_core::{Category, MaterialDef, MaterialTable, ReactionRule, ReactionTable};
 use sand_core::{Fx, Op, ScanMode, DISPERSION_MAX, G_ACCEL, MAT_AIR, MAT_WALL, VEL_ONE, V_MAX_CELL};
+
 
 fn floor_op(w: i32, h: i32) -> Op {
     Op::Fill { material: MAT_WALL, x0: 0, y0: h - 4, x1: w - 1, y1: h - 4 }
@@ -515,6 +520,123 @@ fn trapped_gas_lets_chunk_sleep() {
             c.next_dirty.snapshot()
         );
     }
+}
+
+// ==================== M2 Task 2：反应表（spec §4）====================
+
+/// 反应测试材质表：基线 + smoke(4) + fire(5)。fire 故意排在 smoke 之后——
+/// 让 water(3) < smoke(4) < fire(5)，water 对两者都是发起方。
+const FIRE: u8 = 5;
+
+fn fire_table() -> MaterialTable {
+    MaterialTable::new(vec![
+        MaterialDef::base(0, "air", Category::Static, 0),
+        MaterialDef::base(1, "wall", Category::Static, 100),
+        MaterialDef::base(SAND, "sand", Category::Powder, 40),
+        MaterialDef::base(WATER, "water", Category::Liquid, 16),
+        MaterialDef::base(SMOKE, "smoke", Category::Gas, 2),
+        MaterialDef::base(FIRE, "fire", Category::Gas, 1),
+    ])
+    .unwrap()
+}
+
+/// 发起方约定防双结算（spec §4.2）：water + fire 相邻、概率 255（必发），
+/// 一 tick 后两格**恰各转化一次**——water 结算出 water + smoke；若正反双向
+/// 注册（原型 reaction.py:44-46 的反例），fire 侧会再结算一次。
+#[test]
+fn initiator_convention_prevents_double_settlement() {
+    let t = fire_table();
+    let reactions = ReactionTable::new(
+        &t,
+        vec![ReactionRule { a: WATER, b: FIRE, out_a: WATER, out_b: SMOKE, threshold: 255 }],
+    )
+    .unwrap();
+    let mut s = sim_with_reactions(2, 2, 3, 1, ScanMode::LiveRect, t, reactions);
+    // 1 格深的口袋：water 四面围死（下/左/右墙），fire 在其上方。
+    s.apply_setup(&[
+        Op::Fill { material: MAT_WALL, x0: 39, y0: 100, x1: 39, y1: 101 },
+        Op::Fill { material: MAT_WALL, x0: 41, y0: 100, x1: 41, y1: 101 },
+        Op::Brush { material: MAT_WALL, x: 40, y: 101, r: 0 },
+        Op::Brush { material: WATER, x: 40, y: 100, r: 0 },
+        Op::Brush { material: FIRE, x: 40, y: 99, r: 0 },
+    ]);
+    s.step(&[]);
+    assert_eq!(s.world().cell(40, 100).material(), WATER, "发起方产物 = water（1:1）");
+    assert_eq!(s.world().cell(40, 99).material(), SMOKE, "邻居产物 = smoke");
+    assert_eq!(s.world().count_material(FIRE), 0);
+    assert_eq!(s.world().count_material(SMOKE), 1, "恰一次结算——双结算会在别处再冒 smoke");
+    assert_eq!(s.world().count_material(WATER), 1);
+}
+
+/// 已盖当前戳的格本 tick 不再作为反应对象（spec §4.5 审阅补漏）：
+/// water–fire–water 一行，第一个 water 把 fire 转成 smoke（盖戳）；若第二个
+/// water 还能对这个新 smoke 结算 water+smoke→sand+sand，就是同格一 tick 二次
+/// 转化。断言：不产生任何 sand。
+#[test]
+fn reaction_skips_neighbors_stamped_this_tick() {
+    let t = fire_table();
+    let reactions = ReactionTable::new(
+        &t,
+        vec![
+            ReactionRule { a: WATER, b: FIRE, out_a: WATER, out_b: SMOKE, threshold: 255 },
+            ReactionRule { a: WATER, b: SMOKE, out_a: SAND, out_b: SAND, threshold: 255 },
+        ],
+    )
+    .unwrap();
+    let mut s = sim_with_reactions(2, 2, 5, 1, ScanMode::LiveRect, t, reactions);
+    // 密闭 3 格横槽：wall | water fire water | wall，底与顶全墙。
+    s.apply_setup(&[
+        Op::Fill { material: MAT_WALL, x0: 37, y0: 98, x1: 43, y1: 102 },
+        Op::Brush { material: WATER, x: 39, y: 100, r: 0 },
+        Op::Brush { material: FIRE, x: 40, y: 100, r: 0 },
+        Op::Brush { material: WATER, x: 41, y: 100, r: 0 },
+    ]);
+    s.step(&[]);
+    assert_eq!(s.world().count_material(SAND), 0, "戳跳过失效：产物同 tick 被二次结算成 sand");
+    assert_eq!(s.world().count_material(SMOKE), 1);
+    assert_eq!(s.world().count_material(WATER), 2);
+    // 下一 tick 戳过期，water+smoke 才允许结算（机制是"一格一 tick 至多一次"，
+    // 不是"永不"）。
+    s.step(&[]);
+    assert_eq!(s.world().count_material(SAND), 2, "次 tick 应正常结算 water+smoke");
+}
+
+/// 分布回归（spec §7.2，本 spec 新立的规矩）：反应触发率贴近声明概率。
+/// RNG salt 维度缺失这类 bug 两端一样地错、SyncTest 抓不到——必须验分布。
+/// 全图墙背景里刻出 ~1600 个隔离的 water/fire 竖直对，threshold 128
+/// （p = 128/255 ≈ 0.502），一 tick 后统计转化率。
+#[test]
+fn reaction_rate_matches_declared_probability() {
+    let t = fire_table();
+    let reactions = ReactionTable::new(
+        &t,
+        vec![ReactionRule { a: WATER, b: FIRE, out_a: WATER, out_b: SMOKE, threshold: 128 }],
+    )
+    .unwrap();
+    let mut s = sim_with_reactions(2, 2, 9, 4, ScanMode::LiveRect, t, reactions);
+    let mut setup = vec![Op::Fill { material: MAT_WALL, x0: 0, y0: 0, x1: 127, y1: 127 }];
+    let mut pairs = 0u32;
+    let mut x = 2;
+    while x < 126 {
+        let mut y = 2;
+        while y < 125 {
+            setup.push(Op::Brush { material: WATER, x, y: y + 1, r: 0 });
+            setup.push(Op::Brush { material: FIRE, x, y, r: 0 });
+            pairs += 1;
+            y += 3;
+        }
+        x += 3;
+    }
+    s.apply_setup(&setup);
+    s.step(&[]);
+    let hits = s.world().count_material(SMOKE) as f64;
+    let p = hits / pairs as f64;
+    let expect = 128.0 / 255.0;
+    // n≈1722 ⇒ σ = √(p(1−p)/n) ≈ 1.2%，取 4σ ≈ 4.8%
+    assert!(
+        (p - expect).abs() < 0.048,
+        "触发率 {p:.4}（{hits}/{pairs}）偏离声明概率 {expect:.4} 超 4σ——salt/attempt 维度出问题了？"
+    );
 }
 
 /// 深井：左右墙 + 地板，井口在 y0，水从井口落到地板。

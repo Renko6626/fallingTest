@@ -21,15 +21,16 @@ pub enum Op {
     /// harness 场景 RON 里写十进制小数，加载期一次性 round 量化为本处的
     /// `Fx`（`sand-harness::scenario::quantize_fx`）——core 边界只见 `Fx`。
     Emit { material: u8, x: Fx, y: Fx, vx: Fx, vy: Fx, count: u16, jitter: Fx },
-    /// 爆炸（spec §6，Noita 射线模型）：以 `(x, y)` 为圆心、半径 `r` 格的
-    /// Bresenham 圆周每格发一条 DDA 射线，射线初始能量 `power`，逐格消耗
-    /// `MaterialTable::blast_cost`，能量 ≥ 格消耗即摧毁该格（置 air + 溅射
-    /// 粒子，或按 `MaterialTable::vaporize_threshold` 判定汽化——删除、不
-    /// 溅射，用户裁决 2026-08-30，见 `explode::fire_ray` 文档），能量耗尽或撞
-    /// `BLAST_COST_INFINITE` 材料（M1 里即 wall）断线。
-    /// 整数签名——圆心/半径是格坐标，不经过 `Fx` 量化（与 `Op::Emit` 的
-    /// 连续坐标不同，爆炸是格对齐的离散几何）。
-    Explode { x: i32, y: i32, r: i32, power: u32 },
+    /// 爆炸（spec §6，Noita 射线模型；M2 spec §2.2 双层破坏）：以 `(x, y)`
+    /// 为圆心、半径 `r` 格的 Bresenham 圆周每格发一条 DDA 射线，射线初始能量
+    /// `power`。逐格判定：`durability > max_durability` ⇒ 断线（门槛免疫，
+    /// 原 `BLAST_COST_INFINITE` 哨兵语义的替代）；否则按 `MaterialTable::hp`
+    /// 扣能量，能量 ≥ 格消耗即摧毁该格（置 air + 溅射粒子，或按
+    /// `vaporize_threshold` 判定汽化）。`max_durability` 是**操作侧**参数
+    /// （"我能打穿多硬的东西"），场景 RON 缺省 10（对齐 Noita
+    /// `ConfigExplosion.max_durability_to_destroy` 默认值）。
+    /// 整数签名——圆心/半径是格坐标，不经过 `Fx` 量化。
+    Explode { x: i32, y: i32, r: i32, power: u32, max_durability: u8 },
 }
 
 /// 生成队列条目（M1 spec §4 第 3 步 a）：由 `Op::Emit`/`Op::Explode`
@@ -213,8 +214,8 @@ impl World {
             Op::Emit { material, x, y, vx, vy, count, jitter } => {
                 emit::apply_emit(material, x, y, vx, vy, count, jitter, stamp, fseed, op_idx, spawns);
             }
-            Op::Explode { x, y, r, power } => {
-                explode::apply_explode(self, table, x, y, r, power, stamp, fseed, op_idx, spawns);
+            Op::Explode { x, y, r, power, max_durability } => {
+                explode::apply_explode(self, table, x, y, r, power, max_durability, stamp, fseed, op_idx, spawns);
             }
         }
     }

@@ -152,20 +152,15 @@ mod tests {
     use crate::world::{Op, World};
 
     fn test_table() -> MaterialTable {
-        // blast_cost 取 spec §6 的口径值（air 0 / water 1 / sand 2 / wall
-        // 免疫），供本文件的 Op::Explode 测试直接复用；Emit 测试不关心该
-        // 字段取值。
-        use crate::material::BLAST_COST_INFINITE;
-        // 255 = 永不汽化（base 缺省）：本表供 blast_cost/断线/守恒等既有行为
-        // 测试复用，不应引入意料之外的汽化分支——专门测汽化差异的用例另建
-        // 材料表（见"vaporize_threshold"分节）。
-        let def = |id: u8, name: &str, category: Category, density: u16, blast_cost: u32| MaterialDef {
-            blast_cost,
+        // hp 取 spec §6 的口径值（air 0 / water 1 / sand 2），wall 走门槛
+        // 免疫（durability 15，M2 spec §2.2 哨兵退役）；Emit 测试不关心取值。
+        let def = |id: u8, name: &str, category: Category, density: u16, hp: u32| MaterialDef {
+            hp,
             ..MaterialDef::base(id, name, category, density)
         };
         MaterialTable::new(vec![
             def(0, "air", Category::Static, 0, 0),
-            def(1, "wall", Category::Static, 100, BLAST_COST_INFINITE),
+            MaterialDef { hp: 100, durability: 15, ..MaterialDef::base(1, "wall", Category::Static, 100) },
             def(2, "water", Category::Liquid, 16, 1),
             def(3, "sand", Category::Powder, 40, 2),
         ])

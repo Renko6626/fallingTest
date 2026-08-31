@@ -99,6 +99,23 @@ pub const STREAM_SCANDIR: u32 = 4;
 /// 不需要 `salt`：每 cell 每 tick 至多触发一次溅射，起始坐标已经唯一。
 pub const STREAM_SPLASH: u32 = 5;
 
+/// 反应结算流（M2 spec §4.4）。调用点：`rules.rs::Ctx::react`——发起格在
+/// **落点坐标**上对 4 个邻居各掷一次。
+///
+/// **`salt` = 邻居方向索引 0–3，这一维不是可选优化**：同一格同一 tick 要对
+/// 4 个邻居掷 4 次骰（charter §11 翻案 4 点名的"同帧同格多次掷骰"），漏了它
+/// 四邻掷出同值，反应沿固定方向偏。外部实例：Noita 因同类问题（同坐标二次
+/// 播种导致序列重放）使宝箱近半战利品永不出现、扛了数年才修
+/// （`docs/reference/noita-grid-api-and-rng.md` §5.2）。
+///
+/// `attempt` = 反应条目序号：同对材质挂多条反应时按加载序逐条掷骰、取第一个
+/// 命中（spec §4.1），attempt 维度使各条概率语义相互独立。
+///
+/// key 取发起格**落点**坐标：结算发生在运动之后（spec §4.1），落点在同一
+/// tick 内每 cell 唯一（撞停/静止格互斥占据），与 [`STREAM_FALLSTEP`] 的
+/// 起点唯一性论证对偶。编号 6 接续 0–5；7 预留给 Task 3 的 `STREAM_IGNITE`。
+pub const STREAM_REACT: u32 = 6;
+
 /// 本 tick 的行方向全局相位（0 或 1）；行方向 = `(y ^ scan_flip(fseed)) & 1 == 0`
 /// 为左→右。见 [`STREAM_SCANDIR`] 的完整论证。
 ///

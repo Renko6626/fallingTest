@@ -180,8 +180,8 @@ mod tests {
 
     fn table() -> MaterialTable {
         MaterialTable::new(vec![
-            MaterialDef { blast_cost: 0, ..MaterialDef::base(0, "air", Category::Static, 0) },
-            MaterialDef { blast_cost: crate::material::BLAST_COST_INFINITE, ..MaterialDef::base(1, "wall", Category::Static, 100) },
+            MaterialDef { hp: 0, ..MaterialDef::base(0, "air", Category::Static, 0) },
+            MaterialDef { hp: 100, durability: 15, ..MaterialDef::base(1, "wall", Category::Static, 100) },
         ])
         .unwrap()
     }

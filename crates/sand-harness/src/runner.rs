@@ -2,7 +2,7 @@
 
 use std::time::Instant;
 
-use sand_core::{hash, InitConfig, MaterialTable, ScanMode, Sim};
+use sand_core::{hash, InitConfig, MaterialTable, ReactionTable, ScanMode, Sim};
 
 use crate::scenario::Scenario;
 
@@ -34,6 +34,7 @@ impl Default for HashStream {
 pub fn build_sim(
     sc: &Scenario,
     table: &MaterialTable,
+    reactions: &ReactionTable,
     threads: usize,
     scan: ScanMode,
 ) -> Result<Sim, String> {
@@ -44,9 +45,17 @@ pub fn build_sim(
         threads,
         scan,
     };
-    let mut sim = Sim::new(&cfg, table.clone())?;
+    let mut sim = Sim::new(&cfg, table.clone(), reactions.clone())?;
     sim.apply_setup(&sc.setup);
     Ok(sim)
+}
+
+/// 数据表指纹组（P5 握手语义）：golden 报告头逐行输出。M2 起反应表与材料表
+/// 同等待遇（spec §2.4"指纹"条）。
+#[derive(Clone, Copy, Debug)]
+pub struct Fingerprints {
+    pub materials: u64,
+    pub reactions: u64,
 }
 
 pub struct RunReport {
@@ -64,20 +73,23 @@ pub struct RunReport {
 /// `Sim::state_hash()`。M1 golden 重录取证专用（spec §9 两步程序）——新代码
 /// 以 `grid_only=true` 跑旧 golden 场景，逐 tick 序列须与改动前（`state_hash`
 /// 即等价于当时的 `grid_hash`，因为彼时尚无粒子）一字不差。
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     sc: &Scenario,
     table: &MaterialTable,
-    materials_fp: u64,
+    reactions: &ReactionTable,
+    fps: Fingerprints,
     threads: usize,
     scan: ScanMode,
     ticks: u64,
     hs: HashStream,
 ) -> Result<RunReport, String> {
-    let mut sim = build_sim(sc, table, threads, scan)?;
+    let mut sim = build_sim(sc, table, reactions, threads, scan)?;
     let mut lines = vec![
         format!("scenario {}", sc.name),
         format!("scenario_fp {:016x}", sc.fingerprint),
-        format!("materials_fp {materials_fp:016x}"),
+        format!("materials_fp {:016x}", fps.materials),
+        format!("reactions_fp {:016x}", fps.reactions),
         format!("world {}x{} seed {} ticks {}", sc.world.0 * 64, sc.world.1 * 64, sc.seed, ticks),
     ];
     let hash_of = |sim: &sand_core::Sim| if hs.grid_only { sim.grid_hash() } else { sim.state_hash() };
@@ -103,6 +115,7 @@ pub fn run(
 pub fn synctest(
     sc: &Scenario,
     table: &MaterialTable,
+    reactions: &ReactionTable,
     threads_n: usize,
     ticks: u64,
 ) -> Result<(), String> {
@@ -116,7 +129,7 @@ pub fn synctest(
     ];
     let mut sims = configs
         .iter()
-        .map(|&(t, sk)| build_sim(sc, table, t, sk))
+        .map(|&(t, sk)| build_sim(sc, table, reactions, t, sk))
         .collect::<Result<Vec<_>, _>>()?;
     let t0 = Instant::now();
     for tick in 0..ticks {

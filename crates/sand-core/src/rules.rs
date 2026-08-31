@@ -6,7 +6,8 @@ use crate::emit::emit_jitter;
 use crate::fixed::{Fx, HALF_CELL};
 use crate::material::{Category, MaterialTable, DISPERSION_MAX, MAT_AIR};
 use crate::particle::clamp_speed;
-use crate::rng::{rng_u32, scan_flip, STREAM_DIAG, STREAM_FALLSTEP, STREAM_SPLASH};
+use crate::reaction::ReactionTable;
+use crate::rng::{rng_u32, scan_flip, STREAM_DIAG, STREAM_FALLSTEP, STREAM_REACT, STREAM_SPLASH};
 use crate::window::WriteWindow;
 use crate::world::SpawnRequest;
 
@@ -71,9 +72,14 @@ fn substeps(fseed: u32, v1: u8, x: i32, y: i32) -> u32 {
 struct Ctx<'a> {
     win: &'a WriteWindow,
     table: &'a MaterialTable,
+    reactions: &'a ReactionTable,
     fseed: u32,
     stamp: u8,
 }
+
+/// 反应邻域检查序（M2 spec §4.1）：**编译期常量数组**，上、下、左、右。
+/// 顺序即语义的一部分（第一个命中即 break）——改序 = 改行为 = golden 作废。
+const NEIGHBORS4: [(i32, i32); 4] = [(0, -1), (0, 1), (-1, 0), (1, 0)];
 
 /// 扫描一个 chunk。ox/oy 为 chunk 全局原点；`start` 为起始扫描矩形——
 /// Full/ChunkSleep 传 FULL（扩张天然无效），LiveRect 传 dirty ∪ next_dirty 快照。
@@ -88,9 +94,11 @@ struct Ctx<'a> {
 /// （= `(seed, tick)` 的纯函数），`y` 是全局行号，两者都与起始矩形、脏状态、
 /// chunk 是否唤醒、线程调度无关。**禁止**把活矩形/脏状态/chunk 索引掺进方向判定
 /// （charter §11 实施期决策第 3 条的红线，详见 `rng::STREAM_SCANDIR`）。
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn update_chunk(
     win: &WriteWindow,
     table: &MaterialTable,
+    reactions: &ReactionTable,
     tick: u64,
     fseed: u32,
     start: DirtyRect,
@@ -104,7 +112,7 @@ pub(crate) fn update_chunk(
     // 本 tick 的行方向全局相位（charter §11 实施期决策第 3 条）。每 tick 掷一次，
     // 与 chunk 无关——同一行在所有 chunk 必须同向，见 rng::STREAM_SCANDIR 文档。
     let flip = scan_flip(fseed);
-    let ctx = Ctx { win, table, fseed, stamp: (tick % 256) as u8 };
+    let ctx = Ctx { win, table, reactions, fseed, stamp: (tick % 256) as u8 };
     // 自下而上；底边在扫描开始时固定（向下写入必属已访问区）
     let mut ly = start.y1 as i32;
     while ly >= win.live_rect().y0 as i32 {
@@ -148,49 +156,116 @@ impl Ctx<'_> {
     fn eval(&self, x: i32, y: i32) {
         let c = self.win.get(x, y);
         let m = c.material();
-        if self.table.is_static(m) || c.stamp() == self.stamp {
+        // 准入（M2 spec §2.6）：世代戳 → per-material `needs_eval`（单次查表
+        // = `!is_static ∨ initiates_reaction`，加载期预计算；Task 3 再并
+        // `counter > 0` 位测试）。空反应表下退化为原先的 `is_static` 早退，
+        // 逐位等价（golden 取证 2026-08-31）。"是否静态"从准入条件降为运动
+        // 分支的条件——Static 发起方（如未来的 acid 目标）原地结算反应。
+        if c.stamp() == self.stamp || !self.reactions.needs_eval(m) {
             return;
         }
         let cat = self.table.category(m);
-        if cat == Category::Gas {
-            // 气体（M2 spec §3.2）：恒 1 格/tick、不进 substeps 循环、不碰速度
-            // 位段——在重力积分之前分流，STREAM_FALLSTEP 对气体一次也不掷。
-            self.gas_step(x, y, c);
+        let (cx, cy) = match cat {
+            // 静态发起方：不动，原地结算。
+            Category::Static => (x, y),
+            // 气体（M2 spec §3.2）：恒 1 格/tick、不进 substeps 循环、不碰
+            // 速度位段——在重力积分之前分流，STREAM_FALLSTEP 对气体一次也不掷。
+            Category::Gas => self.gas_step(x, y, c),
+            Category::Powder | Category::Liquid => {
+                let v1 = (c.vel() + G_ACCEL).min(V_MAX_CELL);
+                let n = substeps(self.fseed, v1, x, y);
+                let moving = c.with_vel(v1);
+                let (mut cx, mut cy) = (x, y);
+                let mut stalled = false;
+                for k in 0..n {
+                    let step = match cat {
+                        Category::Powder => self.powder_step(cx, cy, moving, k),
+                        Category::Liquid => self.liquid_step(cx, cy, moving, k),
+                        Category::Static | Category::Gas => unreachable!(),
+                    };
+                    match step {
+                        Step::Moved(nx, ny) => (cx, cy) = (nx, ny),
+                        Step::MovedSide(nx, ny) => {
+                            (cx, cy) = (nx, ny);
+                            stalled = true;
+                            break;
+                        }
+                        Step::Blocked => {
+                            stalled = true;
+                            break;
+                        }
+                    }
+                }
+                // 撞击溅射脱格（Layer G Task 3，spec §6.1）：三条件全中才走。
+                // 放在速度写回**之前**——脱格后该格已是 AIR，再写速度就是往
+                // 空气里写垃圾。脱格即离开网格，无落点、无反应结算。
+                if stalled && self.try_splash(cx, cy, x, y, c, v1) {
+                    return;
+                }
+                let v_final = if stalled { 0 } else { v1 };
+                let landed = self.win.get(cx, cy);
+                if landed.vel() != v_final {
+                    self.win.set(cx, cy, landed.with_vel(v_final));
+                }
+                (cx, cy)
+            }
+        };
+        // 反应结算（M2 spec §4.1）：运动判定之后、在落点坐标上——运动可能已
+        // 把该 cell 挪走。放在速度写回之后：反应命中会整字覆写产物（速度清零），
+        // 顺序反过来则写回把速度又抹到产物上。
+        self.react(cx, cy);
+    }
+
+    /// 反应结算（M2 spec §4）：以 `(x, y)` 为发起格检查 4 邻域，第一个命中即
+    /// 结算并终止。写域 r = 1（邻居写入），在 `MAX_WRITE_RADIUS = 12` 之内
+    /// （spec §6.1 合并论证）。
+    ///
+    /// - **发起方约定**（§4.2）：只有 `mat(自己) < mat(邻居)` 才发起，防双结算，
+    ///   顺带砍掉一半邻居检查；同材质相邻永不发起（自反应列入 Non-goals）。
+    /// - **跳过已盖当前戳的格**（§4.5 审阅补漏）：盖戳只防产物格本 tick *发起*，
+    ///   防不住它*再被反应*——跳过被戳邻居，钉死"一格一 tick 至多转化一次"。
+    /// - **RNG 纪律**（§4.4，charter §11 翻案 4）：同格同 tick 对 4 个邻居各
+    ///   掷一次骰，`salt` = 邻居方向索引——漏了它同格四邻掷出同值，反应沿固定
+    ///   方向偏（Noita 宝箱事故同款，见 `noita-grid-api-and-rng.md` §5.2）；
+    ///   `attempt` = 条目序号，使同对多条反应的概率语义相互独立。
+    fn react(&self, x: i32, y: i32) {
+        let c = self.win.get(x, y);
+        let m = c.material();
+        if !self.reactions.initiates(m) {
             return;
         }
-        let v1 = (c.vel() + G_ACCEL).min(V_MAX_CELL);
-        let n = substeps(self.fseed, v1, x, y);
-        let moving = c.with_vel(v1);
-        let (mut cx, mut cy) = (x, y);
-        let mut stalled = false;
-        for k in 0..n {
-            let step = match cat {
-                Category::Powder => self.powder_step(cx, cy, moving, k),
-                Category::Liquid => self.liquid_step(cx, cy, moving, k),
-                Category::Static | Category::Gas => unreachable!(),
-            };
-            match step {
-                Step::Moved(nx, ny) => (cx, cy) = (nx, ny),
-                Step::MovedSide(nx, ny) => {
-                    (cx, cy) = (nx, ny);
-                    stalled = true;
-                    break;
-                }
-                Step::Blocked => {
-                    stalled = true;
-                    break;
+        for (di, (dx, dy)) in NEIGHBORS4.iter().enumerate() {
+            let (nx, ny) = (x + dx, y + dy);
+            let t = self.win.get(nx, ny);
+            if t.stamp() == self.stamp {
+                continue; // §4.5：已盖当前戳的格本 tick 不再作为反应对象。
+            }
+            let tm = t.material();
+            if m >= tm {
+                continue; // 发起方约定（含 air：id 0 永远小于发起方）。
+            }
+            for (ri, rule) in self.reactions.get(m, tm).iter().enumerate() {
+                let roll = rng_u32(self.fseed, STREAM_REACT, x, y, di as u32, ri as u32);
+                if roll % 255 < rule.threshold as u32 {
+                    // 写入语义（§4.5）：两格写产物 + 盖当前戳（防帧内连锁沿
+                    // 扫描方向蔓延）+ 速度/counter 清零（pack 整字重置——
+                    // 材质换了，动量语义不再成立）。产物严格 1:1，无 blob。
+                    self.win.set(x, y, self.product_cell(rule.out_a, x));
+                    self.win.set(nx, ny, self.product_cell(rule.out_b, nx));
+                    return; // 第一个命中即 break（§4.1）。
                 }
             }
         }
-        // 撞击溅射脱格（Layer G Task 3，spec §6.1）：三条件全中才走。放在速度
-        // 写回**之前**——脱格后该格已是 AIR，再写速度就是往空气里写垃圾。
-        if stalled && self.try_splash(cx, cy, x, y, c, v1) {
-            return;
-        }
-        let v_final = if stalled { 0 } else { v1 };
-        let landed = self.win.get(cx, cy);
-        if landed.vel() != v_final {
-            self.win.set(cx, cy, landed.with_vel(v_final));
+    }
+
+    /// 反应产物 cell：盖当前戳；液体/气体的方向记忆按 x 奇偶初始化（与
+    /// `world::set_cell_stamped` 同一约定——缺初始化会给产物一个系统性首选侧）。
+    fn product_cell(&self, mat: u8, x: i32) -> Cell {
+        let c = Cell::pack(mat, self.stamp);
+        if matches!(self.table.category(mat), Category::Liquid | Category::Gas) {
+            c.with_dir(x & 1 == 1)
+        } else {
+            c
         }
     }
 
@@ -282,22 +357,25 @@ impl Ctx<'_> {
     /// **撞停零写入**：气体无速度语义、无 stalled 写回，"只有移动才写"天然
     /// 满足写回纪律（spec §5.6 同源）——被困气体零写入，chunk 照常入睡
     /// （执法测试 `trapped_gas_lets_chunk_sleep`）。
-    fn gas_step(&self, x: i32, y: i32, c: Cell) {
+    fn gas_step(&self, x: i32, y: i32, c: Cell) -> (i32, i32) {
         if self.displace(x, y, c, x, y - 1) {
-            return;
+            return (x, y - 1);
         }
         let s = self.diag_side(x, y, 0);
         if self.displace(x, y, c, x + s, y - 1) {
-            return;
+            return (x + s, y - 1);
         }
         if self.displace(x, y, c, x - s, y - 1) {
-            return;
+            return (x - s, y - 1);
         }
         let d = c.dir();
-        if self.side(x, y, c, d, 1).is_some() {
-            return;
+        if let Some(nx) = self.side(x, y, c, d, 1) {
+            return (nx, y);
         }
-        let _ = self.side(x, y, c, -d, 1);
+        if let Some(nx) = self.side(x, y, c, -d, 1) {
+            return (nx, y);
+        }
+        (x, y)
     }
 
     /// 斜向偏好掷骰。`attempt` = 子步序号 `k`（Layer G Task 2，spec §4.2③）——

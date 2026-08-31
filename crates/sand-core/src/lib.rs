@@ -20,6 +20,7 @@ pub mod fixed;
 pub mod hash;
 pub mod material;
 pub mod particle;
+pub mod reaction;
 pub mod rng;
 mod rules;
 pub mod scheduler;
@@ -30,9 +31,10 @@ pub use cell::{Cell, G_ACCEL, VEL_ONE, V_MAX_CELL};
 pub use emit::MAX_EMIT_JITTER_RAW;
 pub use fixed::Fx;
 pub use material::{
-    Category, MaterialDef, MaterialTable, BLAST_COST_INFINITE, DISPERSION_MAX, MAT_AIR, MAT_WALL,
+    Category, MaterialDef, MaterialTable, DISPERSION_MAX, MAT_AIR, MAT_WALL,
 };
 pub use particle::{Particles, MAX_PARTICLES};
+pub use reaction::{ReactionRule, ReactionTable};
 pub use world::{Op, World};
 
 /// 扫描模式（O1 spec §2.1）。三种模式**语义逐位等价**（SyncTest 六配置执法）；
@@ -63,6 +65,7 @@ pub struct InitConfig {
 pub struct Sim {
     world: World,
     table: MaterialTable,
+    reactions: ReactionTable,
     pool: rayon::ThreadPool,
     scan: ScanMode,
     particles: Particles,
@@ -73,7 +76,9 @@ pub struct Sim {
 const SETUP_STAMP: u8 = 255;
 
 impl Sim {
-    pub fn new(cfg: &InitConfig, table: MaterialTable) -> Result<Sim, String> {
+    /// `reactions`：M2 起为必传项（`ReactionTable::empty(&table)` 即无反应，
+    /// 与 M2 之前行为逐位一致——golden 取证）。
+    pub fn new(cfg: &InitConfig, table: MaterialTable, reactions: ReactionTable) -> Result<Sim, String> {
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(cfg.threads.max(1))
             .build()
@@ -81,6 +86,7 @@ impl Sim {
         Ok(Sim {
             world: World::new(cfg.width_chunks, cfg.height_chunks, cfg.seed),
             table,
+            reactions,
             pool,
             scan: cfg.scan,
             particles: Particles::new(),
@@ -113,7 +119,7 @@ impl Sim {
 
     pub fn step(&mut self, ops: &[Op]) {
         let tick = self.world.tick;
-        scheduler::step(&mut self.world, &self.table, &self.pool, self.scan, ops, &mut self.spawn_queue);
+        scheduler::step(&mut self.world, &self.table, &self.reactions, &self.pool, self.scan, ops, &mut self.spawn_queue);
 
         // 粒子相（M1 spec §4 第 3 步）：a. 生成（drain 入队序 + 容量拒绝，
         // Particles::spawn 内置）——队列此刻已包含测试代码经 queue_spawn

@@ -7,7 +7,7 @@
 //! 运算的运行期残留（例如量化写错、每次重新计算），六配置比对会立刻暴露。
 
 use sand_harness::runner;
-use sand_harness::scenario::{load_materials, load_scenario};
+use sand_harness::scenario::{load_materials, load_reactions, load_scenario};
 
 fn repo_path(rel: &str) -> String {
     format!("{}/../../{rel}", env!("CARGO_MANIFEST_DIR"))
@@ -16,8 +16,9 @@ fn repo_path(rel: &str) -> String {
 #[test]
 fn waterfall_ci_six_configs_zero_divergence() {
     let (table, _materials_fp) = load_materials(&repo_path("data/materials.ron")).unwrap();
+    let (reactions, _fp) = load_reactions(&repo_path("data/reactions.ron"), &table).unwrap();
     let sc = load_scenario(&repo_path("data/scenarios/waterfall_ci.ron"), &table).unwrap();
-    runner::synctest(&sc, &table, 4, sc.ticks)
+    runner::synctest(&sc, &table, &reactions, 4, sc.ticks)
         .unwrap_or_else(|e| panic!("waterfall_ci 六配置 SyncTest 分叉：{e}"));
 }
 
@@ -27,7 +28,19 @@ fn waterfall_ci_six_configs_zero_divergence() {
 #[test]
 fn explosion_ci_six_configs_zero_divergence() {
     let (table, _materials_fp) = load_materials(&repo_path("data/materials.ron")).unwrap();
+    let (reactions, _fp) = load_reactions(&repo_path("data/reactions.ron"), &table).unwrap();
     let sc = load_scenario(&repo_path("data/scenarios/explosion_ci.ron"), &table).unwrap();
-    runner::synctest(&sc, &table, 4, sc.ticks)
+    runner::synctest(&sc, &table, &reactions, 4, sc.ticks)
         .unwrap_or_else(|e| panic!("explosion_ci 六配置 SyncTest 分叉：{e}"));
+}
+
+/// M2 反应表版本（Task 2）：气体上浮 + water/fire 反应结算在六配置下的
+/// 确定性（spec §0 验收第 1/2 项的 SyncTest 面；燃烧行为随 Task 3 长入本场景）。
+#[test]
+fn fire_oil_chain_six_configs_zero_divergence() {
+    let (table, _materials_fp) = load_materials(&repo_path("data/materials.ron")).unwrap();
+    let (reactions, _fp) = load_reactions(&repo_path("data/reactions.ron"), &table).unwrap();
+    let sc = load_scenario(&repo_path("data/scenarios/fire_oil_chain.ron"), &table).unwrap();
+    runner::synctest(&sc, &table, &reactions, 4, sc.ticks)
+        .unwrap_or_else(|e| panic!("fire_oil_chain 六配置 SyncTest 分叉：{e}"));
 }

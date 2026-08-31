@@ -8,6 +8,24 @@
 ## 2026-08-31
 
 ### Added
+- **M2 Task 2 落地：数据驱动反应表 + hp/durability 双层破坏**（新增
+  `crates/sand-core/src/reaction.rs`、`data/reactions.ron`、
+  `data/scenarios/fire_oil_chain.ron`；改 `rules/rng/scheduler/lib/world/explode`、
+  `sand-harness/{scenario,runner,main}`、`data/materials.ron`）。
+  ① `ReactionTable`：n×n 稠密索引 + 连续条目，`get/initiates/needs_eval` 三访问器，
+  切换判据入档；harness `load_reactions` 完成四条加载期契约（未知引用报错 / tag 展开
+  id 升序 / 发起方规范化正反只注册一次 / 概率 ×255 量化），`reactions_fp` 入 golden
+  报告头与握手指纹语义。② eval 准入重构（spec §2.6）：`is_static` 早退降为运动分支
+  条件，准入 = 戳 + per-material `needs_eval` 单次查表——**四 golden 哈希流逐位一致**
+  取证零行为变化。③ 反应结算在落点、4 邻域编译期常量序、跳过已盖当前戳格（审阅补漏
+  ②）、`STREAM_REACT=6`（salt=方向索引、attempt=条目序）。④ `blast_cost`→`hp` +
+  `durability` 门槛、`Op::Explode` 加 `max_durability`（RON 缺省 10）、
+  `BLAST_COST_INFINITE` 哨兵退役（wall durability 15）——当前数据值下语义保持，
+  **explosion_ci 哈希流也逐位不变**，四 golden 仅头部两行重录。
+  行为测试：发起方防双结算、戳跳过（次 tick 恢复可反应）、分布回归
+  `reaction_rate_matches_declared_probability`（1722 对 4σ 判据，spec §7.2 新规矩）；
+  SyncTest 新增 `fire_oil_chain` 六配置 2 万 tick 零分叉（219.8s）。全 workspace
+  204 测试绿、clippy 零警告。
 - **M2 Task 1 落地：数据层 + 气体**（`crates/sand-core/src/{material,cell,rules,world,particle,hash}.rs`、
   `crates/sand-harness/src/scenario.rs`、`data/materials.ron`）。
   ① 材质新字段（tags/ignition_temp/fire_temp/fire_hp/lifetime/decay_to/requires_oxygen/

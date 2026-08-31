@@ -1,0 +1,29 @@
+// M2 验收场景（spec §0/§7）：火油连锁。256×192：油池 + 木块 + 水塘 + 定时
+// 点火。Task 2 起用于 SyncTest 六配置（fire 尚不燃烧，反应/气体先行）；
+// Task 3 燃烧落地后为 golden 主场景与 GIF 目检对象。
+Scenario(
+    name: "fire_oil_chain",
+    world: (4, 3),
+    seed: 20260831,
+    ticks: 20000,
+    setup: [
+        // 地板与侧壁
+        Fill(material: "wall", x0: 0, y0: 180, x1: 255, y1: 181),
+        Fill(material: "wall", x0: 0, y0: 100, x1: 1, y1: 179),
+        Fill(material: "wall", x0: 254, y0: 100, x1: 255, y1: 179),
+        // 油池（浮油：密度低于水）
+        Fill(material: "oil", x0: 30, y0: 170, x1: 110, y1: 179),
+        // 木块（Static，可燃，由外向内烧）
+        Fill(material: "wood", x0: 130, y0: 150, x1: 175, y1: 179),
+        // 水塘（灭火 + water+fire 反应）
+        Fill(material: "water", x0: 195, y0: 172, x1: 245, y1: 179),
+    ],
+    script: [
+        // 点燃油面
+        At(tick: 60, op: Brush(material: "fire", x: 70, y: 168, r: 2)),
+        // 点燃木块顶面
+        At(tick: 120, op: Brush(material: "fire", x: 152, y: 148, r: 2)),
+        // 后段再来一把火，落进水塘上方（水灭火路径）
+        At(tick: 5000, op: Brush(material: "fire", x: 220, y: 168, r: 2)),
+    ],
+)

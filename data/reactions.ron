@@ -1,0 +1,17 @@
+// 反应表（M2 spec §2.4；P5：数据即确定性输入，内容哈希 reactions_fp 入指纹）。
+//
+// 作者格式是稀疏的：一条条反应，人手写人手读；加载期展开成 core 侧的 n×n
+// 稠密索引（sand-core::reaction）。四条加载期契约（spec §2.4）：
+//   ① 引用不存在的材质/tag ⇒ 加载失败并报错（与 Noita 的静默丢弃反着抄）；
+//   ② tag（写作 "[burnable]"）在加载期展开成扁平 id 表，core 不见字符串；
+//   ③ 发起方规范化：每条只按 id_a < id_b 注册一次，防双结算；
+//   ④ probability 写 0.0..=1.0 小数，加载期 ×255 round 量化成整数阈值。
+// output 只许具体材质名（词缀展开列入 Non-goals，spec §1.4）。
+//
+// 本轮内容稀薄是预期的（spec §4.6）：Task 2 的交付物是基础设施而非内容。
+(
+    reactions: [
+        // 水灭火：fire 是 Gas 且总在活动，water(3) < fire(6) 由水发起。
+        (input: ["water", "fire"], output: ["water", "smoke"], probability: 0.80),
+    ],
+)
