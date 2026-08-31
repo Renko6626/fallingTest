@@ -23,7 +23,7 @@ Scenario(
         At(tick: 60, op: Brush(material: "fire", x: 70, y: 168, r: 2)),
         // 点燃木块顶面
         At(tick: 120, op: Brush(material: "fire", x: 152, y: 148, r: 2)),
-        // 后段再来一把火，落进水塘上方（水灭火路径）
-        At(tick: 5000, op: Brush(material: "fire", x: 220, y: 168, r: 2)),
+        // 后段再来一把火，扎进水塘表面（water+fire 反应路径）
+        At(tick: 5000, op: Brush(material: "fire", x: 220, y: 171, r: 2)),
     ],
 )

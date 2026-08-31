@@ -639,6 +639,259 @@ fn reaction_rate_matches_declared_probability() {
     );
 }
 
+// ==================== M2 Task 3：燃烧（spec §5）====================
+
+const WOOD: u8 = 6;
+const OIL: u8 = 7;
+
+/// 燃烧测试材质表：fire 温 100 点得着 wood(80)/oil(40)；**燃料也声明
+/// `fire_temp: 100`**——燃烧中的油/木直接点燃同类蔓延（源门 spec §5.2 保证
+/// 冷燃料点不着任何东西；火是气体、升离表面极快，横向蔓延必须靠燃料自身
+/// 温度）。wood 不产火（fire_chance 0，纯温度蔓延），oil 产火 0.6。
+/// 燃料池刻意偏短（wood 50 / oil 30），让测试在几百 tick 内自然烧完。
+fn burn_table() -> MaterialTable {
+    MaterialTable::new(vec![
+        MaterialDef::base(0, "air", Category::Static, 0),
+        MaterialDef::base(1, "wall", Category::Static, 100),
+        MaterialDef::base(SAND, "sand", Category::Powder, 40),
+        MaterialDef { extinguisher: true, ..MaterialDef::base(WATER, "water", Category::Liquid, 16) },
+        MaterialDef { lifetime: 200, ..MaterialDef::base(SMOKE, "smoke", Category::Gas, 2) },
+        MaterialDef {
+            lifetime: 40,
+            fire_temp: 100,
+            decay_to: SMOKE,
+            ..MaterialDef::base(FIRE, "fire", Category::Gas, 1)
+        },
+        MaterialDef {
+            fire_hp: 50,
+            ignition_temp: 80,
+            fire_temp: 100,
+            ..MaterialDef::base(WOOD, "wood", Category::Static, 60)
+        },
+        MaterialDef {
+            fire_hp: 30,
+            ignition_temp: 40,
+            fire_temp: 100,
+            fire_chance: 153,
+            flame_to: FIRE,
+            ..MaterialDef::base(OIL, "oil", Category::Liquid, 12)
+        },
+    ])
+    .unwrap()
+}
+
+fn burn_sim(seed: u64, table: MaterialTable) -> sand_core::Sim {
+    let reactions = ReactionTable::empty(&table);
+    sim_with_reactions(2, 2, seed, 1, ScanMode::LiveRect, table, reactions)
+}
+
+/// 点燃判定的"源正在燃烧"门（spec §5.2 审阅补漏）：**冷**油即便声明了高
+/// fire_temp（这里故意给 100），也绝不点燃邻居——burn 阶段只对 counter > 0
+/// 的格运行。若这道门缺失，本表下冷油一 tick 内就会点着隔壁 wood。
+#[test]
+fn ignition_needs_burning_source() {
+    let defs = vec![
+        MaterialDef::base(0, "air", Category::Static, 0),
+        MaterialDef::base(1, "wall", Category::Static, 100),
+        MaterialDef::base(SAND, "sand", Category::Powder, 40),
+        MaterialDef::base(WATER, "water", Category::Liquid, 16),
+        MaterialDef { lifetime: 200, ..MaterialDef::base(SMOKE, "smoke", Category::Gas, 2) },
+        MaterialDef { lifetime: 40, fire_temp: 100, decay_to: SMOKE, ..MaterialDef::base(FIRE, "fire", Category::Gas, 1) },
+        MaterialDef { fire_hp: 50, ignition_temp: 80, fire_temp: 100, ..MaterialDef::base(WOOD, "wood", Category::Static, 60) },
+        MaterialDef { fire_hp: 30, ignition_temp: 40, fire_temp: 100, fire_chance: 153, flame_to: FIRE, ..MaterialDef::base(OIL, "oil", Category::Liquid, 12) },
+    ];
+    // 油的 fire_temp = 100 高于 wood 的着火点 80——源门失效即点燃
+    let mut s = burn_sim(21, MaterialTable::new(defs).unwrap());
+    s.apply_setup(&[
+        Op::Fill { material: MAT_WALL, x0: 37, y0: 97, x1: 43, y1: 103 },
+        Op::Brush { material: OIL, x: 39, y: 100, r: 0 },
+        Op::Brush { material: WOOD, x: 40, y: 100, r: 0 },
+        Op::Brush { material: 0, x: 40, y: 99, r: 0 }, // wood 上方留 air（氧气）
+    ]);
+    for _ in 0..100 {
+        s.step(&[]);
+    }
+    assert_eq!(s.world().cell(40, 100).material(), WOOD, "冷油旁的 wood 必须还在");
+    assert_eq!(s.world().cell(40, 100).counter(), 0, "冷油绝不点燃邻居（源门 spec §5.2）");
+    assert_eq!(s.world().count_material(FIRE), 0);
+}
+
+/// 火油连锁端到端（spec §5 链条闭合）：火点燃油 → 油产火 → 火衰变烟 →
+/// 烟衰变空气。终态火烟归零、油有损耗，过程中三种中间态都出现过。
+#[test]
+fn fire_ignites_oil_and_chain_decays_to_air() {
+    let mut s = burn_sim(31, burn_table());
+    s.apply_setup(&[
+        Op::Fill { material: MAT_WALL, x0: 30, y0: 90, x1: 60, y1: 110 },
+        Op::Fill { material: 0, x0: 32, y0: 92, x1: 58, y1: 108 }, // 挖出内腔
+        Op::Fill { material: OIL, x0: 36, y0: 106, x1: 54, y1: 108 }, // 油池
+        // 点火放进池**内**（覆写一行油）：火是气体、放在油面上一 tick 就升走，
+        // 触不到油；埋进池里则上浮沿途四邻皆油，点燃必然发生。
+        Op::Fill { material: FIRE, x0: 44, y0: 107, x1: 46, y1: 107 },
+    ]);
+    let oil0 = s.world().count_material(OIL);
+    let (mut saw_burning_oil, mut saw_smoke) = (false, false);
+    for _ in 0..1500 {
+        s.step(&[]);
+        if !saw_burning_oil {
+            'scan: for x in 32..59 {
+                for y in 92..109 {
+                    let c = s.world().cell(x, y);
+                    if c.material() == OIL && c.counter() > 0 {
+                        saw_burning_oil = true;
+                        break 'scan;
+                    }
+                }
+            }
+        }
+        saw_smoke |= s.world().count_material(SMOKE) > 0;
+    }
+    assert!(saw_burning_oil, "油必须被点燃过（counter > 0）");
+    assert!(saw_smoke, "火熄必须产生过烟");
+    assert!(s.world().count_material(OIL) < oil0, "必须有油被烧掉");
+    assert_eq!(s.world().count_material(FIRE), 0, "终态：火全部熄灭");
+    assert_eq!(s.world().count_material(SMOKE), 0, "终态：烟全部散尽");
+}
+
+/// 由外向内烧（spec §5.4）：大块 wood 的深部格在表面烧完之前 counter 恒 0
+/// ——氧气前置（审阅补漏）保证内部格根本不被装填。12×12 块、观察 200 tick
+/// （最多烧穿 4 层，中心深 6 层，留余量）。
+#[test]
+fn wood_burns_outside_in() {
+    let mut s = burn_sim(41, burn_table());
+    s.apply_setup(&[
+        floor_op(128, 128),
+        Op::Fill { material: WOOD, x0: 40, y0: 100, x1: 51, y1: 111 },
+        Op::Fill { material: FIRE, x0: 44, y0: 99, x1: 47, y1: 99 }, // 顶面点火
+    ]);
+    for t in 0..200u64 {
+        s.step(&[]);
+        let center = s.world().cell(45, 106);
+        assert_eq!(center.material(), WOOD, "tick {t}：中心格不该被烧没");
+        assert_eq!(center.counter(), 0, "tick {t}：中心格在表面烧完前不得装填（由外向内）");
+    }
+}
+
+/// 灭火走数据字段（spec §5.5）：邻接 water 的 wood 被点燃即清零、永不烧毁；
+/// 无 water 的对照腔烧穿。两腔同构，只差 water。
+#[test]
+fn water_extinguishes_burning_fuel() {
+    let mut s = burn_sim(51, burn_table());
+    let cavity = |x0: i32, with_water: bool| -> Vec<Op> {
+        let mut ops = vec![
+            Op::Fill { material: MAT_WALL, x0: x0 - 2, y0: 96, x1: x0 + 2, y1: 103 },
+            Op::Brush { material: 0, x: x0, y: 98, r: 0 },
+            Op::Brush { material: 0, x: x0, y: 99, r: 0 },
+            Op::Brush { material: 0, x: x0, y: 101, r: 0 }, // wood 下方 air（氧气）
+            Op::Brush { material: WOOD, x: x0, y: 100, r: 0 },
+        ];
+        ops.push(Op::Brush { material: FIRE, x: x0, y: 98, r: 0 });
+        ops.push(Op::Brush { material: FIRE, x: x0, y: 99, r: 0 });
+        if with_water {
+            ops.push(Op::Brush { material: WATER, x: x0 + 1, y: 100, r: 0 });
+        }
+        ops
+    };
+    let mut setup = cavity(40, true);
+    setup.extend(cavity(80, false));
+    s.apply_setup(&setup);
+    for _ in 0..600 {
+        s.step(&[]);
+    }
+    assert_eq!(s.world().cell(40, 100).material(), WOOD, "有 water 邻居：wood 必须幸存");
+    assert_eq!(s.world().cell(40, 100).counter(), 0, "灭火后 counter 清零");
+    assert_eq!(s.world().cell(80, 100).material(), 0, "对照腔：wood 必须烧穿成 air");
+}
+
+/// 休眠执法（spec §5.6，镜像 `resting_pile_lets_every_chunk_sleep`）：
+/// 未点燃的可燃物必须零写入——静置 wood 全图入睡。
+#[test]
+fn resting_wood_lets_chunk_sleep() {
+    let mut s = burn_sim(26, burn_table());
+    s.apply_setup(&[
+        floor_op(128, 128),
+        Op::Fill { material: WOOD, x0: 40, y0: 110, x1: 80, y1: 123 },
+        // 油装盆（两道盆壁）——裸地板上的油要流平很久，那是液体既有行为，
+        // 不是本测试的对象；本测试只管"未点燃的可燃物零写入"。
+        Op::Fill { material: MAT_WALL, x0: 88, y0: 114, x1: 89, y1: 123 },
+        Op::Fill { material: MAT_WALL, x0: 111, y0: 114, x1: 112, y1: 123 },
+        Op::Fill { material: OIL, x0: 90, y0: 120, x1: 110, y1: 123 },
+    ]);
+    for _ in 0..400 {
+        s.step(&[]);
+    }
+    for (ci, c) in s.world().chunks.iter().enumerate() {
+        assert!(c.dirty.is_empty(), "chunk {ci} 静置后仍脏：{:?}", c.dirty);
+        assert!(
+            c.next_dirty.snapshot().is_empty(),
+            "chunk {ci} 静置后 next_dirty 非空：{:?}",
+            c.next_dirty.snapshot()
+        );
+    }
+}
+
+/// 分布回归（spec §7.2）：点燃方向骰四向均匀。961 个隔离腔，中心 fire 四邻
+/// wood（本表 requires_oxygen: false，免去氧气干扰），一 tick 后统计各方向
+/// 被点燃的比例 ≈ 25%。方向骰若丢 salt/attempt 维度或取位有偏，这里会炸。
+#[test]
+fn ignition_direction_roll_is_uniform() {
+    let defs = vec![
+        MaterialDef::base(0, "air", Category::Static, 0),
+        MaterialDef::base(1, "wall", Category::Static, 100),
+        MaterialDef::base(SAND, "sand", Category::Powder, 40),
+        MaterialDef::base(WATER, "water", Category::Liquid, 16),
+        MaterialDef { lifetime: 200, ..MaterialDef::base(SMOKE, "smoke", Category::Gas, 2) },
+        MaterialDef { lifetime: 40, fire_temp: 100, decay_to: SMOKE, ..MaterialDef::base(FIRE, "fire", Category::Gas, 1) },
+        MaterialDef {
+            fire_hp: 50,
+            ignition_temp: 80,
+            requires_oxygen: false,
+            ..MaterialDef::base(WOOD, "wood", Category::Static, 60)
+        },
+    ];
+    let mut s = burn_sim(61, MaterialTable::new(defs).unwrap());
+    let mut setup = vec![Op::Fill { material: MAT_WALL, x0: 0, y0: 0, x1: 127, y1: 127 }];
+    let mut centers = Vec::new();
+    let mut cx = 2;
+    while cx < 125 {
+        let mut cy = 2;
+        while cy < 125 {
+            setup.push(Op::Brush { material: WOOD, x: cx, y: cy - 1, r: 0 });
+            setup.push(Op::Brush { material: WOOD, x: cx, y: cy + 1, r: 0 });
+            setup.push(Op::Brush { material: WOOD, x: cx - 1, y: cy, r: 0 });
+            setup.push(Op::Brush { material: WOOD, x: cx + 1, y: cy, r: 0 });
+            setup.push(Op::Brush { material: FIRE, x: cx, y: cy, r: 0 });
+            centers.push((cx, cy));
+            cy += 4;
+        }
+        cx += 4;
+    }
+    s.apply_setup(&setup);
+    s.step(&[]);
+    // NEIGHBORS4 序：上、下、左、右
+    let mut counts = [0u32; 4];
+    let mut lit_total = 0u32;
+    for &(cx, cy) in &centers {
+        let dirs = [(0, -1), (0, 1), (-1, 0), (1, 0)];
+        for (i, (dx, dy)) in dirs.iter().enumerate() {
+            if s.world().cell(cx + dx, cy + dy).counter() > 0 {
+                counts[i] += 1;
+                lit_total += 1;
+            }
+        }
+    }
+    let n = centers.len() as u32;
+    assert_eq!(lit_total, n, "每腔应恰点燃一个方向（温度/燃料/戳条件全满足）");
+    for (i, &c) in counts.iter().enumerate() {
+        let p = c as f64 / n as f64;
+        // n=961，σ=√(0.25·0.75/961)≈1.4%，取 4σ≈5.6%
+        assert!(
+            (p - 0.25).abs() < 0.056,
+            "方向 {i} 占比 {p:.4}（{c}/{n}）偏离 0.25 超 4σ——方向骰有偏"
+        );
+    }
+}
+
 /// 深井：左右墙 + 地板，井口在 y0，水从井口落到地板。
 fn well_ops(w: i32, h: i32, x: i32, y0: i32) -> Vec<Op> {
     vec![

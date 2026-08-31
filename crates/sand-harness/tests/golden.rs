@@ -53,3 +53,9 @@ fn golden_waterfall_ci() {
 fn golden_explosion_ci() {
     check("data/scenarios/explosion_ci.ron", "crates/sand-harness/tests/golden/explosion_ci.golden");
 }
+
+#[test]
+fn golden_fire_oil_chain() {
+    // M2 主验收场景（spec §0）：反应 + 燃烧 + 气体全链条的 golden 回归。
+    check("data/scenarios/fire_oil_chain.ron", "crates/sand-harness/tests/golden/fire_oil_chain.golden");
+}

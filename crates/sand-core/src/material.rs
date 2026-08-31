@@ -103,9 +103,13 @@ pub struct MaterialDef {
     /// 表达不了。缺省 false。
     pub extinguisher: bool,
     /// 产火概率（对应 Noita `generates_flames`，M2 spec §5.3）：燃烧中的格子
-    /// 每 tick 按此概率向邻接 air 写入 fire。量化域 u8（×255 round，照
-    /// `splash_chance` 体例）。缺省 0 = 不产火。
+    /// 每 tick 按此概率向邻接 air 写入 [`Self::flame_to`] 材质。量化域 u8
+    /// （×255 round，照 `splash_chance` 体例）。缺省 0 = 不产火。
     pub fire_chance: u8,
+    /// 产火产物材质 id（M2 spec §5.3 实施补记：产物走数据字段而非硬编码
+    /// "fire"——charter §8 禁硬编码材质语义）。仅在 `fire_chance > 0` 时被
+    /// 消费；harness 加载期契约：`fire_chance > 0` 必须显式声明 `flame_to`。
+    pub flame_to: u8,
 }
 
 impl MaterialDef {
@@ -133,6 +137,7 @@ impl MaterialDef {
             requires_oxygen: true,
             extinguisher: false,
             fire_chance: 0,
+            flame_to: MAT_AIR,
         }
     }
 }
@@ -174,6 +179,12 @@ impl MaterialTable {
                 return Err(format!(
                     "材料 '{}'（id={}）的 decay_to={} 越界（材质数 {}）",
                     d.name, d.id, d.decay_to, defs.len()
+                ));
+            }
+            if (d.flame_to as usize) >= defs.len() {
+                return Err(format!(
+                    "材料 '{}'（id={}）的 flame_to={} 越界（材质数 {}）",
+                    d.name, d.id, d.flame_to, defs.len()
                 ));
             }
         }
@@ -271,6 +282,10 @@ impl MaterialTable {
 
     pub fn fire_chance(&self, id: u8) -> u8 {
         self.defs[id as usize].fire_chance
+    }
+
+    pub fn flame_to(&self, id: u8) -> u8 {
+        self.defs[id as usize].flame_to
     }
 }
 

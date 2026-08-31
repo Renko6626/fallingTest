@@ -116,6 +116,14 @@ pub const STREAM_SPLASH: u32 = 5;
 /// 起点唯一性论证对偶。编号 6 接续 0–5；7 预留给 Task 3 的 `STREAM_IGNITE`。
 pub const STREAM_REACT: u32 = 6;
 
+/// 燃烧流（M2 spec §5.8）。调用点：`rules.rs` 的燃烧阶段——key = 源格坐标
+/// （落点，同 [`STREAM_REACT`] 的唯一性论证），salt 恒 0，三颗骰靠 `attempt`
+/// 区分（`IGNITE_ROLL_DIR` 点燃方向 / `FIRE_ROLL_TRIGGER` 产火触发 /
+/// `FIRE_ROLL_DIR` 产火方向——spec §5.8"不同 attempt"落到三个常量，体例同
+/// `SPLASH_ROLL_*`）。方向骰 `% 4` 无偏（2^32 整除 4）；分布回归测试
+/// `ignition_direction_roll_is_uniform` 执法（spec §7.2）。
+pub const STREAM_IGNITE: u32 = 7;
+
 /// 本 tick 的行方向全局相位（0 或 1）；行方向 = `(y ^ scan_flip(fseed)) & 1 == 0`
 /// 为左→右。见 [`STREAM_SCANDIR`] 的完整论证。
 ///

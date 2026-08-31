@@ -114,6 +114,10 @@ struct MatSpec {
     /// 经 [`quantize_fire_chance`] ×255 round 量化。缺省 0 = 不产火。
     #[serde(default)]
     fire_chance: f64,
+    /// 产火产物**材质名**（spec §5.3 实施补记）：`fire_chance > 0` 时必须
+    /// 声明；与 `decay_to` 同样在加载期解析成 id。
+    #[serde(default)]
+    flame_to: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -183,6 +187,22 @@ pub fn load_materials(path: &str) -> Result<(MaterialTable, u64), String> {
                     m.name, m.id
                 ));
             }
+            let fire_chance = quantize_fire_chance(m.fire_chance).map_err(|e| {
+                format!("材料 '{}'（id={}）的 fire_chance 非法：{e}", m.name, m.id)
+            })?;
+            let flame_to = match &m.flame_to {
+                None if fire_chance > 0 => {
+                    return Err(format!(
+                        "材料 '{}'（id={}）声明了 fire_chance 却没有 flame_to——产火产物必须显式声明（加载期契约）",
+                        m.name, m.id
+                    ));
+                }
+                None => sand_core::MAT_AIR,
+                Some(name) => *name_to_id.get(name.as_str()).ok_or(format!(
+                    "材料 '{}'（id={}）的 flame_to 引用不存在的材质 '{name}'（加载期显式报错）",
+                    m.name, m.id
+                ))?,
+            };
             let decay_to = match &m.decay_to {
                 None => sand_core::MAT_AIR,
                 Some(name) => *name_to_id.get(name.as_str()).ok_or(format!(
@@ -215,9 +235,8 @@ pub fn load_materials(path: &str) -> Result<(MaterialTable, u64), String> {
                 decay_to,
                 requires_oxygen: m.requires_oxygen,
                 extinguisher: m.extinguisher,
-                fire_chance: quantize_fire_chance(m.fire_chance).map_err(|e| {
-                    format!("材料 '{}'（id={}）的 fire_chance 非法：{e}", m.name, m.id)
-                })?,
+                fire_chance,
+                flame_to,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;

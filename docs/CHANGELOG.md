@@ -8,6 +8,21 @@
 ## 2026-08-31
 
 ### Added
+- **M2 Task 3 落地：燃烧**（`crates/sand-core/src/{cell,material,rng,rules,world}.rs`、
+  `sand-harness/scenario.rs`、`data/materials.ron`、`data/scenarios/fire_oil_chain.ron`）。
+  counter 位段 24–31（`with_stamp/with_vel/with_dir` 不清 counter 单测钉死）；
+  `STREAM_IGNITE = 7` 三骰（点燃方向/产火触发/产火方向，不同 attempt）；burn 阶段
+  顺序定死：灭火 → 氧气 → 递减/归零衰变 → 产火 → 点燃；lifetime 出生装填统一走
+  `set_cell_stamped` 与 `product_cell`。**三条实施补记（spec §5.3.1，机制不变）**：
+  ① 产火产物走数据字段 `flame_to`（`fire_chance > 0` 必须声明）；② 燃料材质声明
+  自身 `fire_temp`（油面横向过火靠燃烧燃料直接点燃同类——火是气体升离表面只要
+  一 tick，实测只靠 fire 点不开油池；§5.2 源门使此安全）；③ 氧气判定放宽为
+  "邻接 air 或任意 Gas"（贴着燃料的火本身是气相、不构成闷熄；实心内部保护不变）。
+  行为测试：冷油不点燃（源门）、火油连锁端到端衰变归零、12×12 wood 由外向内
+  200 tick 中心恒 0、water 灭火对照腔、`resting_wood_lets_chunk_sleep` 执法、
+  点燃方向骰四向均匀（961 腔 4σ）。fire_oil_chain golden 新录 + 六配置 2 万 tick
+  零分叉（199.6s）；四旧 golden 哈希流第三次逐位一致取证、仅 fp 行重录。
+  目检产物：`fire_oil_chain_preview.gif`（前 2400 tick，未入库）。
 - **M2 Task 2 落地：数据驱动反应表 + hp/durability 双层破坏**（新增
   `crates/sand-core/src/reaction.rs`、`data/reactions.ron`、
   `data/scenarios/fire_oil_chain.ron`；改 `rules/rng/scheduler/lib/world/explode`、

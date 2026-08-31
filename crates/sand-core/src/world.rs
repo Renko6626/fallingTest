@@ -126,6 +126,12 @@ impl World {
         if matches!(table.category(material), Category::Liquid | Category::Gas) {
             cell = cell.with_dir(x & 1 == 1);
         }
+        // lifetime 出生即装填（M2 spec §5.1）：Brush/Fill/粒子落格全走本路径，
+        // fire/smoke 从写入的那一刻起倒计时。fire_hp 则只在点燃时装填（rules）。
+        let lifetime = table.lifetime(material);
+        if lifetime > 0 {
+            cell = cell.with_counter(lifetime);
+        }
         let (ci, li) = self.locate(x, y);
         self.chunks[ci].cells[li] = cell;
         self.mark_dirty_around(x, y);

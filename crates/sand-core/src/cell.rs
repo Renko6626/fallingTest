@@ -7,7 +7,8 @@
 //! | 16 | 1 | 横向方向记忆 `dir` |
 //! | 17–21 | 5 | `vy` 竖直速度，Q3.2 无符号，单位 ¼ 格/tick（Layer G Task 2） |
 //! | 22 | 1 | `free_falling`（O3 粉末惯性）——预留，恒 0，不读不写 |
-//! | 23–31 | 9 | 留白（durability / 染色 / 温度句柄候选），未分配 |
+//! | 23 | 1 | 留白，未分配 |
+//! | 24–31 | 8 | `counter` 通用倒计时器（M2 spec §2.3）：燃料格存剩余燃料、fire/smoke 存剩余寿命 |
 //!
 //! 布局由 `docs/superpowers/specs/2026-08-31-layer-g-velocity-design.md` §2
 //! 一次性定死，避免每加一个字段抢一次位。
@@ -32,6 +33,10 @@ pub const VEL_SHIFT: u32 = 17;
 /// 速度位段宽度。5 位是 `V_MAX_CELL = 16` 的硬下限。
 pub const VEL_BITS: u32 = 5;
 const VEL_MASK: CellRepr = ((1 << VEL_BITS) - 1) << VEL_SHIFT;
+
+/// counter 位段起始位（M2 spec §2.3，见头部布局表）。
+pub const COUNTER_SHIFT: u32 = 24;
+const COUNTER_MASK: CellRepr = 0xFF << COUNTER_SHIFT;
 
 /// 1.0 格/tick = 4 个 ¼ 格单位（Q3.2 的定标）。**必须是 2 的幂**——
 /// `rules::substeps` 的概率取整靠 `% VEL_ONE` 无偏取位，非 2 的幂会引入取模偏置。
@@ -124,6 +129,20 @@ impl Cell {
     pub fn with_vel(self, v: u8) -> Cell {
         Cell((self.0 & !VEL_MASK) | (((v as CellRepr) << VEL_SHIFT) & VEL_MASK))
     }
+
+    /// 通用倒计时器（M2 spec §2.3/§5.1）：语义随材质——燃料格存剩余燃料
+    /// （`fire_hp` 装填于点燃时）、fire/smoke 存剩余寿命（`lifetime` 出生装填）。
+    /// 每 tick 减一、归零即衰变为 `decay_to`；**不设 `burning` 标志位**：
+    /// `counter > 0` 且材质可燃即为燃烧中。
+    pub fn counter(self) -> u8 {
+        ((self.0 & COUNTER_MASK) >> COUNTER_SHIFT) as u8
+    }
+
+    /// 写入 counter。`Cell::pack` 产出的 cell counter 为 0（材质转换即清零，
+    /// spec §4.5 写入语义）。
+    pub fn with_counter(self, v: u8) -> Cell {
+        Cell((self.0 & !COUNTER_MASK) | ((v as CellRepr) << COUNTER_SHIFT))
+    }
 }
 
 #[cfg(test)]
@@ -184,6 +203,26 @@ mod tests {
         assert_eq!(VEL_SHIFT + VEL_BITS, 22);
         // "V_MAX_CELL 装得进 VEL_BITS" 由本文件顶部的 const 断言在编译期兜死，
         // 这里再写一遍只会被 clippy 判为恒真断言。
+    }
+
+    /// M2 spec §5.9 点名：`with_stamp`/`with_vel`/`with_dir` 只改各自掩码位，
+    /// **不得清掉 counter**——流动中的燃烧油带着燃料池一起走，靠的就是这条。
+    #[test]
+    fn counter_roundtrip_and_survives_other_with_ops() {
+        let base = Cell::pack(3, 0xAB).with_dir(true).with_vel(7);
+        for v in [0u8, 1, 90, 255] {
+            let c = base.with_counter(v);
+            assert_eq!(c.counter(), v, "counter 往返失败：{v}");
+            assert_eq!(c.material(), 3, "counter 写入污染了 material（v={v}）");
+            assert_eq!(c.stamp(), 0xAB);
+            assert_eq!(c.dir(), 1);
+            assert_eq!(c.vel(), 7, "counter 写入污染了 vel（v={v}）");
+        }
+        let c = base.with_counter(90).with_stamp(7).with_vel(3).with_dir(false);
+        assert_eq!(c.counter(), 90, "with_stamp/with_vel/with_dir 清掉了 counter（spec §5.9）");
+        assert_eq!(Cell::pack(5, 1).counter(), 0, "pack 产物 counter 必须为 0");
+        // 位段执法：counter 恰在 24–31，不越入 23 留白位
+        assert_eq!(Cell(0).with_counter(0xFF).0, 0xFFu32 << COUNTER_SHIFT);
     }
 
     #[test]

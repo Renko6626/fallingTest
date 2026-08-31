@@ -7,7 +7,7 @@ use crate::fixed::{Fx, HALF_CELL};
 use crate::material::{Category, MaterialTable, DISPERSION_MAX, MAT_AIR};
 use crate::particle::clamp_speed;
 use crate::reaction::ReactionTable;
-use crate::rng::{rng_u32, scan_flip, STREAM_DIAG, STREAM_FALLSTEP, STREAM_REACT, STREAM_SPLASH};
+use crate::rng::{rng_u32, scan_flip, STREAM_DIAG, STREAM_FALLSTEP, STREAM_IGNITE, STREAM_REACT, STREAM_SPLASH};
 use crate::window::WriteWindow;
 use crate::world::SpawnRequest;
 
@@ -25,6 +25,11 @@ const SPLASH_JITTER: Fx = Fx(0x0000_8000);
 const SPLASH_ROLL_TRIGGER: u32 = 0;
 const SPLASH_ROLL_VX: u32 = 1;
 const SPLASH_ROLL_VY: u32 = 2;
+
+/// 燃烧三骰的 `attempt` 标号（共用 [`STREAM_IGNITE`]，M2 spec §5.8）。
+const IGNITE_ROLL_DIR: u32 = 0;
+const FIRE_ROLL_TRIGGER: u32 = 1;
+const FIRE_ROLL_DIR: u32 = 2;
 
 /// 概率骰的量化分母。`splash_chance` 由 harness 按 `×255 round` 量化，
 /// 故这里也除以 255：`chance = 255` ⇒ `roll % 255` 恒 `< 255` ⇒ 必溅射；
@@ -161,7 +166,7 @@ impl Ctx<'_> {
         // `counter > 0` 位测试）。空反应表下退化为原先的 `is_static` 早退，
         // 逐位等价（golden 取证 2026-08-31）。"是否静态"从准入条件降为运动
         // 分支的条件——Static 发起方（如未来的 acid 目标）原地结算反应。
-        if c.stamp() == self.stamp || !self.reactions.needs_eval(m) {
+        if c.stamp() == self.stamp || !(self.reactions.needs_eval(m) || c.counter() > 0) {
             return;
         }
         let cat = self.table.category(m);
@@ -212,8 +217,11 @@ impl Ctx<'_> {
         };
         // 反应结算（M2 spec §4.1）：运动判定之后、在落点坐标上——运动可能已
         // 把该 cell 挪走。放在速度写回之后：反应命中会整字覆写产物（速度清零），
-        // 顺序反过来则写回把速度又抹到产物上。
-        self.react(cx, cy);
+        // 顺序反过来则写回把速度又抹到产物上。反应命中即本 tick 收工——材质
+        // 刚换过身份，燃烧推进从下一 tick 以产物身份开始（定序，非协议敏感）。
+        if !self.react(cx, cy) {
+            self.burn(cx, cy);
+        }
     }
 
     /// 反应结算（M2 spec §4）：以 `(x, y)` 为发起格检查 4 邻域，第一个命中即
@@ -228,11 +236,11 @@ impl Ctx<'_> {
     ///   掷一次骰，`salt` = 邻居方向索引——漏了它同格四邻掷出同值，反应沿固定
     ///   方向偏（Noita 宝箱事故同款，见 `noita-grid-api-and-rng.md` §5.2）；
     ///   `attempt` = 条目序号，使同对多条反应的概率语义相互独立。
-    fn react(&self, x: i32, y: i32) {
+    fn react(&self, x: i32, y: i32) -> bool {
         let c = self.win.get(x, y);
         let m = c.material();
         if !self.reactions.initiates(m) {
-            return;
+            return false;
         }
         for (di, (dx, dy)) in NEIGHBORS4.iter().enumerate() {
             let (nx, ny) = (x + dx, y + dy);
@@ -252,21 +260,136 @@ impl Ctx<'_> {
                     // 材质换了，动量语义不再成立）。产物严格 1:1，无 blob。
                     self.win.set(x, y, self.product_cell(rule.out_a, x));
                     self.win.set(nx, ny, self.product_cell(rule.out_b, nx));
-                    return; // 第一个命中即 break（§4.1）。
+                    return true; // 第一个命中即 break（§4.1）。
                 }
             }
         }
+        false
     }
 
-    /// 反应产物 cell：盖当前戳；液体/气体的方向记忆按 x 奇偶初始化（与
-    /// `world::set_cell_stamped` 同一约定——缺初始化会给产物一个系统性首选侧）。
+    /// 新生 cell（反应产物 / 衰变产物 / 产火）：盖当前戳；液体/气体的方向记忆
+    /// 按 x 奇偶初始化（与 `world::set_cell_stamped` 同一约定——缺初始化会给
+    /// 产物一个系统性首选侧）；**lifetime 出生即装填**（M2 spec §5.1，Task 3）。
     fn product_cell(&self, mat: u8, x: i32) -> Cell {
-        let c = Cell::pack(mat, self.stamp);
+        let mut c = Cell::pack(mat, self.stamp);
         if matches!(self.table.category(mat), Category::Liquid | Category::Gas) {
-            c.with_dir(x & 1 == 1)
-        } else {
-            c
+            c = c.with_dir(x & 1 == 1);
         }
+        let lifetime = self.table.lifetime(mat);
+        if lifetime > 0 {
+            c = c.with_counter(lifetime);
+        }
+        c
+    }
+
+    /// 四邻是否有氧气通路（M2 spec §5.4，实施补记 2026-08-31）：air **或任意
+    /// Gas**——火/烟本身就是气相，贴着燃料的火不该把燃料"闷"住（否则油面上
+    /// 的火永远点不着油：火占掉了油唯一的 air 邻居，实测踩坑）。实心内部
+    /// （四邻全固/液）仍然无氧，由外向内的保护不变。
+    /// 读半径 ≤ 2（点燃前置对目标调用时距源 2 格），读在 halo 内，写域不受影响。
+    fn has_oxygen_access(&self, x: i32, y: i32) -> bool {
+        NEIGHBORS4.iter().any(|(dx, dy)| {
+            let m = self.win.get(x + dx, y + dy).material();
+            m == MAT_AIR || self.table.category(m) == Category::Gas
+        })
+    }
+
+    /// 燃烧阶段（M2 spec §5，Task 3）：只对 `counter > 0` 的格发生——
+    /// `counter == 0` 立即返回、零写入（休眠红线 §5.6：静置可燃物什么都不写，
+    /// 执法测试 `resting_wood_lets_chunk_sleep`）。
+    ///
+    /// **阶段内顺序即语义**（定死并作为行为契约）：
+    /// ① 灭火（邻接 extinguisher ⇒ 清零，spec §5.5）
+    /// ② 氧气（`requires_oxygen` 且四邻无 air ⇒ 闷熄清零，spec §5.4）
+    /// ③ 递减；归零 ⇒ 衰变为 `decay_to`（含产物 lifetime 装填，spec §5.1）
+    /// ④ 产火（仅燃料格：`fire_chance` 触发骰 + 方向骰指向 air ⇒ 写 `flame_to`，spec §5.3）
+    /// ⑤ 点燃（spec §5.2 四条件：源 counter>0 已由本函数准入隐含 + 温度比较 +
+    ///    目标可燃未燃 + 目标氧气前置）
+    /// 寿命格（fire/smoke）走 ③ + ⑤：fire 靠高 `fire_temp` 点燃；smoke 靠
+    /// 低 `fire_temp` 过不了温度比较——数据约束：smoke 的 `fire_temp` 必须
+    /// 低于全部 `ignition_temp`（spec §5.2 审阅补漏）。
+    ///
+    /// 写域：本格 + 单邻居，r = 1（spec §6.1）。
+    fn burn(&self, x: i32, y: i32) {
+        let c = self.win.get(x, y);
+        let counter = c.counter();
+        if counter == 0 {
+            return;
+        }
+        let m = c.material();
+        if self.table.fire_hp(m) > 0 {
+            // 燃烧中的燃料格。
+            for (dx, dy) in NEIGHBORS4 {
+                if self.table.extinguisher(self.win.get(x + dx, y + dy).material()) {
+                    self.win.set(x, y, c.with_counter(0));
+                    return;
+                }
+            }
+            if self.table.requires_oxygen(m) && !self.has_oxygen_access(x, y) {
+                self.win.set(x, y, c.with_counter(0)); // 闷熄
+                return;
+            }
+            let next = counter - 1;
+            if next == 0 {
+                // 燃料耗尽 ⇒ 衰变（wood/oil → decay_to，缺省 air）。
+                self.win.set(x, y, self.product_cell(self.table.decay_to(m), x));
+                return;
+            }
+            self.win.set(x, y, c.with_counter(next));
+            // ④ 产火：触发骰 + 方向骰（不同 attempt，spec §5.8）；方向指向
+            // 非 air 即本 tick 不产——蔓延自带随机性（Noita 同款）。
+            let chance = self.table.fire_chance(m);
+            if chance > 0 {
+                let trig = rng_u32(self.fseed, STREAM_IGNITE, x, y, 0, FIRE_ROLL_TRIGGER);
+                if trig % 255 < chance as u32 {
+                    let d = rng_u32(self.fseed, STREAM_IGNITE, x, y, 0, FIRE_ROLL_DIR) as usize % 4;
+                    let (dx, dy) = NEIGHBORS4[d];
+                    let (nx, ny) = (x + dx, y + dy);
+                    if self.win.get(nx, ny).material() == MAT_AIR {
+                        self.win.set(nx, ny, self.product_cell(self.table.flame_to(m), nx));
+                    }
+                }
+            }
+            self.try_ignite(x, y, m);
+        } else if self.table.lifetime(m) > 0 {
+            // 寿命格（fire/smoke）。
+            let next = counter - 1;
+            if next == 0 {
+                // 火熄成烟、烟散成空气——同一条"归零即衰变"（spec §5.1）。
+                self.win.set(x, y, self.product_cell(self.table.decay_to(m), x));
+                return;
+            }
+            self.win.set(x, y, c.with_counter(next));
+            self.try_ignite(x, y, m);
+        }
+        // fire_hp == 0 且 lifetime == 0 但 counter > 0：不可达——counter 只由
+        // 点燃（fire_hp）与出生装填（lifetime）两条路径写入非零值。
+    }
+
+    /// 点燃判定（M2 spec §5.2，含两条审阅补漏）：每 tick 随机选**一个**方向
+    /// 采样邻居（蔓延自带随机性、不四面齐爆，成本也低——Noita 同款）。
+    /// 源门（counter > 0）由调用方 `burn` 的准入保证：冷油声明再高的
+    /// `fire_temp` 也进不到这里。
+    fn try_ignite(&self, x: i32, y: i32, m: u8) {
+        let d = rng_u32(self.fseed, STREAM_IGNITE, x, y, 0, IGNITE_ROLL_DIR) as usize % 4;
+        let (dx, dy) = NEIGHBORS4[d];
+        let (nx, ny) = (x + dx, y + dy);
+        let t = self.win.get(nx, ny);
+        let tm = t.material();
+        if self.table.fire_temp(m) < self.table.ignition_temp(tm) {
+            return;
+        }
+        let fuel = self.table.fire_hp(tm);
+        if fuel == 0 || t.counter() != 0 {
+            return;
+        }
+        // 氧气前置（审阅补漏 2026-08-31）：无氧目标不点燃——否则装填/清零
+        // ping-pong，点燃骰浪费在注定闷熄的方向上（spec §5.2）。
+        if self.table.requires_oxygen(tm) && !self.has_oxygen_access(nx, ny) {
+            return;
+        }
+        // 装填 + 盖当前戳（帧内不再被评估；延迟点燃队列不移植的理由，spec §5.7）。
+        self.win.set(nx, ny, t.with_counter(fuel).with_stamp(self.stamp));
     }
 
     /// 撞击溅射的三条件判定与执行（spec §6.1/§6.3）。返回是否真的脱格了。
