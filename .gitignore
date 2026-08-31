@@ -8,3 +8,4 @@ venv/
 *.gif
 /target
 /out
+target-u64/

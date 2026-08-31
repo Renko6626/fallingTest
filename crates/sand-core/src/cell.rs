@@ -16,10 +16,15 @@
 use crate::fixed::{Fx, FRAC_BITS};
 
 /// Cell 的底层存储宽度（M2 spec §2.3"随时可扩"封装，用户裁决 2026-08-31）：
-/// 位段访问全部收敛在本文件的访问器后面，扩到 u64 退化为改这一行别名 +
-/// 掩码常量（`cell-u64` 对照测量见 M2 收口 Task）。字段**私有**——外部只经
-/// `pack`/`raw`/各访问器出入，堵住绕过位段纪律的 `pub u32` 缺口。
+/// 位段访问全部收敛在本文件的访问器后面，扩宽退化为改这一行别名 + 掩码常量
+/// ——`cell-u64` feature 就是这句话的现场验证（对照测量专用，见 Cargo.toml
+/// 文档，绝不可进产品构建）。字段**私有**——外部只经 `pack`/`raw`/各访问器
+/// 出入，堵住绕过位段纪律的 `pub u32` 缺口。
+#[cfg(not(feature = "cell-u64"))]
 pub type CellRepr = u32;
+/// 见上：u64 对照测量变体（高 32 位恒 0，位段布局不变）。
+#[cfg(feature = "cell-u64")]
+pub type CellRepr = u64;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Cell(CellRepr);
@@ -199,7 +204,7 @@ mod tests {
     /// 位段预算执法：`vel` 必须真的落在 17–21，不许溢到 22（`free_falling` 预留位）。
     #[test]
     fn vel_occupies_only_bits_17_to_21() {
-        assert_eq!(Cell(0).with_vel(V_MAX_CELL).0, (V_MAX_CELL as u32) << VEL_SHIFT);
+        assert_eq!(Cell(0).with_vel(V_MAX_CELL).0, (V_MAX_CELL as CellRepr) << VEL_SHIFT);
         assert_eq!(VEL_SHIFT + VEL_BITS, 22);
         // "V_MAX_CELL 装得进 VEL_BITS" 由本文件顶部的 const 断言在编译期兜死，
         // 这里再写一遍只会被 clippy 判为恒真断言。
@@ -222,7 +227,7 @@ mod tests {
         assert_eq!(c.counter(), 90, "with_stamp/with_vel/with_dir 清掉了 counter（spec §5.9）");
         assert_eq!(Cell::pack(5, 1).counter(), 0, "pack 产物 counter 必须为 0");
         // 位段执法：counter 恰在 24–31，不越入 23 留白位
-        assert_eq!(Cell(0).with_counter(0xFF).0, 0xFFu32 << COUNTER_SHIFT);
+        assert_eq!(Cell(0).with_counter(0xFF).0, (0xFF as CellRepr) << COUNTER_SHIFT);
     }
 
     #[test]

@@ -11,6 +11,12 @@ edition.workspace = true
 # sand-harness 在 G_ACCEL == 0 时向 stderr 打警告。
 [features]
 zero-gravity = []
+# 对照测量专用（M2 spec §2.3，用户裁决第 5 条）：Cell 底层扩为 u64，量化
+# "随时可扩"封装的真实内存/带宽成本。**绝不可进产品构建**——位段语义不变但
+# 字宽变 ⇒ 状态哈希全变，两端 feature 不一致即分叉；golden/synctest（harness
+# 侧）编码的是 u32 哈希，在本 feature 下必然红，正确性验证以
+# `cargo test -p sand-core --features cell-u64` 为准。
+cell-u64 = []
 
 [dependencies]
 rayon = "1"

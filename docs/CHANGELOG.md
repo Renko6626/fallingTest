@@ -8,6 +8,16 @@
 ## 2026-08-31
 
 ### Added
+- **M2 收口（Task 4）：bench + u64 对照 + 总纲同步**。
+  ① `sand-core` 新增 `cell-u64` feature（对照测量专用，体例同 `zero-gravity`；
+  双宽度 sand-core 全测试绿）；② 三侧 bench 入档
+  `docs/perf/2026-08-31-m2-reactions-and-fire.md`——M2 活跃格成本 ≈ +20%
+  （发起方邻检，Layer G Task 2 同量级预期语义成本，睡眠稀疏性不受影响，
+  `fire_oil_chain` 全程 0.06–0.35 ms/tick）；u64 本机噪声内无一致回退；
+  ③ 总纲 §11 新增实施期决策第 7 条（M2 落地七要点，含**翻案 6"延迟点燃队列"
+  措辞修正**）；④ spec Status → Implemented、验收清单逐项签收（GIF 目检待用户）；
+  ⑤ `docs/README.md` 优先队列翻页至 M3；会话总账
+  `docs/sessions/2026-08-31-m2-reactions-and-fire.md`。
 - **M2 Task 3 落地：燃烧**（`crates/sand-core/src/{cell,material,rng,rules,world}.rs`、
   `sand-harness/scenario.rs`、`data/materials.ron`、`data/scenarios/fire_oil_chain.ron`）。
   counter 位段 24–31（`with_stamp/with_vel/with_dir` 不清 counter 单测钉死）；

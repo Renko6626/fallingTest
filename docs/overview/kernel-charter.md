@@ -153,7 +153,7 @@
    - **温度 → 材质静态常量 + 反应表**。点燃 = 燃烧源按帧随机采样邻居，比较 `源.temperature_of_fire ≥ 邻居.autoignition_temperature` 后按概率点燃；燃料消耗走 `fire_hp`（-1 = 永燃）；表面/整体燃烧走 `requires_oxygen`；熔化与冻结走反应表。全部是 **O(活跃格) 的局部判定，天然吃睡眠红利**。一手核查佐证：Noita 445 条材质、92 个属性中与温度相关的只有上述 2 个**静态常量**，不存在任何动态温度/热容/导热字段。
    - **气体 → Layer G 的第四个 `Category`**。`cell_type="gas"` 的格子住在网格上，走专用规则分支做上浮 + 横向扩散，不再是场。**Cell 位段规划不受影响**：气体不占竖直速度位段（bits 17–21），故实施期决策第 5 条 ① 的位段分配与 `window.rs::MAX_WRITE_RADIUS` 的 r ≤ 12 编译期断言**全部保持成立**——仅"速度位段为何无符号"的**理由**从"向上运动归 Layer F"替换为"向上运动的气体走 Layer G 专用规则分支，不经速度位段"。结论不变，理由换锚。佐证：Noita 的 `gas_speed` / `gas_upwards_speed` / `gas_horizontal_speed` / `gas_downwards_speed` 四个参数在整个 vanilla `materials.xml` 里**一次都没有被写过**（20 种气体全吃默认值），说明 per-material 气体调参几乎不产生玩法价值——起步一套全局参数即可，不必给气体开材质级旋钮。
 
-   **连带变更**（均已同步）：M2 里程碑重定义为"反应表与燃烧"（见上方里程碑）；`program-architecture.md` §3 子系统清单删 `fields（Layer F）` 行、`state` 行删"场双缓冲"、`grid` 行的读集删"F 层上一 tick 场值"；同文 §4 规范 tick 管线第 6 步"场层"标记为**已删除且编号刻意不重排**（保住"粒子相 = 第 5 步"这类既有引用的有效性，重排编号本身就是协议变更）；`docs/proposals/2026-08-30-noita-derived-optimizations.md` 的 **O2（Layer F 低分辨率场格 + 半频）随前提消失而作废**；`docs/superpowers/specs/2026-05-26-fire-system-design.md`（fire spec v2）的**主线重新生效**——它本就是 Noita 式 `fire_hp` + 静态温度比较，翻案第 2 条曾把它整体挂起待重审，现予解挂；但其运行时为 Python 原型，M2 实施时按 Rust 内核另立 spec 并复用其设计（尤其**延迟点燃队列**：防止帧内沿扫描方向的连锁偏置，与本块第 4 条同源）。
+   **连带变更**（均已同步）：M2 里程碑重定义为"反应表与燃烧"（见上方里程碑）；`program-architecture.md` §3 子系统清单删 `fields（Layer F）` 行、`state` 行删"场双缓冲"、`grid` 行的读集删"F 层上一 tick 场值"；同文 §4 规范 tick 管线第 6 步"场层"标记为**已删除且编号刻意不重排**（保住"粒子相 = 第 5 步"这类既有引用的有效性，重排编号本身就是协议变更）；`docs/proposals/2026-08-30-noita-derived-optimizations.md` 的 **O2（Layer F 低分辨率场格 + 半频）随前提消失而作废**；`docs/superpowers/specs/2026-05-26-fire-system-design.md`（fire spec v2）的**主线重新生效**——它本就是 Noita 式 `fire_hp` + 静态温度比较，翻案第 2 条曾把它整体挂起待重审，现予解挂；但其运行时为 Python 原型，M2 实施时按 Rust 内核另立 spec 并复用其设计（~~尤其**延迟点燃队列**~~——**措辞修正 2026-08-31，实施期决策第 7 条 ⑥**：延迟点燃队列不移植，其目标已被 stamp 机制覆盖；其余主线照常复用）。
 
    **本条为暂时性裁决**（用户措辞："目前我们先优先 follow 这个 Noita 体系"）。**复议条件**：若 M4 法术设计确认需要**连续温度量**——即"加热/冷却"要作为可叠加、可读数的战术状态，而非离散的着火/熔化反应——则重开本条。届时优先评估 `noita-derived-optimizations.md` O2 的低分辨率场格（4×4）+ 半频方案，而非全分辨率全频的原方案；重开前必须先有 bench 数据证明该降本方案的成本落在 tick 预算内。
 
@@ -196,6 +196,48 @@
    ③ **RNG key 用起始坐标而非撞停坐标**（`STREAM_SPLASH = 5`）。撞停坐标同 tick 内**不唯一**：cell A 脱格后原格变 AIR，上方 cell B 同 tick 落入同格再撞停，若用它当 key 则 A 与 B 掷出同值 ⇒ 同材质整列连锁全脱或全停，正是翻案记录第 4 条点名的偏置。
 
    ④ **补上 P→G 方向：粒子落格把撞击速度写进 cell 速度位**（用户裁决 2026-08-31）。此前粒子哪怕以 `MAX_SPEED`（16 格/tick，网格上限 4 倍）砸下来，落格时动量整个被丢弃——**网格 cell 跑到 4 格/tick 会溅射，粒子跑到 16 格/tick 反而不溅**。这不是裁决而是 M1 落格逻辑与 Task 2 速度语义之间的时间差。补法刻意选"写速度位、复用既有溅射判定"而非新开一条通路：不新增生成源、不动 ① 的定序论证。**实测佐证**：本条落地前 `waterfall_ci` 的 golden 状态哈希一条都不变（其水全是 `Op::Emit` 粒子，网格水从不高速撞停），落地后 4 条 tick 哈希 + final 全变。**仍未覆盖**：横向撞击动量——速度位段是无符号竖直速度，网格没有水平速度场，补它要再开位段，留 M2 之后。
+
+**实施期决策（2026-08-31，M2 反应表与燃烧）**：
+
+7. **M2 三 Task 落地：零新增 pass，非协议版本变更**（2026-08-31，
+   `docs/superpowers/specs/2026-08-31-m2-reactions-and-fire-design.md`，含审阅补漏与 §5.3.1 实施补记）。
+   反应结算与燃烧推进全部塞进 `Ctx::eval`（运动之后、落点坐标上），tick 管线阶段一个不加、
+   新增写入全部 r ≤ 1——`window.rs::MAX_WRITE_RADIUS = 12` 编译期断言原样成立，
+   故按 §4 判据**不构成协议版本变更**。要点随本条落档：
+
+   ① **eval 准入重构**（spec §2.6）：`is_static` 早退降为运动分支条件，准入 =
+   世代戳 + per-material `needs_eval`（加载期预计算 `!is_static ∨ initiates_reaction`，单次查表）
+   + `counter > 0` 位测试。空反应表下与 M0 语义逐位等价（四 golden 哈希流 diff 取证）。
+
+   ② **反应表**：作者格式稀疏（`reactions.ron`）、core 侧 n×n 稠密索引（切换判据：材质 > 64 种
+   或 bench 瓶颈）；四条加载期契约（未知引用报错 / tag 展开零字符串 / 发起方 `id_a < id_b`
+   正反只注册一次 / 概率 ×255 量化）；`reactions_fp` 与 `materials_fp` 同等待遇入握手指纹；
+   `STREAM_REACT = 6`（salt = 邻居方向索引，翻案 4 纪律）；反应邻居检查**跳过已盖当前戳格**
+   （一格一 tick 至多转化一次）。
+
+   ③ **燃烧**：counter 位段 24–31 通用倒计时器（燃料池/寿命共用，无 `burning` 标志位）；
+   burn 阶段内顺序即语义（灭火 → 氧气 → 递减/归零衰变 → 产火 → 点燃）；`STREAM_IGNITE = 7`
+   三骰不同 attempt；点燃源门 = `counter > 0`（冷燃料完全惰性）+ 目标氧气前置。
+   **三条实施补记**（spec §5.3.1）：产火产物走数据字段 `flame_to`；燃料材质声明自身
+   `fire_temp`（火是气体、升离水平表面只要一 tick，油面横向过火必须靠燃烧燃料直接点燃同类）；
+   氧气判定 = 邻接 air **或任意 Gas**（火本身是气相，不构成闷熄；实心内部保护不变）。
+
+   ④ **`blast_cost` → `hp` + `durability` 双层破坏**（Noita 对齐）：门槛是操作侧参数
+   （`Op::Explode::max_durability`，RON 缺省 10），`BLAST_COST_INFINITE` 哨兵退役
+   （wall `durability: 15`）。当前数据值下语义保持——`explosion_ci` 哈希流逐位不变。
+
+   ⑤ **新规矩：概率分支必须验分布，不能只验哈希**（spec §7.2）——RNG salt 维度缺失类 bug
+   两端一样地错、SyncTest 抓不到（Noita 宝箱事故先例）。本轮两条：反应触发率贴近声明概率
+   （1722 对、4σ）、点燃方向骰四向均匀（961 腔、4σ）。
+
+   ⑥ **翻案 6 措辞修正**：该条连带变更曾写"M2 实施时复用 fire spec v2 设计（尤其延迟点燃
+   队列）"——**延迟点燃队列不移植**：它要防的"火一帧内沿扫描方向烧穿"已被现有 stamp 机制
+   覆盖（点燃时盖当前戳 + eval 开头跳过同戳格），见 M2 spec §5.7。fire spec v2 的其余主线
+   （`fire_hp` 燃料池 / 静态温度比较 / `requires_oxygen`）照常复用。
+
+   ⑦ **Cell 封装与 u64 对照**（用户裁决第 5 条）：`CellRepr` 别名 + `Cell` 字段私有化
+   （堵 `pub u32` 缺口），`cell-u64` feature 仅供对照测量、绝不进产品构建（体例同
+   `zero-gravity`）；成本数字入 `docs/perf/2026-08-31-m2-reactions-and-fire.md`。
 
 **待决（附判据与时点）**：
 
