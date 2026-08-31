@@ -7,6 +7,38 @@
 
 ## 2026-08-31
 
+### Added
+- **M2 设计 spec 落地：反应表与燃烧**（`docs/superpowers/specs/2026-08-31-m2-reactions-and-fire-design.md`，
+  新增，Status: Proposed）——经 `superpowers:brainstorming` 全流程逐节确认，是翻案第 6 条
+  （删除 Layer F）的落地设计。`docs/README.md` 优先队列已指向该 spec。
+
+  **分三 Task 串行**（照 Layer G 成例）：Task 0 数据层 → Task 1 气体 → Task 2 反应表
+  （含 `blast_cost` → `hp`+`durability` 替换）→ Task 3 燃烧。
+
+  **用户裁决五条**：① 一份 spec 三 Task 串行；② 材质最小集 8 种（air/wall/sand/water +
+  oil/wood/fire/smoke），**但 tag 机制不缩水**（总纲 §8 禁硬编码材质对，tag 展开加载期
+  一次性完成）；③ 四件遗留债（O3 粉末惯性 / 粒子穿水 / M1 两条测试债）全部推迟；
+  ④ 整体方案采纳"全部塞进 `Ctx::eval`、零新增 pass"——写域论证零改动、tick 管线不变故
+  **不构成协议版本变更**；⑤ Cell 不扩 u64，但做成随时可扩（`CellRepr` 别名 + 堵 `pub u32`
+  缺口）并在本轮 bench 量一次成本（与翻案 6 立的"先有 bench"同一纪律）。
+
+  **两个机制上的收获**：
+  ① **counter 位段复用**——bits 24–31 做成通用倒计时器，燃料池与寿命共用，一条"归零即
+  衰变为 `decay_to`"的规则表达三段链条（燃料烧尽→air、火熄→smoke、烟散→air），
+  烟不需要单独的产出机制；不设 `burning` 标志位（`counter > 0` 且可燃即在烧）。
+  ② **延迟点燃队列不移植**——fire spec v2 设计它是为防火在一帧内沿扫描方向烧穿木头，
+  而现有 stamp 机制（点燃时盖戳 + `eval` 开头跳过同戳格）已经解决，白送。
+
+  **self-review 查出并补掉两个设计漏洞**：① `eval` 开头 `is_static` 是**准入条件**，
+  Static 的 wood 根本不进 eval ⇒ Task 3 在 wood 上直接失效。修法是把 `is_static` 降为
+  运动分支的条件，另立 `needs_eval = !is_static ∨ counter > 0 ∨ initiates_reaction`
+  （末项是加载期预计算的 per-material 布尔），wall 与未点燃 wood 仍一个分支退出，
+  M0 稀疏扫描性能不受影响。② 原文列了"产火骰"却没写燃烧格如何产出 fire 材质，
+  补 §5.3 产火，链条闭合。
+
+  **本 spec 新立一条规矩**：概率分支必须验**分布**，不能只验哈希——RNG salt 维度缺失
+  这类 bug 两端一样地错、SyncTest 抓不到（外部实例：Noita 宝箱战利品事故扛了数年）。
+
 ### Changed
 - **删除 Layer F 场层——总纲 §11 翻案记录第 6 条（用户裁决）**。推翻翻案记录第 2 条
   （温度作为 Layer F pull 双缓冲扩散场回归主线），**场层整体删除**，温度与气体一并回归
