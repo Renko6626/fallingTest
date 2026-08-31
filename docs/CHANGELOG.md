@@ -8,6 +8,17 @@
 ## 2026-08-31
 
 ### Added
+- **M2 Task 1 落地：数据层 + 气体**（`crates/sand-core/src/{material,cell,rules,world,particle,hash}.rs`、
+  `crates/sand-harness/src/scenario.rs`、`data/materials.ron`）。
+  ① 材质新字段（tags/ignition_temp/fire_temp/fire_hp/lifetime/decay_to/requires_oxygen/
+  extinguisher/fire_chance，全部缺省安全）+ 加载期契约（fire_hp×lifetime 互斥、Gas 禁声明
+  dispersion、decay_to 引用不存在材质报错、二遍解析成 id）；② `Category::Gas` +
+  `rules::gas_step`（上→斜上→水平恒 1 格，`displace` 改沿运动方向密度梯度，两类共用）；
+  ③ Cell 封装（`CellRepr` 别名 + 字段私有化 + const `pack` + `raw()`）；④ materials.ron
+  新增 oil/wood/fire/smoke 最小集（燃烧参数留 Task 3）。
+  行为测试：气泡恰一格/tick（stamp 防连锁回归）、烟穿水上浮、被困气体入睡执法
+  `trapped_gas_lets_chunk_sleep`。**四 golden diff 取证只有 materials_fp 行变化**
+  （状态哈希逐位不变）后重录。`cargo test --workspace` 119+39+28 等全绿、clippy 零警告。
 - **M2 实施计划**（`docs/superpowers/plans/2026-08-31-m2-reactions-and-fire-plan.md`，新增，
   Status: Proposed）——按 spec 四 Task 切：① 数据层 + 气体 ② 反应表 + hp/durability
   ③ 燃烧 ④ 收口（bench/u64 对照/总纲 §11 同步）。goldens 每 Task 重录一次 fp、

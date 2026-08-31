@@ -8,7 +8,7 @@ use crate::explode;
 use crate::fixed::Fx;
 use crate::material::{MaterialTable, Category, MAT_WALL};
 
-pub const WALL_SENTINEL: Cell = Cell(MAT_WALL as u32);
+pub const WALL_SENTINEL: Cell = Cell::pack(MAT_WALL, 0);
 
 /// 确定性输入操作（M0：脚本化 brush；`Op::Emit` 为 M1 Task 5 新增发射器；
 /// InputFrame 正式编码留 M4）。
@@ -119,7 +119,10 @@ impl World {
             return;
         }
         let mut cell = Cell::pack(material, stamp);
-        if table.category(material) == Category::Liquid {
+        // 液体/气体方向记忆按 x 奇偶初始化（确定性且无整体偏置）；气体与液体
+        // 同待遇（M2 Task 1）：水平扩散共用 dir 承诺语义，缺初始化会给烟一个
+        // 系统性的首选侧。
+        if matches!(table.category(material), Category::Liquid | Category::Gas) {
             cell = cell.with_dir(x & 1 == 1);
         }
         let (ci, li) = self.locate(x, y);

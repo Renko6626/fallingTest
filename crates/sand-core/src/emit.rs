@@ -156,19 +156,12 @@ mod tests {
         // 免疫），供本文件的 Op::Explode 测试直接复用；Emit 测试不关心该
         // 字段取值。
         use crate::material::BLAST_COST_INFINITE;
+        // 255 = 永不汽化（base 缺省）：本表供 blast_cost/断线/守恒等既有行为
+        // 测试复用，不应引入意料之外的汽化分支——专门测汽化差异的用例另建
+        // 材料表（见"vaporize_threshold"分节）。
         let def = |id: u8, name: &str, category: Category, density: u16, blast_cost: u32| MaterialDef {
-            id,
-            name: name.into(),
-            category,
-            density,
-            color: (0, 0, 0),
             blast_cost,
-            // 255 = 永不汽化：本表供 blast_cost/断线/守恒等既有行为测试复用，
-            // 不应引入意料之外的汽化分支——专门测汽化差异的用例另建材料表
-            // （见下方"vaporize_threshold"分节）。
-            vaporize_threshold: 255,
-            dispersion: 1,
-            splash_chance: 0,
+            ..MaterialDef::base(id, name, category, density)
         };
         MaterialTable::new(vec![
             def(0, "air", Category::Static, 0, 0),

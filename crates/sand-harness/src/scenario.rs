@@ -20,15 +20,24 @@ fn default_vaporize_threshold() -> f64 {
     1.0
 }
 
-/// `MatSpec::dispersion` 的 serde 缺省值（Layer G Task 1，spec §3）：
-/// RON 缺省 1 = 改动前的单格横移语义。
-fn default_dispersion() -> u8 {
-    1
-}
-
 /// 缺省 0.0 = 永不溅射 ⇒ 未声明该字段的材质与 Layer G Task 3 之前逐位相同。
 fn default_splash_chance() -> f64 {
     0.0
+}
+
+/// M2 spec §2.1 缺省：着火点 100（缺省火温 10 点不着任何未声明材质）。
+fn default_ignition_temp() -> u8 {
+    100
+}
+
+/// M2 spec §2.1 缺省：火温 10。
+fn default_fire_temp() -> u8 {
+    10
+}
+
+/// M2 spec §2.1 缺省：requires_oxygen = true。
+fn default_requires_oxygen() -> bool {
+    true
 }
 
 // ---------- materials.ron ----------
@@ -62,14 +71,44 @@ struct MatSpec {
     /// [`load_materials`] 报错——**不是**手感旋钮而是 P4 写域论证的输入
     /// （见 `sand_core::DISPERSION_MAX` 文档），故不走 `blast_cost` 那条
     /// "core 侧不校验"的先例。
-    #[serde(default = "default_dispersion")]
-    dispersion: u8,
+    ///
+    /// **`Option`（M2 Task 1）**：Gas 材质**禁止声明**本字段（气体水平扩散
+    /// 恒 1 格、不读 dispersion——spec §3.1 审阅补漏，r_gas = 1 依赖这一条），
+    /// 需要区分"未声明"与"声明了 1"，故不再走 serde 缺省函数。
+    dispersion: Option<u8>,
     /// 撞击溅射概率（Layer G Task 3，spec §6.2）：RON 写 `0.0..=1.0` 十进制，
     /// 缺省 **0.0 = 永不溅射**（故未声明该字段的材质行为与 Task 3 之前逐位
     /// 相同）。加载期经 [`quantize_splash_chance`] 一次性 `×255 round` 量化
     /// 为 u8——完全照 `vaporize_threshold` 的体例，core 边界只见整数。
     #[serde(default = "default_splash_chance")]
     splash_chance: f64,
+    // ---------- M2 反应/燃烧字段（spec §2.1，全部缺省安全）----------
+    /// 反应匹配 tag，加载期由反应表展开器消费（Task 2）。
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default = "default_ignition_temp")]
+    ignition_temp: u8,
+    #[serde(default = "default_fire_temp")]
+    fire_temp: u8,
+    /// 燃料池初值，0 = 不可燃。与 `lifetime` 至多其一（core `MaterialTable::new` 校验）。
+    #[serde(default)]
+    fire_hp: u8,
+    /// 寿命初值（fire/smoke 类），出生即装填。
+    #[serde(default)]
+    lifetime: u8,
+    /// counter 归零后的转化目标**材质名**——此处是全 core 边界唯一的字符串引用，
+    /// 在 [`load_materials`] 二遍解析成 id（引用不存在材质 ⇒ 加载失败，
+    /// spec §2.4 契约 1 同款纪律）。缺省 air。
+    #[serde(default)]
+    decay_to: Option<String>,
+    #[serde(default = "default_requires_oxygen")]
+    requires_oxygen: bool,
+    #[serde(default)]
+    extinguisher: bool,
+    /// 产火概率（Noita `generates_flames`，spec §5.3）：`0.0..=1.0`，
+    /// 经 [`quantize_fire_chance`] ×255 round 量化。缺省 0 = 不产火。
+    #[serde(default)]
+    fire_chance: f64,
 }
 
 #[derive(Deserialize)]
@@ -77,6 +116,7 @@ enum CatSpec {
     Static,
     Powder,
     Liquid,
+    Gas,
 }
 
 /// 指纹归一化：剥掉所有 CR，使内容指纹只依赖**文件内容本身**，而不依赖
@@ -108,31 +148,69 @@ pub fn load_materials(path: &str) -> Result<(MaterialTable, u64), String> {
     let bytes = std::fs::read(path).map_err(|e| format!("读 {path} 失败：{e}"))?;
     let fp = xxh3_64(&normalize_for_fingerprint(&bytes));
     let text = String::from_utf8(bytes).map_err(|e| format!("{path} 不是 UTF-8：{e}"))?;
-    let file: MaterialsFile =
-        ron::from_str(&text).map_err(|e| format!("解析 {path} 失败：{e}"))?;
+    // IMPLICIT_SOME（M2 Task 1）：`dispersion`/`decay_to` 为区分"未声明"用了
+    // `Option`，RON 默认要求写 `Some(...)`——在解析端开扩展，数据文件照旧写
+    // 裸值（`dispersion: 5`），作者格式不变。
+    let file: MaterialsFile = ron::Options::default()
+        .with_default_extension(ron::extensions::Extensions::IMPLICIT_SOME)
+        .from_str(&text)
+        .map_err(|e| format!("解析 {path} 失败：{e}"))?;
+    // 二遍解析（M2 Task 1）：先建 名→id 映射，供 `decay_to` 回填——core 边界
+    // 只见 id，字符串引用全部死在加载期（spec §2.4 契约 2 同款纪律）。
+    let name_to_id: std::collections::BTreeMap<&str, u8> =
+        file.materials.iter().map(|m| (m.name.as_str(), m.id)).collect();
     let defs = file
         .materials
-        .into_iter()
+        .iter()
         .map(|m| -> Result<MaterialDef, String> {
+            let category = match m.category {
+                CatSpec::Static => Category::Static,
+                CatSpec::Powder => Category::Powder,
+                CatSpec::Liquid => Category::Liquid,
+                CatSpec::Gas => Category::Gas,
+            };
+            // Gas 禁声明 dispersion（M2 spec §3.1 审阅补漏）：气体水平扩散恒
+            // 1 格、根本不读该字段，声明了即配置错误——r_gas = 1 的写域论证
+            // （spec §6.1）依赖这一条，体例同 fire_hp/lifetime 互斥。
+            if category == Category::Gas && m.dispersion.is_some() {
+                return Err(format!(
+                    "材料 '{}'（id={}）是 Gas 却声明了 dispersion——气体水平扩散恒 1 格，不读该字段",
+                    m.name, m.id
+                ));
+            }
+            let decay_to = match &m.decay_to {
+                None => sand_core::MAT_AIR,
+                Some(name) => *name_to_id.get(name.as_str()).ok_or(format!(
+                    "材料 '{}'（id={}）的 decay_to 引用不存在的材质 '{name}'（加载期显式报错，不静默丢弃）",
+                    m.name, m.id
+                ))?,
+            };
             Ok(MaterialDef {
                 id: m.id,
                 name: m.name.clone(),
-                category: match m.category {
-                    CatSpec::Static => Category::Static,
-                    CatSpec::Powder => Category::Powder,
-                    CatSpec::Liquid => Category::Liquid,
-                },
+                category,
                 density: m.density,
                 color: m.color,
                 blast_cost: m.blast_cost,
                 vaporize_threshold: quantize_vaporize_threshold(m.vaporize_threshold).map_err(|e| {
                     format!("材料 '{}'（id={}）的 vaporize_threshold 非法：{e}", m.name, m.id)
                 })?,
-                dispersion: validate_dispersion(m.dispersion).map_err(|e| {
+                dispersion: validate_dispersion(m.dispersion.unwrap_or(1)).map_err(|e| {
                     format!("材料 '{}'（id={}）的 dispersion 非法：{e}", m.name, m.id)
                 })?,
                 splash_chance: quantize_splash_chance(m.splash_chance).map_err(|e| {
                     format!("材料 '{}'（id={}）的 splash_chance 非法：{e}", m.name, m.id)
+                })?,
+                tags: m.tags.clone(),
+                ignition_temp: m.ignition_temp,
+                fire_temp: m.fire_temp,
+                fire_hp: m.fire_hp,
+                lifetime: m.lifetime,
+                decay_to,
+                requires_oxygen: m.requires_oxygen,
+                extinguisher: m.extinguisher,
+                fire_chance: quantize_fire_chance(m.fire_chance).map_err(|e| {
+                    format!("材料 '{}'（id={}）的 fire_chance 非法：{e}", m.name, m.id)
                 })?,
             })
         })
@@ -181,6 +259,22 @@ pub fn quantize_splash_chance(v: f64) -> Result<u8, String> {
     if !(0.0..=255.0).contains(&raw) {
         return Err(format!(
             "splash_chance 量化失败：{v} 超出 [0.0, 1.0] 可表示范围（四舍五入后 raw={raw}，需落在 [0, 255]）"
+        ));
+    }
+    Ok(raw as u8)
+}
+
+/// 产火概率的加载期量化（M2 spec §5.3）：`0.0..=1.0` → `0..=255`，×255 round。
+/// 与 splash/vaporize 同一套数学、不合并——理由见 [`quantize_splash_chance`]
+/// 上方的文档（报错文案与缺省端点语义各不相同）。
+pub fn quantize_fire_chance(v: f64) -> Result<u8, String> {
+    if !v.is_finite() {
+        return Err(format!("fire_chance 量化失败：{v} 不是有限数"));
+    }
+    let raw = (v * 255.0).round();
+    if !(0.0..=255.0).contains(&raw) {
+        return Err(format!(
+            "fire_chance 量化失败：{v} 超出 [0.0, 1.0] 可表示范围（四舍五入后 raw={raw}，需落在 [0, 255]）"
         ));
     }
     Ok(raw as u8)
@@ -442,9 +536,9 @@ mod tests {
 
     fn table_with_water() -> MaterialTable {
         MaterialTable::new(vec![
-            MaterialDef { id: 0, name: "air".into(), category: Category::Static, density: 0, color: (0, 0, 0), blast_cost: 0, vaporize_threshold: 255, dispersion: 1, splash_chance: 0 },
-            MaterialDef { id: 1, name: "wall".into(), category: Category::Static, density: 100, color: (0, 0, 0), blast_cost: sand_core::BLAST_COST_INFINITE, vaporize_threshold: 255, dispersion: 1, splash_chance: 0 },
-            MaterialDef { id: 2, name: "water".into(), category: Category::Liquid, density: 16, color: (0, 0, 0), blast_cost: 1, vaporize_threshold: 255, dispersion: 1, splash_chance: 0 },
+            MaterialDef { blast_cost: 0, ..MaterialDef::base(0, "air", Category::Static, 0) },
+            MaterialDef { blast_cost: sand_core::BLAST_COST_INFINITE, ..MaterialDef::base(1, "wall", Category::Static, 100) },
+            MaterialDef { blast_cost: 1, ..MaterialDef::base(2, "water", Category::Liquid, 16) },
         ])
         .unwrap()
     }
@@ -715,6 +809,97 @@ mod tests {
         let r = load_materials(path.to_str().unwrap());
         std::fs::remove_file(&path).ok();
         assert!(r.is_err(), "dispersion=0 必须在加载期被拒绝");
+    }
+
+    // ==================== M2 Task 1：新字段加载契约（spec §2.1/§3.1）====================
+
+    #[test]
+    fn m2_fields_default_safe_on_legacy_materials_ron() {
+        // 未声明任何 M2 字段的旧式表：全部字段退化为"改动前行为"的缺省值。
+        let path = write_temp_materials("m2_defaults", "");
+        let (t, _fp) = load_materials(path.to_str().unwrap()).unwrap();
+        std::fs::remove_file(&path).ok();
+        for id in [0u8, 1u8] {
+            assert_eq!(t.fire_hp(id), 0, "缺省不可燃");
+            assert_eq!(t.lifetime(id), 0);
+            assert_eq!(t.ignition_temp(id), 100);
+            assert_eq!(t.fire_temp(id), 10);
+            assert_eq!(t.decay_to(id), 0, "缺省 decay_to = air");
+            assert!(t.requires_oxygen(id));
+            assert!(!t.extinguisher(id));
+            assert_eq!(t.fire_chance(id), 0);
+            assert!(t.tags_of(id).is_empty());
+        }
+    }
+
+    #[test]
+    fn gas_material_declaring_dispersion_is_rejected() {
+        // spec §3.1 审阅补漏：气体水平扩散恒 1 格、不读 dispersion——声明即
+        // 配置错误（r_gas = 1 的写域论证依赖这一条）。
+        let path = write_temp_materials(
+            "gas_disp",
+            "(id:2,name:\"smoke\",category:Gas,density:2,color:(0,0,0),dispersion:3),",
+        );
+        let r = load_materials(path.to_str().unwrap());
+        std::fs::remove_file(&path).ok();
+        assert!(r.is_err(), "Gas + dispersion 必须在加载期被拒绝");
+    }
+
+    #[test]
+    fn gas_material_without_dispersion_loads() {
+        let path = write_temp_materials(
+            "gas_ok",
+            "(id:2,name:\"smoke\",category:Gas,density:2,color:(0,0,0),lifetime:200),",
+        );
+        let (t, _fp) = load_materials(path.to_str().unwrap()).unwrap();
+        std::fs::remove_file(&path).ok();
+        assert_eq!(t.category(2), sand_core::Category::Gas);
+        assert_eq!(t.lifetime(2), 200);
+        assert_eq!(t.dispersion(2), 1, "未声明吃缺省 1（气体运行期不读它）");
+    }
+
+    #[test]
+    fn decay_to_resolves_to_id_and_rejects_unknown() {
+        // 解析成 id：fire 衰变到 smoke
+        let path = write_temp_materials(
+            "decay_ok",
+            "(id:2,name:\"smoke\",category:Gas,density:2,color:(0,0,0),lifetime:200),\
+             (id:3,name:\"fire\",category:Gas,density:1,color:(0,0,0),lifetime:40,decay_to:\"smoke\"),",
+        );
+        let (t, _fp) = load_materials(path.to_str().unwrap()).unwrap();
+        std::fs::remove_file(&path).ok();
+        assert_eq!(t.decay_to(3), 2, "decay_to 必须在加载期解析成 id");
+        // 引用不存在的材质 ⇒ 加载失败（spec §2.4 契约 1：与 Noita 的静默丢弃反着抄）
+        let path = write_temp_materials(
+            "decay_bad",
+            "(id:2,name:\"fire\",category:Gas,density:1,color:(0,0,0),lifetime:40,decay_to:\"steam\"),",
+        );
+        let r = load_materials(path.to_str().unwrap());
+        std::fs::remove_file(&path).ok();
+        assert!(r.is_err(), "decay_to 引用不存在材质必须报错，不得静默丢弃");
+    }
+
+    #[test]
+    fn declaring_both_fire_hp_and_lifetime_is_rejected_through_load() {
+        // 校验在 core 的 MaterialTable::new（直接构表同样被拦），这里验证
+        // harness 加载路径把错误透传出来。
+        let path = write_temp_materials(
+            "counter_clash",
+            "(id:2,name:\"weird\",category:Static,density:5,color:(0,0,0),fire_hp:10,lifetime:10),",
+        );
+        let r = load_materials(path.to_str().unwrap());
+        std::fs::remove_file(&path).ok();
+        assert!(r.is_err(), "fire_hp 与 lifetime 同时声明必须在加载期被拒绝");
+    }
+
+    #[test]
+    fn quantize_fire_chance_endpoints_and_rejects() {
+        assert_eq!(quantize_fire_chance(0.0).unwrap(), 0);
+        assert_eq!(quantize_fire_chance(1.0).unwrap(), 255);
+        assert_eq!(quantize_fire_chance(0.6).unwrap(), 153, "materials.ron 初值口径");
+        assert!(quantize_fire_chance(f64::NAN).is_err());
+        assert!(quantize_fire_chance(-0.01).is_err());
+        assert!(quantize_fire_chance(1.01).is_err());
     }
 
     #[test]

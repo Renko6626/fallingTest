@@ -55,5 +55,18 @@
         (id: 1, name: "wall",  category: Static, density: 100, color: (110, 106, 118), blast_cost: 4294967295),
         (id: 2, name: "sand",  category: Powder, density: 40,  color: (214, 176, 96),  blast_cost: 2, vaporize_threshold: 0.95, splash_chance: 0.1),
         (id: 3, name: "water", category: Liquid, density: 16,  color: (48, 108, 220),  blast_cost: 1, vaporize_threshold: 0.4, dispersion: 5, splash_chance: 0.6),
+        // ---------- M2 材质最小集（spec §1.3，用户裁决 2026-08-31）----------
+        // Task 1 先落材质本体与 tag；燃烧参数（fire_hp/lifetime/fire_temp/
+        // fire_chance/extinguisher）随 Task 3 一并声明——Task 1 里没人消费它们，
+        // 先给会让"golden 只变 fp 行"的逐位取证掺进无意义的噪声。
+        // oil：可燃液体，密度低于水（浮油）；色散取 2（Noita 参考：油低于水，
+        // noita-deep-dive.md:242）。
+        (id: 4, name: "oil",   category: Liquid, density: 12,  color: (96, 78, 40),   blast_cost: 1, dispersion: 2, tags: ["burnable"]),
+        // wood：可燃 Static，未点燃时与 wall 同样零成本退出 eval。
+        (id: 5, name: "wood",  category: Static, density: 60,  color: (122, 86, 48),  blast_cost: 3, tags: ["burnable"]),
+        // fire/smoke：Gas，上浮 + 水平扩散恒 1 格（不声明 dispersion，加载期
+        // 校验禁止；spec §3.1）。fire 密度最低——烟从火焰里穿升不合理。
+        (id: 6, name: "fire",  category: Gas,    density: 1,   color: (236, 120, 24), blast_cost: 0),
+        (id: 7, name: "smoke", category: Gas,    density: 2,   color: (70, 70, 76),   blast_cost: 0),
     ],
 )

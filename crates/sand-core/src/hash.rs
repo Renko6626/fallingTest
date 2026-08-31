@@ -13,7 +13,7 @@ use crate::world::World;
 pub fn chunk_hash(chunk: &Chunk, cx: u32, cy: u32) -> u64 {
     let mut h = Xxh3::new();
     for cell in &chunk.cells {
-        h.update(&cell.0.to_le_bytes());
+        h.update(&cell.raw().to_le_bytes());
     }
     h.update(&cx.to_le_bytes());
     h.update(&cy.to_le_bytes());

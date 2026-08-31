@@ -152,6 +152,12 @@ impl Ctx<'_> {
             return;
         }
         let cat = self.table.category(m);
+        if cat == Category::Gas {
+            // 气体（M2 spec §3.2）：恒 1 格/tick、不进 substeps 循环、不碰速度
+            // 位段——在重力积分之前分流，STREAM_FALLSTEP 对气体一次也不掷。
+            self.gas_step(x, y, c);
+            return;
+        }
         let v1 = (c.vel() + G_ACCEL).min(V_MAX_CELL);
         let n = substeps(self.fseed, v1, x, y);
         let moving = c.with_vel(v1);
@@ -161,7 +167,7 @@ impl Ctx<'_> {
             let step = match cat {
                 Category::Powder => self.powder_step(cx, cy, moving, k),
                 Category::Liquid => self.liquid_step(cx, cy, moving, k),
-                Category::Static => unreachable!(),
+                Category::Static | Category::Gas => unreachable!(),
             };
             match step {
                 Step::Moved(nx, ny) => (cx, cy) = (nx, ny),
@@ -244,18 +250,54 @@ impl Ctx<'_> {
         true
     }
 
-    /// 目标是 AIR → 移入；目标非 Static 且密度更小 → 置换。双方盖戳。
+    /// 目标是 AIR → 移入；目标非 Static 且密度梯度沿运动方向 → 置换。双方盖戳。
+    ///
+    /// **梯度方向**（M2 spec §3.1）：下沉/斜下（`ny > y`）要求目标更轻，
+    /// 上浮/斜上（`ny < y`）要求目标更重——下沉类与上浮类共用本函数，不复制
+    /// 代码路径。粉末/液体永远 `ny > y`，气体永远 `ny < y`；水平移动不经此
+    /// 函数（`side` 只入 AIR）。写域 r = 1。
     fn displace(&self, x: i32, y: i32, c: Cell, nx: i32, ny: i32) -> bool {
         let t = self.win.get(nx, ny);
         let tm = t.material();
         let ok = tm == MAT_AIR
-            || (!self.table.is_static(tm)
-                && self.table.density(tm) < self.table.density(c.material()));
+            || (!self.table.is_static(tm) && {
+                let (dm, dt) = (self.table.density(c.material()), self.table.density(tm));
+                if ny < y { dt > dm } else { dt < dm }
+            });
         if ok {
             self.win.set(nx, ny, c.with_stamp(self.stamp));
             self.win.set(x, y, t.with_stamp(self.stamp));
         }
         ok
+    }
+
+    /// 气体单步（M2 spec §3.1）：与 `liquid_step` 严格镜像——向上 → 两个斜上 →
+    /// 水平扩散**恒 1 格**（不读 `dispersion`，加载期已禁 Gas 声明该字段；
+    /// r_gas = 1，spec §3.4/§6.1，远在 `MAX_WRITE_RADIUS` 内）。
+    ///
+    /// 一帧升一格由既有 stamp 机制保证（spec §3.3）：`displace` 给两格都盖
+    /// 当前戳，扫描自下而上遇到刚升上来的气体格直接跳过——不需要任何额外处理，
+    /// 回归测试 `gas_bubble_rises_exactly_one_cell_per_tick` 钉死。
+    ///
+    /// **撞停零写入**：气体无速度语义、无 stalled 写回，"只有移动才写"天然
+    /// 满足写回纪律（spec §5.6 同源）——被困气体零写入，chunk 照常入睡
+    /// （执法测试 `trapped_gas_lets_chunk_sleep`）。
+    fn gas_step(&self, x: i32, y: i32, c: Cell) {
+        if self.displace(x, y, c, x, y - 1) {
+            return;
+        }
+        let s = self.diag_side(x, y, 0);
+        if self.displace(x, y, c, x + s, y - 1) {
+            return;
+        }
+        if self.displace(x, y, c, x - s, y - 1) {
+            return;
+        }
+        let d = c.dir();
+        if self.side(x, y, c, d, 1).is_some() {
+            return;
+        }
+        let _ = self.side(x, y, c, -d, 1);
     }
 
     /// 斜向偏好掷骰。`attempt` = 子步序号 `k`（Layer G Task 2，spec §4.2③）——
@@ -295,10 +337,11 @@ impl Ctx<'_> {
         // 侧移成功后记忆 = 实际移动方向（2026-06-14 液面冻结修复的 Rust 版语义，
         // M0 spec §4.3）。失败则翻向再试一次——翻向后同样吃满色散距离。
         let d = c.dir();
-        if let Some(nx) = self.side(x, y, c, d) {
+        let reach = self.table.dispersion(c.material()).min(DISPERSION_MAX) as i32;
+        if let Some(nx) = self.side(x, y, c, d, reach) {
             return Step::MovedSide(nx, y);
         }
-        if let Some(nx) = self.side(x, y, c, -d) {
+        if let Some(nx) = self.side(x, y, c, -d, reach) {
             return Step::MovedSide(nx, y);
         }
         Step::Blocked
@@ -317,8 +360,10 @@ impl Ctx<'_> {
     /// `dispersion` 缺省 1 时与改动前逐位等价：循环只跑 i=1 一轮，`far_cell`
     /// 就是原来的 `t`。
     /// 成功则返回落点的 x（Layer G Task 2 起，外层子步循环需要落点坐标）。
-    fn side(&self, x: i32, y: i32, c: Cell, d: i32) -> Option<i32> {
-        let reach = self.table.dispersion(c.material()).min(DISPERSION_MAX) as i32;
+    ///
+    /// `reach` 由调用方给（M2 Task 1 提参）：液体传 `dispersion.min(DISPERSION_MAX)`
+    /// （clamp 语义与位置不变，仍在使用点兜死），气体恒传 1（spec §3.1）。
+    fn side(&self, x: i32, y: i32, c: Cell, d: i32, reach: i32) -> Option<i32> {
         let mut far = x;
         let mut far_cell = Cell::AIR;
         for i in 1..=reach {

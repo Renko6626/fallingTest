@@ -14,18 +14,24 @@
 
 use crate::fixed::{Fx, FRAC_BITS};
 
+/// Cell 的底层存储宽度（M2 spec §2.3"随时可扩"封装，用户裁决 2026-08-31）：
+/// 位段访问全部收敛在本文件的访问器后面，扩到 u64 退化为改这一行别名 +
+/// 掩码常量（`cell-u64` 对照测量见 M2 收口 Task）。字段**私有**——外部只经
+/// `pack`/`raw`/各访问器出入，堵住绕过位段纪律的 `pub u32` 缺口。
+pub type CellRepr = u32;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Cell(pub u32);
+pub struct Cell(CellRepr);
 
 const STAMP_SHIFT: u32 = 8;
-const STAMP_MASK: u32 = 0xFF << STAMP_SHIFT;
-const DIR_BIT: u32 = 1 << 16;
+const STAMP_MASK: CellRepr = 0xFF << STAMP_SHIFT;
+const DIR_BIT: CellRepr = 1 << 16;
 
 /// 速度位段起始位（见本文件头部布局表）。
 pub const VEL_SHIFT: u32 = 17;
 /// 速度位段宽度。5 位是 `V_MAX_CELL = 16` 的硬下限。
 pub const VEL_BITS: u32 = 5;
-const VEL_MASK: u32 = ((1 << VEL_BITS) - 1) << VEL_SHIFT;
+const VEL_MASK: CellRepr = ((1 << VEL_BITS) - 1) << VEL_SHIFT;
 
 /// 1.0 格/tick = 4 个 ¼ 格单位（Q3.2 的定标）。**必须是 2 的幂**——
 /// `rules::substeps` 的概率取整靠 `% VEL_ONE` 无偏取位，非 2 的幂会引入取模偏置。
@@ -73,8 +79,16 @@ const _: () = assert!(SPLASH_MIN_SPEED <= V_MAX_CELL, "溅射阈值高于终端�
 impl Cell {
     pub const AIR: Cell = Cell(0);
 
-    pub fn pack(material: u8, stamp: u8) -> Cell {
-        Cell(material as u32 | ((stamp as u32) << STAMP_SHIFT))
+    /// `const`：`world::WALL_SENTINEL` 等编译期常量依赖（M2 封装轮改动，
+    /// 语义与原 `fn` 逐位相同）。
+    pub const fn pack(material: u8, stamp: u8) -> Cell {
+        Cell(material as CellRepr | ((stamp as CellRepr) << STAMP_SHIFT))
+    }
+
+    /// 底层位模式（哈希折叠等按字节消费的场合）。**只读**——不存在 `from_raw`：
+    /// 构造必须走 `pack` + 访问器，保持位段纪律单点执法。
+    pub const fn raw(self) -> CellRepr {
+        self.0
     }
 
     pub fn material(self) -> u8 {
@@ -91,7 +105,7 @@ impl Cell {
     }
 
     pub fn with_stamp(self, stamp: u8) -> Cell {
-        Cell((self.0 & !STAMP_MASK) | ((stamp as u32) << STAMP_SHIFT))
+        Cell((self.0 & !STAMP_MASK) | ((stamp as CellRepr) << STAMP_SHIFT))
     }
 
     pub fn with_dir(self, right: bool) -> Cell {
@@ -108,7 +122,7 @@ impl Cell {
     /// 写入竖直速度。调用方保证 `v <= V_MAX_CELL`（`rules::eval` 用 `min` 夹住）；
     /// 这里仍按位段宽度掩码，避免越界值污染 22 位以上的预留区。
     pub fn with_vel(self, v: u8) -> Cell {
-        Cell((self.0 & !VEL_MASK) | (((v as u32) << VEL_SHIFT) & VEL_MASK))
+        Cell((self.0 & !VEL_MASK) | (((v as CellRepr) << VEL_SHIFT) & VEL_MASK))
     }
 }
 

@@ -15,7 +15,7 @@ use xxhash_rust::xxh3::Xxh3;
 use crate::cell;
 use crate::dda;
 use crate::fixed::Fx;
-use crate::material::{MaterialTable, MAT_AIR};
+use crate::material::{Category, MaterialTable, MAT_AIR};
 use crate::world::World;
 
 /// 粒子池容量上限（总纲初值，`kernel-charter.md:64`）。
@@ -313,7 +313,9 @@ fn commit(
                         // `land_impact_velocity_matches_this_ticks_displacement`）。
                         let impact_vy = pos.1 - particles.y(i);
                         let v = cell::fx_to_vel(impact_vy);
-                        if v != 0 {
+                        // Gas 不写速度位（M2 Task 1）：气体规则不读速度位段，
+                        // 写入只会在哈希里留一份永不消费的死重量。
+                        if v != 0 && table.category(particles.material(i)) != Category::Gas {
                             world.set_cell_vel(lx, ly, v);
                         }
                     }
@@ -381,8 +383,8 @@ mod tests {
     #[test]
     fn land_impact_velocity_matches_this_ticks_displacement() {
         let table = MaterialTable::new(vec![
-            MaterialDef { id: 0, name: "air".into(), category: Category::Static, density: 0, color: (0, 0, 0), blast_cost: 0, vaporize_threshold: 255, dispersion: 1, splash_chance: 0 },
-            MaterialDef { id: 1, name: "wall".into(), category: Category::Static, density: 100, color: (0, 0, 0), blast_cost: crate::material::BLAST_COST_INFINITE, vaporize_threshold: 255, dispersion: 1, splash_chance: 0 },
+            MaterialDef { blast_cost: 0, ..MaterialDef::base(0, "air", Category::Static, 0) },
+            MaterialDef { blast_cost: crate::material::BLAST_COST_INFINITE, ..MaterialDef::base(1, "wall", Category::Static, 100) },
         ])
         .unwrap();
         let mut w = World::new(1, 1, 0);
@@ -495,15 +497,8 @@ mod tests {
     fn test_table() -> MaterialTable {
         use crate::material::{Category, MaterialDef, BLAST_COST_INFINITE};
         let def = |id: u8, name: &str, category: Category, density: u16, blast_cost: u32| MaterialDef {
-            id,
-            name: name.into(),
-            category,
-            density,
-            color: (0, 0, 0),
             blast_cost,
-            vaporize_threshold: 255,
-            dispersion: 1,
-            splash_chance: 0,
+            ..MaterialDef::base(id, name, category, density)
         };
         MaterialTable::new(vec![
             def(0, "air", Category::Static, 0, 0),

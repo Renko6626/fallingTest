@@ -13,17 +13,7 @@ pub const WATER: u8 = 3;
 #[allow(dead_code)]
 pub fn test_table_with_water_dispersion(dispersion: u8) -> MaterialTable {
     let def = |id: u8, name: &str, category: Category, density: u16, blast_cost: u32, disp: u8| {
-        MaterialDef {
-            id,
-            name: name.into(),
-            category,
-            density,
-            color: (0, 0, 0),
-            blast_cost,
-            vaporize_threshold: 255,
-            dispersion: disp,
-            splash_chance: 0,
-        }
+        MaterialDef { blast_cost, dispersion: disp, ..MaterialDef::base(id, name, category, density) }
     };
     MaterialTable::new(vec![
         def(0, "air", Category::Static, 0, 0, 1),
@@ -55,17 +45,7 @@ pub fn sim_with_table(
 #[allow(dead_code)]
 pub fn test_table_with_splash(water_chance: u8, sand_chance: u8) -> MaterialTable {
     let def = |id: u8, name: &str, category: Category, density: u16, splash: u8, disp: u8| {
-        MaterialDef {
-            id,
-            name: name.into(),
-            category,
-            density,
-            color: (0, 0, 0),
-            blast_cost: 1,
-            vaporize_threshold: 255,
-            dispersion: disp,
-            splash_chance: splash,
-        }
+        MaterialDef { splash_chance: splash, dispersion: disp, ..MaterialDef::base(id, name, category, density) }
     };
     MaterialTable::new(vec![
         def(0, "air", Category::Static, 0, 0, 1),
@@ -84,21 +64,32 @@ pub fn test_table() -> MaterialTable {
     // dispersion 全取缺省 1：本表是"改动前语义"的基线，既有测试与 golden
     // 的逐位不变性由它守着（spec §3.4 缺省行为条）。
     let def = |id: u8, name: &str, category: Category, density: u16, blast_cost: u32| MaterialDef {
-        id,
-        name: name.into(),
-        category,
-        density,
-        color: (0, 0, 0),
         blast_cost,
-        vaporize_threshold: 255,
-        dispersion: 1,
-        splash_chance: 0,
+        ..MaterialDef::base(id, name, category, density)
     };
     MaterialTable::new(vec![
         def(0, "air", Category::Static, 0, 0),
         def(1, "wall", Category::Static, 100, BLAST_COST_INFINITE),
         def(SAND, "sand", Category::Powder, 40, 2),
         def(WATER, "water", Category::Liquid, 16, 1),
+    ])
+    .unwrap()
+}
+
+/// 基线表 + 一种气体（M2 Task 1，气体行为测试用）：smoke，Gas，密度 2。
+// 只被 rules_behavior 用；common 被多个测试二进制各编一份（同上）。
+#[allow(dead_code)]
+pub const SMOKE: u8 = 4;
+
+#[allow(dead_code)]
+pub fn test_table_with_gas() -> MaterialTable {
+    let def = |id: u8, name: &str, category: Category, density: u16| MaterialDef::base(id, name, category, density);
+    MaterialTable::new(vec![
+        def(0, "air", Category::Static, 0),
+        def(1, "wall", Category::Static, 100),
+        def(SAND, "sand", Category::Powder, 40),
+        def(WATER, "water", Category::Liquid, 16),
+        def(SMOKE, "smoke", Category::Gas, 2),
     ])
     .unwrap()
 }

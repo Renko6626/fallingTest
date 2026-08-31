@@ -27,6 +27,9 @@ pub enum Category {
     Static,
     Powder,
     Liquid,
+    /// 气体（M2 spec §3）：走 `rules::gas_step` 上浮 + 水平扩散，恒 1 格/tick、
+    /// 不进 substeps、不占速度位段（充分性论证见 charter §11 翻案 6）。
+    Gas,
 }
 
 #[derive(Clone, Debug)]
@@ -70,6 +73,68 @@ pub struct MaterialDef {
     /// `blast_cost`/`vaporize_threshold` 的"core 侧不校验"先例——配错的后果
     /// 只是水花多寡不对。
     pub splash_chance: u8,
+    /// 反应匹配 tag（M2 spec §2.1）：core 侧运行期**不读**——tag 展开在
+    /// harness 加载期一次性完成（spec §2.4 契约 2"core 不出现字符串"），
+    /// 本字段只是展开器的输入随表存放（`tags_of` 访问器）。
+    pub tags: Vec<String>,
+    /// 着火点（Noita `autoignition_temperature` 的静态常量版，M2 spec §2.1）：
+    /// 点燃判定 `源.fire_temp >= 目标.ignition_temp`。缺省 100 = 缺省火温 10
+    /// 点不着任何未声明材质。
+    pub ignition_temp: u8,
+    /// 火温（Noita `temperature_of_fire`）：本材质**作为燃烧源**时的输出温度。
+    /// 只有 `counter > 0` 的格才是燃烧源（spec §5.2 审阅补漏的门），冷材质
+    /// 声明高火温不会自燃点邻居。缺省 10。
+    pub fire_temp: u8,
+    /// 燃料池初值（Noita `fire_hp`，M2 spec §2.1）：**0 = 不可燃**；被点燃时
+    /// 装填进 cell 的 counter 位段。与 `lifetime` 至多声明其一
+    /// （[`MaterialTable::new`] 校验——两者共用同一个 counter，语义靠装填
+    /// 时机区分，同时声明是配置错误）。
+    pub fire_hp: u8,
+    /// 寿命初值（fire/smoke 类，M2 spec §2.1）：**出生即装填**进 counter
+    /// （`world::set_cell_stamped` 统一写入路径）。0 = 无寿命语义。
+    pub lifetime: u8,
+    /// counter 归零后的转化目标材质 id（M2 spec §5.1"归零即衰变"）。RON 面
+    /// 写材质名，harness 加载期解析成 id——core 不见字符串。缺省 air。
+    pub decay_to: u8,
+    /// 为真：只有邻接 air 的格才推进燃烧（由外向内烧，M2 spec §5.4）；
+    /// 四周无 air 即闷熄。缺省 true。
+    pub requires_oxygen: bool,
+    /// 为真：燃烧格邻接到本材质即清零 counter（灭火，M2 spec §5.5）。
+    /// 走数据字段而非反应表——"正在燃烧"是 cell 状态，反应表匹配的是材质，
+    /// 表达不了。缺省 false。
+    pub extinguisher: bool,
+    /// 产火概率（对应 Noita `generates_flames`，M2 spec §5.3）：燃烧中的格子
+    /// 每 tick 按此概率向邻接 air 写入 fire。量化域 u8（×255 round，照
+    /// `splash_chance` 体例）。缺省 0 = 不产火。
+    pub fire_chance: u8,
+}
+
+impl MaterialDef {
+    /// 缺省底座（M2 spec §2.1"缺省安全"）：除四个身份参数外全部取"RON 未声明"
+    /// 的缺省值，与 harness 的 serde 缺省同口径。测试与程序化构表用
+    /// `MaterialDef { <覆盖项>, ..MaterialDef::base(..) }`，新增字段不再逐处爆改。
+    pub fn base(id: u8, name: &str, category: Category, density: u16) -> MaterialDef {
+        MaterialDef {
+            id,
+            name: name.into(),
+            category,
+            density,
+            color: (0, 0, 0),
+            blast_cost: 1,
+            vaporize_threshold: 255,
+            dispersion: 1,
+            splash_chance: 0,
+            tags: Vec::new(),
+            ignition_temp: 100,
+            fire_temp: 10,
+            fire_hp: 0,
+            lifetime: 0,
+            decay_to: MAT_AIR,
+            requires_oxygen: true,
+            extinguisher: false,
+            fire_chance: 0,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -95,6 +160,23 @@ impl MaterialTable {
         };
         check(MAT_AIR, "air")?;
         check(MAT_WALL, "wall")?;
+        for d in &defs {
+            // M2 spec §2.1 加载期校验：fire_hp 与 lifetime 共用 counter 位段，
+            // 语义靠装填时机区分，同时声明是配置错误而非可用组合。放在 core 侧
+            // 而非 harness——直接构表的测试/程序化调用方同样必须被拦住。
+            if d.fire_hp > 0 && d.lifetime > 0 {
+                return Err(format!(
+                    "材料 '{}'（id={}）同时声明了 fire_hp 与 lifetime——两者共用 counter 位段，至多其一",
+                    d.name, d.id
+                ));
+            }
+            if (d.decay_to as usize) >= defs.len() {
+                return Err(format!(
+                    "材料 '{}'（id={}）的 decay_to={} 越界（材质数 {}）",
+                    d.name, d.id, d.decay_to, defs.len()
+                ));
+            }
+        }
         Ok(MaterialTable { defs })
     }
 
@@ -146,6 +228,45 @@ impl MaterialTable {
     pub fn splash_chance(&self, id: u8) -> u8 {
         self.defs[id as usize].splash_chance
     }
+
+    // ---------- M2 反应/燃烧字段访问器（spec §2.1）----------
+
+    /// 反应 tag 列表（仅 harness 加载期展开用，core 运行期不读）。
+    pub fn tags_of(&self, id: u8) -> &[String] {
+        &self.defs[id as usize].tags
+    }
+
+    pub fn ignition_temp(&self, id: u8) -> u8 {
+        self.defs[id as usize].ignition_temp
+    }
+
+    pub fn fire_temp(&self, id: u8) -> u8 {
+        self.defs[id as usize].fire_temp
+    }
+
+    pub fn fire_hp(&self, id: u8) -> u8 {
+        self.defs[id as usize].fire_hp
+    }
+
+    pub fn lifetime(&self, id: u8) -> u8 {
+        self.defs[id as usize].lifetime
+    }
+
+    pub fn decay_to(&self, id: u8) -> u8 {
+        self.defs[id as usize].decay_to
+    }
+
+    pub fn requires_oxygen(&self, id: u8) -> bool {
+        self.defs[id as usize].requires_oxygen
+    }
+
+    pub fn extinguisher(&self, id: u8) -> bool {
+        self.defs[id as usize].extinguisher
+    }
+
+    pub fn fire_chance(&self, id: u8) -> u8 {
+        self.defs[id as usize].fire_chance
+    }
 }
 
 #[cfg(test)]
@@ -153,7 +274,7 @@ mod tests {
     use super::*;
 
     fn def(id: u8, name: &str, category: Category, density: u16) -> MaterialDef {
-        MaterialDef { id, name: name.into(), category, density, color: (0, 0, 0), blast_cost: 1, vaporize_threshold: 255, dispersion: 1, splash_chance: 0 }
+        MaterialDef::base(id, name, category, density)
     }
 
     #[test]
@@ -181,15 +302,8 @@ mod tests {
     #[test]
     fn blast_cost_accessor_returns_declared_value_including_infinite_sentinel() {
         let mk = |id, name, cost| MaterialDef {
-            id,
-            name: String::from(name),
-            category: Category::Static,
-            density: 0,
-            color: (0, 0, 0),
             blast_cost: cost,
-            vaporize_threshold: 255,
-            dispersion: 1,
-            splash_chance: 0,
+            ..MaterialDef::base(id, name, Category::Static, 0)
         };
         let t = MaterialTable::new(vec![mk(0, "air", 0), mk(1, "wall", BLAST_COST_INFINITE)]).unwrap();
         assert_eq!(t.blast_cost(0), 0);
@@ -201,18 +315,76 @@ mod tests {
     #[test]
     fn vaporize_threshold_accessor_returns_declared_value() {
         let mk = |id, name, threshold| MaterialDef {
-            id,
-            name: String::from(name),
-            category: Category::Static,
-            density: 0,
-            color: (0, 0, 0),
-            blast_cost: 1,
             vaporize_threshold: threshold,
-            dispersion: 1,
-            splash_chance: 0,
+            ..MaterialDef::base(id, name, Category::Static, 0)
         };
         let t = MaterialTable::new(vec![mk(0, "air", 255), mk(1, "wall", 102)]).unwrap();
         assert_eq!(t.vaporize_threshold(0), 255);
         assert_eq!(t.vaporize_threshold(1), 102);
+    }
+
+    // ==================== M2 反应/燃烧字段（spec §2.1）====================
+
+    #[test]
+    fn m2_fields_default_to_safe_values_and_roundtrip_through_accessors() {
+        let t = MaterialTable::new(vec![
+            def(0, "air", Category::Static, 0),
+            def(1, "wall", Category::Static, 100),
+            MaterialDef {
+                lifetime: 40,
+                decay_to: 0,
+                fire_temp: 100,
+                ..MaterialDef::base(2, "fire", Category::Gas, 1)
+            },
+            MaterialDef {
+                fire_hp: 90,
+                ignition_temp: 40,
+                fire_chance: 153,
+                tags: vec!["burnable".into()],
+                ..MaterialDef::base(3, "oil", Category::Liquid, 12)
+            },
+        ])
+        .unwrap();
+        // 缺省安全：未声明的材质拿到的就是"改动前行为"的值
+        assert_eq!(t.fire_hp(0), 0, "缺省 fire_hp=0 = 不可燃");
+        assert_eq!(t.lifetime(0), 0);
+        assert_eq!(t.ignition_temp(0), 100);
+        assert_eq!(t.fire_temp(0), 10);
+        assert!(t.requires_oxygen(0));
+        assert!(!t.extinguisher(0));
+        assert_eq!(t.fire_chance(0), 0);
+        assert!(t.tags_of(0).is_empty());
+        // 声明值原样可读
+        assert_eq!(t.category(2), Category::Gas);
+        assert!(!t.is_static(2), "Gas 不是 Static");
+        assert_eq!(t.lifetime(2), 40);
+        assert_eq!(t.fire_temp(2), 100);
+        assert_eq!(t.fire_hp(3), 90);
+        assert_eq!(t.ignition_temp(3), 40);
+        assert_eq!(t.fire_chance(3), 153);
+        assert_eq!(t.tags_of(3), ["burnable".to_string()]);
+    }
+
+    #[test]
+    fn rejects_material_declaring_both_fire_hp_and_lifetime() {
+        // 两者共用 counter 位段（spec §2.1 校验），同时声明是配置错误。
+        let bad = MaterialDef { fire_hp: 10, lifetime: 10, ..def(2, "weird", Category::Static, 5) };
+        let r = MaterialTable::new(vec![
+            def(0, "air", Category::Static, 0),
+            def(1, "wall", Category::Static, 100),
+            bad,
+        ]);
+        assert!(r.is_err(), "fire_hp 与 lifetime 同时声明必须在构表期被拒绝");
+    }
+
+    #[test]
+    fn rejects_decay_to_out_of_range() {
+        let bad = MaterialDef { lifetime: 5, decay_to: 9, ..def(2, "smoke", Category::Gas, 2) };
+        let r = MaterialTable::new(vec![
+            def(0, "air", Category::Static, 0),
+            def(1, "wall", Category::Static, 100),
+            bad,
+        ]);
+        assert!(r.is_err(), "decay_to 越界必须在构表期被拒绝");
     }
 }

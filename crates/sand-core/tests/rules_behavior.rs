@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{sim, sim_with_table, test_table_with_splash, test_table_with_water_dispersion, SAND, WATER};
+use common::{sim, sim_with_table, test_table_with_gas, test_table_with_splash, test_table_with_water_dispersion, SAND, SMOKE, WATER};
 use sand_core::{Fx, Op, ScanMode, DISPERSION_MAX, G_ACCEL, MAT_AIR, MAT_WALL, VEL_ONE, V_MAX_CELL};
 
 fn floor_op(w: i32, h: i32) -> Op {
@@ -444,6 +444,78 @@ fn fast_water_at_max_dispersion_stays_inside_write_window() {
 //
 // 场景约定：深井（左右墙 + 地板）里丢一格水，落差足够吃满终端速度，
 // 三个方向全被挡 ⇒ `Blocked` 撞停。
+
+// ==================== M2 Task 1：气体（spec §3）====================
+
+/// 上浮镜像 `sand_falls_straight_down`：上方为空时永远走正上方分支，且
+/// **恰一格/tick**——spec §3.3 的 stamp 防连锁回归（自下而上扫描对上浮是
+/// 连锁方向，`displace` 双格盖戳 + eval 开头戳检查堵死一帧多升）。
+#[test]
+fn gas_bubble_rises_exactly_one_cell_per_tick() {
+    let mut s = sim_with_table(2, 2, 7, 1, ScanMode::LiveRect, test_table_with_gas());
+    s.apply_setup(&[Op::Brush { material: SMOKE, x: 40, y: 100, r: 0 }]);
+    for t in 1..=20i32 {
+        s.step(&[]);
+        assert_eq!(s.world().cell(40, 100 - t).material(), SMOKE, "tick {t}：烟应恰在 y={}", 100 - t);
+        assert_eq!(s.world().count_material(SMOKE), 1, "tick {t}：烟数量守恒");
+    }
+}
+
+/// 水下的烟必须冒出水面（spec §3.1 密度梯度反转：上浮要求目标更重才让路；
+/// 加上水自身下沉置换，两条通路都把烟往上推）。
+#[test]
+fn gas_bubbles_up_through_liquid() {
+    let mut s = sim_with_table(2, 2, 11, 1, ScanMode::LiveRect, test_table_with_gas());
+    s.apply_setup(&[
+        Op::Fill { material: MAT_WALL, x0: 30, y0: 110, x1: 50, y1: 110 }, // 池底
+        Op::Fill { material: MAT_WALL, x0: 30, y0: 90, x1: 30, y1: 109 },  // 左壁
+        Op::Fill { material: MAT_WALL, x0: 50, y0: 90, x1: 50, y1: 109 },  // 右壁
+        Op::Fill { material: WATER, x0: 31, y0: 100, x1: 49, y1: 109 },    // 水体
+        Op::Brush { material: SMOKE, x: 40, y: 108, r: 0 },                // 池底一格烟
+    ]);
+    for _ in 0..200 {
+        s.step(&[]);
+    }
+    assert_eq!(s.world().count_material(SMOKE), 1, "烟不得消失");
+    let smoke_y = (0..128)
+        .flat_map(|x| (0..128).map(move |y| (x, y)))
+        .find(|&(x, y)| s.world().cell(x, y).material() == SMOKE)
+        .map(|(_, y)| y)
+        .unwrap();
+    let water_top = (0..128)
+        .flat_map(|y| (0..128).map(move |x| (x, y)))
+        .find(|&(x, y)| s.world().cell(x, y).material() == WATER)
+        .map(|(_, y)| y)
+        .unwrap();
+    assert!(
+        smoke_y < water_top,
+        "烟（y={smoke_y}）必须升到全部水（最高 y={water_top}）之上"
+    );
+}
+
+/// 被困气体零写入 ⇒ chunk 照常入睡（写回纪律，spec §5.6 同源；
+/// 镜像 `resting_pile_lets_every_chunk_sleep`）。烟被墙完全围死，
+/// gas_step 四路全 Blocked——什么都不许写。
+#[test]
+fn trapped_gas_lets_chunk_sleep() {
+    let mut s = sim_with_table(2, 2, 13, 1, ScanMode::LiveRect, test_table_with_gas());
+    s.apply_setup(&[
+        Op::Fill { material: MAT_WALL, x0: 39, y0: 99, x1: 41, y1: 101 }, // 3×3 实心
+        Op::Brush { material: SMOKE, x: 40, y: 100, r: 0 },               // 中心换成烟
+    ]);
+    for _ in 0..100 {
+        s.step(&[]);
+    }
+    assert_eq!(s.world().cell(40, 100).material(), SMOKE, "被困的烟原地不动");
+    for (ci, c) in s.world().chunks.iter().enumerate() {
+        assert!(c.dirty.is_empty(), "chunk {ci} 静置后仍脏：{:?}", c.dirty);
+        assert!(
+            c.next_dirty.snapshot().is_empty(),
+            "chunk {ci} 静置后 next_dirty 非空：{:?}",
+            c.next_dirty.snapshot()
+        );
+    }
+}
 
 /// 深井：左右墙 + 地板，井口在 y0，水从井口落到地板。
 fn well_ops(w: i32, h: i32, x: i32, y0: i32) -> Vec<Op> {
