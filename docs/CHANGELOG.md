@@ -7,6 +7,12 @@
 
 ## 2026-08-31
 
+### Added
+- **M2 实施计划**（`docs/superpowers/plans/2026-08-31-m2-reactions-and-fire-plan.md`，新增，
+  Status: Proposed）——按 spec 四 Task 切：① 数据层 + 气体 ② 反应表 + hp/durability
+  ③ 燃烧 ④ 收口（bench/u64 对照/总纲 §11 同步）。goldens 每 Task 重录一次 fp、
+  换取逐 Task 的"状态哈希逐位不变"取证，照 Layer G 先例。
+
 ### Changed
 - **M2 spec 审阅补漏 4 处 + 备忘 3 条**（`docs/superpowers/specs/2026-08-31-m2-reactions-and-fire-design.md`，
   §8 决策记录第 9 条）。锚点核查全部属实（`rules.rs:150` 准入、cell 位段留白、RNG 流
