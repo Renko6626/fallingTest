@@ -33,7 +33,7 @@ Python 当年没踩坑是因为 M0.5 决策①直接删了 static 跳过。
 |---|---|---|
 | 1 | cargo test 全绿 | ✅ 22 项 |
 | 2 | synctest 10 万 tick 零分叉 | ✅ release 版 acceptance 场景（640×384 四配置，实跑 2993s，scenario_fp `f5a093e75d6e67c1`） |
-| 3 | 双机 hashrun 逐字一致 | ⬜ **待用户执行**：两台机器各跑 `./target/release/sand-harness hashrun data/scenarios/acceptance.ron --ticks 100000 > hashes.txt` 后 diff |
+| 3 | 双机 hashrun 逐字一致 | ✅ **已完成（2026-08-31，用户在 Windows 侧执行）**：Linux rustc 1.89.0 × Windows rustc 1.97.1，9 场景最长 2 万 tick，**全部 tick 哈希与 final 逐位相同**（跨编译器大版本，比 §1 承诺条件更严）。存档 `out/hashrun-*.txt`。同轮查出并修复了握手指纹的行尾敏感缺陷（CRLF 检出使同一 commit 算出不同 fp，仿真无碍）——见 CHANGELOG 2026-08-31 与总纲 §11 实施期决策第 4 条 |
 | 4 | render GIF 目检 | ✅ `out/mixed.gif`：安息角、沙沉水、液面摊平、三路浇注 |
 
 ## 留给后续

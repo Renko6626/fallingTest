@@ -68,10 +68,34 @@ enum CatSpec {
     Liquid,
 }
 
+/// 指纹归一化：剥掉所有 CR，使内容指纹只依赖**文件内容本身**，而不依赖
+/// "文件是怎么落到磁盘上的"（2026-08-31 双机 hashrun 发现，charter §11
+/// 实施期决策第 4 条）。
+///
+/// **为什么必须归一化**：指纹的语义是 P5 的"两端数据表不一致视同版本不一致"。
+/// 裸字节哈希让它对行尾敏感 —— Windows 侧 `core.autocrlf=true` 检出成 CRLF
+/// 后，**同一个 commit** 在两台机器上算出不同指纹，握手被拒，而两端的仿真
+/// 其实逐字一致（实测：Linux rustc 1.89 与 Windows rustc 1.97 跨 9 场景、
+/// 最长 2 万 tick，全部 tick 哈希与 final **逐位相同**，只有 fp 行不同）。
+/// 这是**假阳性**：语义相同的数据被判为不同版本。
+///
+/// **为什么不改成哈希解析后的结构**（更"正确"的做法）：裸字节哈希有一个
+/// 宝贵性质 —— **自动完备**，任何字段新增都自动进指纹。结构化哈希需要逐字段
+/// 折叠，漏折一个字段就是一个静默的覆盖漏洞（`fold_fx_fields` 已经是这种
+/// 局部结构哈希，它的存在正是因为字节哈希覆盖不到"解析结果"这一层）。
+/// 归一化字节哈希保住了自动完备性，同时消掉唯一已知的假阳性来源。
+///
+/// **值不变**：仓库内所有 `.ron` 均为 LF（CR=0），故本函数在规范内容上是
+/// 恒等变换 —— 既有 golden 的 `materials_fp`/`scenario_fp` 行**无需重录**，
+/// CRLF 机器是向既有 LF 值收敛。
+pub fn normalize_for_fingerprint(bytes: &[u8]) -> Vec<u8> {
+    bytes.iter().copied().filter(|&b| b != b'\r').collect()
+}
+
 /// 返回（材料表，文件内容指纹）。
 pub fn load_materials(path: &str) -> Result<(MaterialTable, u64), String> {
     let bytes = std::fs::read(path).map_err(|e| format!("读 {path} 失败：{e}"))?;
-    let fp = xxh3_64(&bytes);
+    let fp = xxh3_64(&normalize_for_fingerprint(&bytes));
     let text = String::from_utf8(bytes).map_err(|e| format!("{path} 不是 UTF-8：{e}"))?;
     let file: MaterialsFile =
         ron::from_str(&text).map_err(|e| format!("解析 {path} 失败：{e}"))?;
@@ -320,7 +344,7 @@ fn fold_fx_fields<'a>(ops: impl Iterator<Item = &'a Op>) -> u64 {
 
 pub fn load_scenario(path: &str, table: &MaterialTable) -> Result<Scenario, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("读 {path} 失败：{e}"))?;
-    let source_fp = xxh3_64(&bytes);
+    let source_fp = xxh3_64(&normalize_for_fingerprint(&bytes));
     let text = String::from_utf8(bytes).map_err(|e| format!("{path} 不是 UTF-8：{e}"))?;
     let file: ScenarioFile =
         ron::from_str(&text).map_err(|e| format!("解析 {path} 失败：{e}"))?;
@@ -548,6 +572,69 @@ mod tests {
     fn quantize_vaporize_threshold_rejects_negative_and_above_one() {
         assert!(quantize_vaporize_threshold(-0.01).is_err(), "负值必须被拒绝");
         assert!(quantize_vaporize_threshold(1.01).is_err(), "超过 1.0（四舍五入后 > 255）必须被拒绝");
+    }
+
+    // ==================== 指纹行尾无关性（2026-08-31 双机 hashrun 回归）====================
+
+    /// 双机 hashrun 暴露的缺陷的回归测试：同一份内容，LF 与 CRLF 两种落盘方式
+    /// **必须**算出同一个 materials_fp。改动前这条必挂（裸字节哈希）。
+    #[test]
+    fn materials_fingerprint_is_line_ending_agnostic() {
+        let lf = "(materials:[\n                  (id:0,name:\"air\",category:Static,density:0,color:(0,0,0)),\n                  (id:1,name:\"wall\",category:Static,density:100,color:(0,0,0)),\n                  ])";
+        let crlf = lf.replace('\n', "\r\n");
+        assert_ne!(lf.as_bytes(), crlf.as_bytes(), "两份输入的字节必须真的不同，否则测试没意义");
+
+        let write = |tag: &str, body: &str| {
+            let p = std::env::temp_dir()
+                .join(format!("sand_harness_fp_eol_{}_{tag}.ron", std::process::id()));
+            std::fs::write(&p, body).unwrap();
+            p
+        };
+        let (pa, pb) = (write("lf", lf), write("crlf", &crlf));
+        let (_, fp_lf) = load_materials(pa.to_str().unwrap()).unwrap();
+        let (_, fp_crlf) = load_materials(pb.to_str().unwrap()).unwrap();
+        std::fs::remove_file(&pa).ok();
+        std::fs::remove_file(&pb).ok();
+
+        assert_eq!(
+            fp_lf, fp_crlf,
+            "materials_fp 必须与行尾无关——否则同一 commit 在 CRLF 平台上握手指纹不同 \
+             （2026-08-31 双机 hashrun 实测缺陷：仿真逐位一致、只有 fp 对不上）"
+        );
+    }
+
+    /// 同上，覆盖 `load_scenario` 那条独立的指纹路径（`source_fp`）。
+    #[test]
+    fn scenario_fingerprint_is_line_ending_agnostic() {
+        let t = table_with_water();
+        let lf = "Scenario(name:\"t\",world:(1,1),seed:0,ticks:1,setup:[],\n                  script:[At(tick:0,op:Brush(material:\"water\",x:1,y:1,r:1))])";
+        let crlf = lf.replace('\n', "\r\n");
+        let write = |tag: &str, body: &str| {
+            let p = std::env::temp_dir()
+                .join(format!("sand_harness_scfp_eol_{}_{tag}.ron", std::process::id()));
+            std::fs::write(&p, body).unwrap();
+            p
+        };
+        let (pa, pb) = (write("lf", lf), write("crlf", &crlf));
+        let a = load_scenario(pa.to_str().unwrap(), &t).unwrap();
+        let b = load_scenario(pb.to_str().unwrap(), &t).unwrap();
+        std::fs::remove_file(&pa).ok();
+        std::fs::remove_file(&pb).ok();
+        assert_eq!(a.fingerprint, b.fingerprint, "scenario_fp 必须与行尾无关");
+    }
+
+    /// **值不变**断言：仓库内 `.ron` 全为 LF，故归一化在规范内容上是恒等变换。
+    /// 这条守住"CRLF 机器向既有 LF 值收敛，而不是双方都换新值"——它正是
+    /// golden 无需重录的依据。
+    #[test]
+    fn normalize_is_identity_on_lf_content() {
+        let lf = b"a\nb\nc\n";
+        assert_eq!(normalize_for_fingerprint(lf), lf.to_vec());
+        assert_eq!(
+            normalize_for_fingerprint(b"a\r\nb\r\nc\r\n"),
+            lf.to_vec(),
+            "CRLF 应归一化到与 LF 完全相同的字节序列"
+        );
     }
 
     // ==================== dispersion 加载期校验（Layer G Task 1，spec §3.1）====================

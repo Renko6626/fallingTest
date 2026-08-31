@@ -1,0 +1,19 @@
+# 行尾归一化（2026-08-31，双机 hashrun 暴露的指纹分歧修复）
+#
+# 背景：`sand-harness::scenario` 的握手指纹曾直接哈希磁盘原始字节，
+# Windows 侧 `core.autocrlf=true` 检出成 CRLF 后，同一 commit 在两平台算出
+# 不同的 materials_fp / scenario_fp——**仿真结果完全一致，只有指纹对不上**。
+# 代码侧已改为归一化后哈希（治本，见 scenario.rs::normalize_for_fingerprint），
+# 本文件是配套的检出层卫生（治标），两者缺一不可：
+#   - 只有 .gitattributes：zip 分发、编辑器改行尾仍能再犯；
+#   - 只有代码归一化：golden 的**纯文本**比对仍会被 CRLF 干扰（非哈希问题）。
+#
+# 注意：本文件只对**此后的检出**生效。已存在的工作树需要
+#   git add --renormalize . && git checkout -- .
+# 或重新 clone。
+
+* text=auto eol=lf
+
+# 进握手指纹 / 逐字比对的文件，显式钉死 LF
+*.ron    text eol=lf
+*.golden text eol=lf

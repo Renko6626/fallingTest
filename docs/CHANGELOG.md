@@ -8,6 +8,45 @@
 ## 2026-08-31
 
 ### Fixed
+- **双机 hashrun 完成（M0 起挂账的唯一跨机验收项，用户在 Windows 侧执行）——
+  仿真确定性通过，指纹层查出真缺陷并修复**（总纲 §11 **实施期决策第 4 条**）。
+
+  **正面结论（重要）**：Linux（rustc 1.89.0）与 Windows（rustc **1.97.1**）在 9 个场景、
+  最长 2 万 tick 上，**全部 tick 哈希与 final 逐位相同**。这比总纲 §1 承诺的"同版本
+  二进制互联"条件更严——跨了编译器大版本仍逐位一致。（**不构成新承诺**，§1 的口径不变，
+  这只是一个正面数据点。）验收项 `docs/sessions/2026-08-30-m0-implementation.md` 表格第 3 行
+  的 ⬜ 可以勾了。存档：`out/hashrun-zhustation.txt`（Linux）与 Windows 侧同名文件。
+
+  **查出的缺陷**：`scenario_fp` / `materials_fp` 两端不同（9 场景 × 2 = 18 行，其余全同）。
+  根因是握手指纹直接哈希磁盘原始字节（`scenario.rs` 的 `load_materials`/`load_scenario`），
+  而 Windows 的 `core.autocrlf=true` 把 RON 检出成 CRLF。**同一个 commit、仿真逐位一致，
+  却算出不同指纹** —— 这是 P5 的假阳性：语义相同的数据被判为不同版本。用户已用
+  "输入 LF 归一化后重跑"精确复现 Linux 的 `c1558de1ce2c433e` 与 4 个 `scenario_fp`，
+  证据链闭合（非推测）。第二个后果：Windows 上 `--test golden` **4/4 全挂**，因为
+  golden 文件被检出成 CRLF 而 harness 输出恒为 LF，纯文本比对对不上（`golden.rs:28`）——
+  CI 只在 Linux 跑，故一直没暴露。
+
+  **修复三件套**（缺一不可）：① `scenario::normalize_for_fingerprint` 哈希前剥 CR（治本）；
+  ② `.gitattributes` 钉死 `*.ron`/`*.golden` 的 LF 检出（治检出层——只有 ① 挡不住
+  golden 的**纯文本**比对，那不是哈希问题）；③ `golden.rs` 比对也做行尾归一化
+  （只有 ② 挡不住 zip 分发与编辑器改行尾）。**未选"改哈希解析后的结构"**这条更彻底的
+  路：裸字节哈希有"自动完备"这个宝贵性质（字段新增自动进指纹），结构化折叠漏一个字段
+  就是静默覆盖漏洞（`fold_fx_fields` 正是那种局部结构哈希）；归一化保住完备性同时消掉
+  唯一已知假阳性。
+
+  **指纹值不变，golden 无需重录**：仓库内 `.ron` 全部 CR=0，归一化在规范内容上是恒等
+  变换 —— 实测改动后重跑与改动前归档 **229 条哈希 + 18 条指纹逐字不变**。CRLF 机器是
+  向既有 LF 值**收敛**，不是双方都换新值。（这一点与初步评估不同，初评认为要重录 4 个
+  golden。）
+
+  新增 3 条回归测试：`materials_fingerprint_is_line_ending_agnostic`、
+  `scenario_fingerprint_is_line_ending_agnostic`、`normalize_is_identity_on_lf_content`。
+  受影响文件：`.gitattributes`（新增）、`crates/sand-harness/src/scenario.rs`、
+  `crates/sand-harness/tests/golden.rs`、总纲 §11。
+
+  ⚠️ **已存在的工作树需要重新归一化**才能享受 `.gitattributes`：
+  `git add --renormalize . && git checkout -- .`，或重新 clone。
+
 - **粉末堆积的系统性方向偏置：行扫描定向改为每 tick 全局哈希相位**
   （`docs/proposals/2026-08-31-powder-scan-direction-bias.md`，Status: Implemented；
   总纲 §11 **实施期决策第 3 条**，并**订正总纲 §4 正文** `kernel-charter.md:58`）。

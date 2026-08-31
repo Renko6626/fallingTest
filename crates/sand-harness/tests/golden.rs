@@ -24,7 +24,11 @@ fn check(scenario: &str, golden: &str) {
     )
     .unwrap();
     let got = report.lines.join("\n") + "\n";
-    let want = std::fs::read_to_string(repo_path(golden)).unwrap();
+    // 行尾归一化（2026-08-31 双机 hashrun 发现）：harness 输出恒为 LF，而 golden
+    // 文件在 Windows 侧可能被 `core.autocrlf` 检出成 CRLF——那样纯文本比对必挂，
+    // 但那是**文件怎么落到磁盘上**的问题，不是哈希流不一致。`.gitattributes` 已
+    // 钉死 LF 检出，这里是第二道（zip 分发、编辑器改行尾仍能绕过 .gitattributes）。
+    let want = std::fs::read_to_string(repo_path(golden)).unwrap().replace('\r', "");
     assert_eq!(got, want, "golden 回归失败：{scenario} 哈希流与 {golden} 不一致");
 }
 
