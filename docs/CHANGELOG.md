@@ -8,6 +8,79 @@
 ## 2026-08-31
 
 ### Added
+- **Noita wiki 通读第二轮：引擎侧笔记**（`docs/reference/noita-grid-api-and-rng.md`，新增；
+  `noita-material-schema.md` 与 `noita-deep-dive.md` 已加交叉指针）——第一轮只读了 3 个
+  wiki 页面属取样不足，本轮把 `Modding:`（36 页）与 `Documentation:`（198 页）两个命名空间
+  **全量枚举**，挑 38 篇与内核相关的抓原始 wikitext 通读。取法沿用 `api.php`（HTML 页被 WAF
+  拦，API 不拦），批量取正文走 `prop=revisions&rvprop=content`，一次 50 页。
+
+  **① 上层碰网格靠一套封闭的参数化组件词汇**（CellEater / MagicConvertMaterial /
+  LiquidDisplacer / LooseGround / MaterialSucker / MaterialAreaChecker / MaterialSeaSpawner /
+  PixelSprite / PhysicsImageShape / ParticleEmitter / Explosion / Laser / Electricity）。
+  五个反复出现的参数模式：半径+形状、概率是 0–100 整数、材质筛选靠 tag 或**排序过的**材质表、
+  **每帧预算**、durability 门槛。验证了我们 `Op` 枚举（`crates/sand-core/src/world.rs:16`）
+  作为跨层白名单的路子；扩展形状 = 新增参数化 Op，而非放开网格写权限。
+
+  **② 能量射线三兄弟同构**：爆炸 `ray_energy`=20000 + `max_durability_to_destroy`=10、
+  激光 `damage_to_cells`=5000 + `max_cell_durability_to_destroy`=12、闪电 `energy`=1000 + 分叉。
+  **门槛一律在操作侧、能量池一律在材质侧** —— 钉死了 `blast_cost` → `durability`+`hp` 的
+  M2 演进形状。`ConfigExplosion` 72 字段已与 `explode.rs` 逐条对照成表，其中
+  `hole_destroy_liquid`（默认 false = 液体被炸飞而非删除）对应我们的 `vaporize_threshold`
+  —— 我们做得比它细（per-material 能量比例阈值 vs 一个 bool）。
+
+  **③ 真实粒子 vs 装饰粒子这条线被引擎画了五遍**（ParticleEmitter 三开关、Reaction 的
+  `cosmetic_particle`、Vegetation 的 `is_real_pixels`/`is_visual`、爆炸的 `material_sparks_real`、
+  材质的 `is_just_particle_fx`）—— Layer P / Channel B 分离拿到外部佐证。
+
+  **④ 反应引擎不止跑在网格上**：`MaterialInventoryComponent` 的 `do_reactions` /
+  `reaction_speed` 让同一张反应表跑在容器的材质多重集上。M2 反应匹配应做成不依赖网格坐标的
+  纯函数，M4 法术调合可直接复用。
+
+  **⑤ PRNG 事故史（本轮最意外的收获）**：Noita 用 Park-Miller LCG + 位置播种。
+  **RNG Overlap 事故**——同坐标二次 `SetRandomSeed` 导致序列重放，宝箱战利品表近一半永远
+  不可能出现，**持续数年到 2023-03 才修**。这正是总纲 §11 翻案记录第 4 条（salt/stream 必须
+  区分同帧同格多次掷骰）所防的东西，现在有了出货游戏的实例。关键教训：**这类 bug 不崩、不分叉、
+  SyncTest 抓不到**（两端一样地错），只能靠设计期写死 salt 维度 + 概率分布回归测试。
+  另两条：LCG 尾部相关性把 1/1000 变成 1/168（→ 禁顺序消费 RNG 流的第二个理由，且哈希雪崩
+  质量本身是红线的一部分）；坐标经浮点序列化只剩 6 位有效数字（→ 逻辑坐标禁浮点往返）。
+
+  **⑥ 组件更新顺序是公开协议**：wiki 列出 ~130 个系统的每帧更新顺序 —— 一个无确定性联机需求
+  的单机游戏都必须把它当对外契约，佐证总纲 §5 红线第 7 条。
+
+  文档 §8 汇总了本轮新增的 M2 待办 8 条（Op 加 `max_durability`、爆炸摧毁格概率转火、
+  反应做成坐标无关纯函数、每帧预算进 Op 参数、golden 增加"自加速链"场景、概率分支加分布
+  回归测试、总纲 §11 补外部实例引用、`direction` 式方向性反应暂缓）。
+
+- **M2 前置调研：Noita 材料定义字段全解**（`docs/reference/noita-material-schema.md`，
+  新增）——`docs/reference/noita-deep-dive.md` §2.2 的字段级展开，为 M2 的
+  `materials.ron` schema 演进提供一手锚点。
+
+  **取证**：一手 `materials.xml`（vexx32/noita-data 全量 clone，369 KB，本地
+  `xml.etree` 统计）+ wiki `api.php` 端点（HTML 页面被 WAF 拦，API 可直连）+
+  对照组 TPT `Element.h` 源码。
+
+  **实测规模**：445 条材质（`CellData` 207 + `CellDataChild` 238，其中 2 组重名 =
+  覆盖）、**92 个去重属性**、255 条 `Reaction` + 5 条 `ReqReaction`、71 个 tag。
+  文档给出全字段表（值域 / 默认值 / vanilla 实际使用次数）。
+
+  **对 M2 有决策价值的发现**：
+  ① **`blob_radius` 实测最大到 40**，`convert_all` 写域无界 —— 反应产物半径是
+  P4 写域论证的直接输入，M2 必须设上界并进 `window.rs` 同一条编译期断言，与
+  `dispersion` 同性质；`convert_all` 不抄。
+  ② **`durability`(0–14 门槛) + `hp`(能量池) 双层破坏模型**给出了 `blast_cost`
+  的完整版形状 —— `BLAST_COST_INFINITE` 哨兵可在 M2 干净退役（wall 改为
+  `durability=15`）。
+  ③ **气体四参数 `gas_*` 在 vanilla 里零使用**（20 种气体全吃默认）—— per-material
+  气体调参优先级极低，M2 先上全局参数。
+  ④ **wiki 明列 6 个"假字段"**（`collapsible`/`liquid_solid`/`color`/`explosion_power`
+  等）：vanilla 数据里出现 ≠ 引擎实现，抄数据表时的陷阱。
+  ⑤ **`unknown` 静默丢弃反应必须反着抄** —— Noita 为 mod 容错，我们双端数据表
+  不一致即分叉（总纲 §1 P5），加载期必须显式报错。
+  ⑥ 温度再核实：92 个字段里温度相关只有 2 个**静态常量**，无任何动态温度场 ——
+  与总纲 §11 翻案第 2 条（温度回归 Layer F 扩散场）不冲突，但给出换形方案：
+  `autoignition_temperature` → 着火点（与场值比较）、`temperature_of_fire` → 产热率；
+  并需补 TPT 有而 Noita 没有的 `heat_conduct` / `heat_capacity`（定点）。
+
 - **Layer G Task 3 完成：撞击溅射脱格（G→P）+ 粒子落格撞击（P→G）**——**Layer G
   运动语义重做三 Task 全部落地，spec 转 Implemented**（`docs/superpowers/specs/2026-08-31-layer-g-velocity-design.md` §6；
   总纲 §11 **实施期决策第 6 条**）。

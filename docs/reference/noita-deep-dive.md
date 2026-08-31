@@ -110,6 +110,8 @@
 
 [社区 wiki + GitHub dump 交叉验证]
 
+> **字段级全解见 `docs/reference/noita-material-schema.md`（2026-08-31，M2 前置调研）**：445 条材质 / 92 个属性 / 255 条 Reaction 的全字段表、值域、默认值与 vanilla 实际使用次数，含破坏模型（durability 门槛 + hp 能量池）、tag 系统、假字段清单，以及对 M2 `materials.ron` 的落地清单。本节保留概览。另见 `docs/reference/noita-grid-api-and-rng.md`（wiki Modding/Documentation 命名空间通读：网格写操作词汇、爆炸/激光/闪电的能量射线模型、真实 vs 装饰粒子分界、Noita 的 PRNG 事故史）。
+
 - **`cell_type` 只有 4 种**：`solid` / `liquid` / `fire` / `gas`（默认 liquid）。**没有 powder**——sand 的真实定义是 `cell_type="liquid"` + `liquid_sand="1"`（可堆叠、可站立，粉末走液体代码路径上的开关分支）。
 - **大量静态地形是 `liquid` + `liquid_static="1"`** 而非 solid（datamine 中 coal_static 是 liquid）；`solid` 主要留给 box2d 刚体材质。启示：类别越少，代码路径越少。
 - 核心属性速览：`density`（int 1–50+：oil=1, lava=6, coal=8, wood_static=11）、`durability`(0–14)、`hardness`、`hp`、`electrical_conductivity`(0–1，非沙液体默认 1)、`lifetime`（仅 liquid/gas）、`wang_color`（世界生成颜色→材质映射，必须唯一）、`tags`（`[burnable]` `[corrodible]` `[meat]` 等供反应表匹配）、`status_effects`（材质上声明施加哪种 stain，如 water→`"WET"`）、`stainable`、`slippery`。
