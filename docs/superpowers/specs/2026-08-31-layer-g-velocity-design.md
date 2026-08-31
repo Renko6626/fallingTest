@@ -11,7 +11,7 @@
 
 | Task | 状态 | 落账 |
 |---|---|---|
-| 1 · 液体色散 ≤8 | ✅ **代码与验收完成（2026-08-31）**，仅 GIF 目检结论待用户 | CHANGELOG 2026-08-31 块；perf `docs/perf/2026-08-31-layer-g-task1-dispersion.md` |
+| 1 · 液体色散 ≤8 | ✅ **完成（2026-08-31）**，GIF 目检已过用户确认 | CHANGELOG 2026-08-31 块；perf `docs/perf/2026-08-31-layer-g-task1-dispersion.md` |
 | 2 · 重力速度积分 | 未开始 | — |
 | 3 · 撞击溅射脱格 | 未开始 | — |
 

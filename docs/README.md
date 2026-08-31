@@ -18,8 +18,9 @@
 
 0. **粉末方向偏置修复：已完成（2026-08-31）**——`proposals/2026-08-31-powder-scan-direction-bias.md`。
    行扫描定向 `(y+tick)&1` → `(y ^ scan_flip(fseed))&1`；对称几何下偏置 −6.3% → +0.04%（CI 跨 0）。
-   总纲 §4 正文已订正、§11 实施期决策第 3 条已落。**遗留**：四相棋盘在镜像轴压 chunk 边界时
-   的 −0.8% 残留偏置未修，规避 = 竞技地图镜像轴避开 64 的倍数，是否真修留 M4 定。
+   总纲 §4 正文已订正、§11 实施期决策第 3 条已落。**残留的 −0.8%（镜像轴压 chunk 边界时四相棋盘
+   处理次序不镜像）已由用户裁定为四相调度的特性、不算 bug、不修**（2026-08-31，提案 §7 第 1 条）；
+   规避照旧 = 竞技地图镜像轴避开 64 的倍数。本条**已结案**，M4 不重开。
 
 1. **双机 hashrun：已完成（2026-08-31）** —— Linux rustc 1.89 × Windows rustc 1.97，9 场景最长
    2 万 tick，全部 tick 哈希与 final **逐位相同**。同轮查出握手指纹对行尾敏感（CRLF 检出使同一
@@ -27,12 +28,12 @@
    **下一步 = Layer G Task 2（重力速度积分）。**
 2. **Layer G 运动语义重做（实施中，spec: Proposed）**——`superpowers/specs/2026-08-31-layer-g-velocity-design.md`。
    范围 = 液体色散 ≤8 + 重力速度积分 + 撞击溅射脱格，分三 Task 独立落地。
-   - **Task 1 液体色散 ≤8：代码与验收已完成（2026-08-31），仅剩 GIF 目检结论待用户**——`materials.ron` 加
+   - **Task 1 液体色散 ≤8：已完成并经用户目检确认（2026-08-31）**——`materials.ron` 加
      `dispersion` 字段（water 5），`rules::side` 改"最远可达空格"+ `DISPERSION_MAX` clamp。单测 10 条、golden
      重录（`sand_pile` 逐 tick 哈希逐位不变，仅 `materials_fp` 变）、SyncTest waterfall+mixed 各 2 万 tick 六配置
      零分叉、bench 见 `perf/2026-08-31-layer-g-task1-dispersion.md`。目检 GIF：`out/waterfall_disp{1,5}.gif`、
      `out/mixed_disp{1,5}.gif`（改动前/后对照，看水面锯齿与摊平速度）。总纲 §4、§11 已同步。
-   - **Task 2 重力速度积分**（下一步）：Cell 位段 17–21 存竖直速度 + 子步循环；关键取证是 `G_ACCEL=0` 逐位回归。
+   - **Task 2 重力速度积分**（← 当前工作项）：Cell 位段 17–21 存竖直速度 + 子步循环；关键取证是 `G_ACCEL=0` 逐位回归。
    - **Task 3 撞击溅射脱格**：并行 pass 新增 `spawns` 写入源，须落总纲 §11。
 3. **M2 场层与反应表**（Layer G 三 Task 之后）：spec 里裁决 O2 场降本 + O3 粉末惯性时点 + durability/hardness
    字段化 + 粒子穿水/弹跳评估 + M1 遗留两条测试补强（见 `sessions/2026-08-30-m1-particle-layer.md`"留给后续"；
