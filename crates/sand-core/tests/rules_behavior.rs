@@ -660,6 +660,7 @@ fn burn_table() -> MaterialTable {
             lifetime: 40,
             fire_temp: 100,
             decay_to: SMOKE,
+            rise_chance: 128,
             ..MaterialDef::base(FIRE, "fire", Category::Gas, 1)
         },
         MaterialDef {
@@ -770,6 +771,30 @@ fn wood_burns_outside_in() {
         assert_eq!(center.material(), WOOD, "tick {t}：中心格不该被烧没");
         assert_eq!(center.counter(), 0, "tick {t}：中心格在表面烧完前不得装填（由外向内）");
     }
+}
+
+/// 火放在油面**上方**必须点得着（spec §5.3.1 第 4 条 rise_chance 的根因
+/// 回归）：恒升的火升离水平燃料面后，落点的下邻是自己刚腾出的空气——
+/// 2026-08-31 实测 13 格火 × 40 tick 寿命 0 次点燃。rise_chance = 0.5 让火
+/// 在表面逗留掷点燃骰，引导环节闭合。
+#[test]
+fn fire_dropped_on_surface_ignites_pool() {
+    let mut s = burn_sim(71, burn_table());
+    s.apply_setup(&[
+        Op::Fill { material: MAT_WALL, x0: 30, y0: 90, x1: 60, y1: 110 },
+        Op::Fill { material: 0, x0: 32, y0: 92, x1: 58, y1: 108 },
+        Op::Fill { material: OIL, x0: 36, y0: 106, x1: 54, y1: 108 },
+        // 火放在油面**正上方一行**（不埋进池里）
+        Op::Fill { material: FIRE, x0: 42, y0: 105, x1: 48, y1: 105 },
+    ]);
+    let oil0 = s.world().count_material(OIL);
+    for _ in 0..600 {
+        s.step(&[]);
+    }
+    assert!(
+        s.world().count_material(OIL) < oil0,
+        "表面点火必须烧掉油（rise_chance 引导回归：修复前 0 次点燃）"
+    );
 }
 
 /// 灭火走数据字段（spec §5.5）：邻接 water 的 wood 被点燃即清零、永不烧毁；

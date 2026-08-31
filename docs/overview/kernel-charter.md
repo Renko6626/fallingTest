@@ -218,9 +218,11 @@
    ③ **燃烧**：counter 位段 24–31 通用倒计时器（燃料池/寿命共用，无 `burning` 标志位）；
    burn 阶段内顺序即语义（灭火 → 氧气 → 递减/归零衰变 → 产火 → 点燃）；`STREAM_IGNITE = 7`
    三骰不同 attempt；点燃源门 = `counter > 0`（冷燃料完全惰性）+ 目标氧气前置。
-   **三条实施补记**（spec §5.3.1）：产火产物走数据字段 `flame_to`；燃料材质声明自身
-   `fire_temp`（火是气体、升离水平表面只要一 tick，油面横向过火必须靠燃烧燃料直接点燃同类）；
-   氧气判定 = 邻接 air **或任意 Gas**（火本身是气相，不构成闷熄；实心内部保护不变）。
+   **四条实施补记**（spec §5.3.1）：产火产物走数据字段 `flame_to`；燃料材质声明自身
+   `fire_temp`（油面横向过火必须靠燃烧燃料直接点燃同类）；氧气判定 = 邻接 air
+   **或任意 Gas**（火本身是气相，不构成闷熄；实心内部保护不变）；Gas 加
+   `rise_chance`（fire 0.5，`STREAM_GASSTAY = 8`）——恒升的火与刚离开的表面永不
+   4 邻接、点燃引导环节断裂（实测 0 命中），Noita 的 flame 本就贴燃料闪烁而非直升。
 
    ④ **`blast_cost` → `hp` + `durability` 双层破坏**（Noita 对齐）：门槛是操作侧参数
    （`Op::Explode::max_durability`，RON 缺省 10），`BLAST_COST_INFINITE` 哨兵退役

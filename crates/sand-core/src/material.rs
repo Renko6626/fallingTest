@@ -110,6 +110,13 @@ pub struct MaterialDef {
     /// "fire"——charter §8 禁硬编码材质语义）。仅在 `fire_chance > 0` 时被
     /// 消费；harness 加载期契约：`fire_chance > 0` 必须显式声明 `flame_to`。
     pub flame_to: u8,
+    /// Gas 每 tick 尝试上浮的概率（M2 spec §5.3.1 实施补记第 4 条，×255
+    /// 量化；缺省 255 = 恒上浮 = 改动前行为）。fire 取 ~0.5：Noita 的 flame
+    /// 寿命仅 ≈5 帧且**贴着燃料闪烁而非直升**（wiki 0.083s + 本仓
+    /// noita-deep-dive.md:46 一手调研）——恒升的火升离水平燃料面后 4 邻里
+    /// 永远没有它刚离开的表面，点燃引导环节断裂（2026-08-31 实测 0 命中）。
+    /// 只对 Category::Gas 有意义；非 Gas 不读。
+    pub rise_chance: u8,
 }
 
 impl MaterialDef {
@@ -138,6 +145,7 @@ impl MaterialDef {
             extinguisher: false,
             fire_chance: 0,
             flame_to: MAT_AIR,
+            rise_chance: 255,
         }
     }
 }
@@ -286,6 +294,10 @@ impl MaterialTable {
 
     pub fn flame_to(&self, id: u8) -> u8 {
         self.defs[id as usize].flame_to
+    }
+
+    pub fn rise_chance(&self, id: u8) -> u8 {
+        self.defs[id as usize].rise_chance
     }
 }
 

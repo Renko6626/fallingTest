@@ -124,6 +124,13 @@ pub const STREAM_REACT: u32 = 6;
 /// `ignition_direction_roll_is_uniform` 执法（spec §7.2）。
 pub const STREAM_IGNITE: u32 = 7;
 
+/// 气体上浮概率骰（M2 spec §5.3.1 实施补记第 4 条）。调用点：
+/// `rules.rs::gas_step` 开头——`rise_chance < 255` 的气体（fire）每 tick 掷
+/// 一次决定本 tick 是否尝试运动；不动即零写入（休眠纪律不受影响：fire 的
+/// counter 递减仍在写）。key = 当前坐标（同 [`STREAM_FALLSTEP`] 的唯一性
+/// 论证），salt/attempt 恒 0——每格每 tick 至多一掷。编号 8 接续 0–7。
+pub const STREAM_GASSTAY: u32 = 8;
+
 /// 本 tick 的行方向全局相位（0 或 1）；行方向 = `(y ^ scan_flip(fseed)) & 1 == 0`
 /// 为左→右。见 [`STREAM_SCANDIR`] 的完整论证。
 ///

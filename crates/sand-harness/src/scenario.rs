@@ -41,6 +41,11 @@ fn default_requires_oxygen() -> bool {
     true
 }
 
+/// spec §5.3.1 第 4 条缺省：恒上浮（= 改动前行为）。
+fn default_rise_chance() -> f64 {
+    1.0
+}
+
 // ---------- materials.ron ----------
 
 #[derive(Deserialize)]
@@ -118,6 +123,10 @@ struct MatSpec {
     /// 声明；与 `decay_to` 同样在加载期解析成 id。
     #[serde(default)]
     flame_to: Option<String>,
+    /// Gas 每 tick 尝试上浮的概率（spec §5.3.1 第 4 条）：`0.0..=1.0`，
+    /// 缺省 1.0 = 恒上浮 = 改动前行为。仅 Gas 消费。
+    #[serde(default = "default_rise_chance")]
+    rise_chance: f64,
 }
 
 #[derive(Deserialize)]
@@ -237,6 +246,9 @@ pub fn load_materials(path: &str) -> Result<(MaterialTable, u64), String> {
                 extinguisher: m.extinguisher,
                 fire_chance,
                 flame_to,
+                rise_chance: quantize_rise_chance(m.rise_chance).map_err(|e| {
+                    format!("材料 '{}'（id={}）的 rise_chance 非法：{e}", m.name, m.id)
+                })?,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -300,6 +312,20 @@ pub fn quantize_fire_chance(v: f64) -> Result<u8, String> {
     if !(0.0..=255.0).contains(&raw) {
         return Err(format!(
             "fire_chance 量化失败：{v} 超出 [0.0, 1.0] 可表示范围（四舍五入后 raw={raw}，需落在 [0, 255]）"
+        ));
+    }
+    Ok(raw as u8)
+}
+
+/// 气体上浮概率的加载期量化（spec §5.3.1 第 4 条）：同数学、不合并，理由同上。
+pub fn quantize_rise_chance(v: f64) -> Result<u8, String> {
+    if !v.is_finite() {
+        return Err(format!("rise_chance 量化失败：{v} 不是有限数"));
+    }
+    let raw = (v * 255.0).round();
+    if !(0.0..=255.0).contains(&raw) {
+        return Err(format!(
+            "rise_chance 量化失败：{v} 超出 [0.0, 1.0] 可表示范围（四舍五入后 raw={raw}，需落在 [0, 255]）"
         ));
     }
     Ok(raw as u8)

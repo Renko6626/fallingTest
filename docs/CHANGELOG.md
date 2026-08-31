@@ -8,6 +8,14 @@
 ## 2026-08-31
 
 ### Added
+- **Gas `rise_chance` 字段——火焰逗留（M2 二次目检修订）**（`crates/sand-core/src/
+  {material,rng,rules}.rs`、`sand-harness/scenario.rs`、`data/materials.ron`，spec
+  §5.3.1 第 4 条 + 总纲 §11 第 7 条 ③ 同步）。根因：burn/点燃在运动后落点执行，
+  恒升的火升离水平燃料面后落点下邻是自己刚腾出的空气——"火→第一格燃料"引导环节
+  断裂（诊断实测 13 格火 × 40 tick 寿命 0 次点燃）。Noita 查证：flame 寿命 0.083s、
+  贴燃料闪烁而非直升。修复 = 数据字段 `rise_chance`（缺省 1.0 恒升逐位不变；fire
+  0.5）+ `STREAM_GASSTAY = 8`。回归测试 `fire_dropped_on_surface_ignites_pool`；
+  四旧 golden 仅 materials_fp 行重录（哈希流第四次逐位一致）、fire_oil_chain 重录。
 - **渲染器燃烧可视化**（`crates/sand-harness/src/render.rs`）：调色板 128 起新增
   "燃烧变体"段——`counter > 0` 的可燃格向其 `flame_to` 材质色混合 2/3（数据驱动，
   无硬编码）。此前烧着的油/木与冷材质在 GIF 里同色，燃烧只能靠零星火气体格暗示，

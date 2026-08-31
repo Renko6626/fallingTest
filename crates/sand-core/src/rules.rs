@@ -7,7 +7,7 @@ use crate::fixed::{Fx, HALF_CELL};
 use crate::material::{Category, MaterialTable, DISPERSION_MAX, MAT_AIR};
 use crate::particle::clamp_speed;
 use crate::reaction::ReactionTable;
-use crate::rng::{rng_u32, scan_flip, STREAM_DIAG, STREAM_FALLSTEP, STREAM_IGNITE, STREAM_REACT, STREAM_SPLASH};
+use crate::rng::{rng_u32, scan_flip, STREAM_DIAG, STREAM_FALLSTEP, STREAM_GASSTAY, STREAM_IGNITE, STREAM_REACT, STREAM_SPLASH};
 use crate::window::WriteWindow;
 use crate::world::SpawnRequest;
 
@@ -481,6 +481,14 @@ impl Ctx<'_> {
     /// 满足写回纪律（spec §5.6 同源）——被困气体零写入，chunk 照常入睡
     /// （执法测试 `trapped_gas_lets_chunk_sleep`）。
     fn gas_step(&self, x: i32, y: i32, c: Cell) -> (i32, i32) {
+        // 上浮概率（M2 spec §5.3.1 第 4 条，Noita 查证：flame 贴燃料闪烁而非
+        // 直升）：rise_chance < 255 的气体本 tick 可能原地逗留——火焰因此能
+        // 停在燃料旁掷点燃骰，"火→第一格燃料"的引导环节不再依赖 1–2 tick 的
+        // 擦肩窗口。逗留零写入；smoke 等缺省 255 恒上浮，行为逐位不变。
+        let rise = self.table.rise_chance(c.material());
+        if rise < 255 && rng_u32(self.fseed, STREAM_GASSTAY, x, y, 0, 0) % 255 >= rise as u32 {
+            return (x, y);
+        }
         if self.displace(x, y, c, x, y - 1) {
             return (x, y - 1);
         }

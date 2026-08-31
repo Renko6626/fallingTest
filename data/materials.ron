@@ -72,7 +72,7 @@
         (id: 5, name: "wood",  category: Static, density: 60,  color: (122, 86, 48),  hp: 3, tags: ["burnable"], ignition_temp: 80, fire_temp: 100, fire_hp: 250, fire_chance: 0.3, flame_to: "fire"),
         // fire/smoke：Gas，上浮 + 水平扩散恒 1 格（不声明 dispersion，加载期
         // 校验禁止；spec §3.1）。fire 密度最低——烟从火焰里穿升不合理。
-        (id: 6, name: "fire",  category: Gas,    density: 1,   color: (236, 120, 24), hp: 0, fire_temp: 100, lifetime: 40, decay_to: "smoke"),
+        (id: 6, name: "fire",  category: Gas,    density: 1,   color: (236, 120, 24), hp: 0, fire_temp: 100, lifetime: 40, decay_to: "smoke", rise_chance: 0.5),
         (id: 7, name: "smoke", category: Gas,    density: 2,   color: (70, 70, 76),   hp: 0, lifetime: 200),
     ],
 )
