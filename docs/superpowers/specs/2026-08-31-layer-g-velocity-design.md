@@ -3,7 +3,7 @@
 > 文档路径：`docs/superpowers/specs/2026-08-31-layer-g-velocity-design.md`
 > 运行时版本：Rust（内核）+ Godot 4 + gdext（表现层）
 > 最近更新：2026-08-31 (UTC+8)
-> **Status**: Implemented（三 Task 均已落地并验收，2026-08-31；仅 Task 3 的 GIF 目检结论待用户）
+> **Status**: Implemented（三 Task 均已落地、验收并经用户目检确认，2026-08-31）
 
 ---
 
@@ -13,7 +13,7 @@
 |---|---|---|
 | 1 · 液体色散 ≤8 | ✅ **完成（2026-08-31）**，GIF 目检已过用户确认 | CHANGELOG 2026-08-31 块；perf `docs/perf/2026-08-31-layer-g-task1-dispersion.md` |
 | 2 · 重力速度积分 | ✅ **完成（2026-08-31）**，GIF 目检已过用户确认 | CHANGELOG 2026-08-31 块；perf `docs/perf/2026-08-31-layer-g-task2-gravity.md`；零加速取证 `.superpowers/layer-g-task2-gravity/` |
-| 3 · 撞击溅射脱格 | ✅ **代码与验收完成（2026-08-31）**，仅剩 GIF 目检结论待用户 | CHANGELOG 2026-08-31 块；perf `docs/perf/2026-08-31-layer-g-task3-splash.md` |
+| 3 · 撞击溅射脱格 | ✅ **完成（2026-08-31）**，GIF 目检已过用户确认 | CHANGELOG 2026-08-31 块；perf `docs/perf/2026-08-31-layer-g-task3-splash.md` |
 
 **Task 1 实测 vs 预期**：§3.5 的 golden 预期全部兑现（`sand_pile` 逐 tick 哈希逐位不变、仅 `materials_fp` 行变；三个含水场景状态哈希全变）。摊平速度 254 → 96 tick（2.6×）。两处与本文原计划的偏离，均已记 CHANGELOG：
 

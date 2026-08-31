@@ -26,7 +26,7 @@
    2 万 tick，全部 tick 哈希与 final **逐位相同**。同轮查出握手指纹对行尾敏感（CRLF 检出使同一
    commit 算出不同 fp，仿真无碍），已修（总纲 §11 实施期决策第 4 条）。M0 起挂账的跨机验收项清账。
    **下一步 = Layer G Task 2（重力速度积分）。**
-2. **Layer G 运动语义重做：三 Task 全部完成（2026-08-31，spec: Implemented），仅剩 Task 3 目检**——`superpowers/specs/2026-08-31-layer-g-velocity-design.md`。
+2. **Layer G 运动语义重做：三 Task 全部完成并经用户目检确认（2026-08-31，spec: Implemented）**——`superpowers/specs/2026-08-31-layer-g-velocity-design.md`。
    范围 = 液体色散 ≤8 + 重力速度积分 + 撞击溅射脱格，分三 Task 独立落地。
    - **Task 1 液体色散 ≤8：已完成并经用户目检确认（2026-08-31）**——`materials.ron` 加
      `dispersion` 字段（water 5），`rules::side` 改"最远可达空格"+ `DISPERSION_MAX` clamp。单测 10 条、golden
@@ -41,7 +41,7 @@
      成本，绝对量级远在预算内）。r 契约升格为编译期断言（12 ≤ 16）。目检 GIF：
      `out/sand_pile_g{0,1}.gif`、`out/mixed_g{0,1}.gif`（g0 = 改动前），重点看加速手感
      与"斜滑不清零速度"导致的沙堆坍塌是否过快。总纲 §4、§11 已同步。
-   - **Task 3 撞击溅射脱格：代码与验收已完成（2026-08-31），仅剩 GIF 目检结论待用户**——
+   - **Task 3 撞击溅射脱格：已完成并经用户目检确认（2026-08-31）**——
      G→P（cell 撞停脱格，`Chunk::spawn_buf` + 相位屏障后按 chunk index 升序 drain）
      **与 P→G（粒子落格把撞击速度写进 cell 速度位，用户中途裁决并入）** 两个方向都补齐。
      SyncTest mixed+waterfall+explosion_splash 各 2 万 tick 六配置零分叉（跑了两轮）；
@@ -65,6 +65,7 @@
 |---|---|---|
 | `overview/` | 总纲、架构；`architecture.md` 为 Python 原型时代旧版（superseded） | 现行 |
 | `CHANGELOG.md` | 工作账本（按产出索引） | 现行 |
+| `tuning-knobs.md` | **手感旋钮总表**：材料表字段 + Layer G/粒子/爆炸常量的现值、拧它的后果与代价，外加"明确不是旋钮"清单与待裁决缺口。统一调参从这里进 | 现行 |
 | `sessions/` | 会话总账（按时间索引） | 现行 |
 | `proposals/` | 改动提案；2026-06 两篇为原型时代产物，部分被总纲取代（见各自 Status 行） | 部分史料 |
 | `algorithms/` `materials/` | CA 算法与材质体系文档（Python 原型时代，思想仍有效，代码锚点指向 `archive/`） | 史料为主 |

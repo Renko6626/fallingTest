@@ -77,10 +77,28 @@
   `crates/sand-harness/tests/golden/*.golden`、`docs/perf/baselines/*.grid-only.txt`、
   总纲 §11、spec 实施进度与 §8 决策表（新增第 13–15 条）。
 
-  ⏳ **待用户**：GIF 目检（验收 §0 第 7 项）——`out/mixed_splash{0,1}.gif`（网格水
-  自由落体，走 G→P）与 `out/waterfall_ci_splash{0,1}.gif`（Emit 粒子落格，走 P→G），
-  `0` = 改动前。重点看两件事：水花量是否合适，以及 §6.1① 那条子裁决的后果
-  （`MovedSide` 也触发 ⇒ 高速水贴地横流会不会冒出过量的向上水花）。
+  ✅ **GIF 目检已过用户确认（2026-08-31）**——`out/mixed_splash{0,1}.gif`（G→P）与
+  `out/waterfall_ci_splash{0,1}.gif`（P→G）。验收 §0 第 7 项清账，**Layer G 三 Task
+  全部收口**。§6.1①（`MovedSide` 也触发溅射 ⇒ 贴地横流的向上水花）本轮未被判为过量，
+  维持现状，条目转入 `docs/tuning-knobs.md` §6 待裁决表继续挂账。
+
+### Added
+- **`docs/tuning-knobs.md`（新增）：手感旋钮总表**——把散在 `sand-core` 各模块与
+  `data/materials.ron` 里的可调参数集中到一处，便于统一调和（用户要求 2026-08-31）。
+
+  编排围绕"拧它要付什么代价"而非"它在哪个文件"：**A 类纯手感旋钮**（`splash_chance`、
+  `SPLASH_RESTITUTION`、`EXPLODE_SPEED`…）改完重录 golden + SyncTest，改 RON 还会
+  动 `materials_fp`；**B 类带编译期契约的数值**（`V_MAX_CELL`、`DISPERSION_MAX`、
+  `VEL_ONE`）越界直接编译不过，因为它们是 P4 写域论证的输入；**C 类根本不是旋钮**
+  （位段布局、RNG stream 编号、tick 管线顺序、行扫描定向、`HALO`、`CHUNK`、
+  squirrel5 金值常量）改动即改协议，必须先过总纲 §11。
+
+  另含两张清单：**明确"不是旋钮"的东西**（附各自的理由，防止被当成调参顺手动）与
+  **待裁决 / 已知缺口**（`MovedSide` 触发面、横向撞击动量、棋盘镜像残留、
+  溅射被容量拒绝时的质量缺口、斜滑清零——后两条已裁定，留在表里记录结论）。
+
+  明确声明**不是真源**：数值真源永远是代码与 RON，冲突以代码为准并顺手改这里。
+  受影响文件：`docs/tuning-knobs.md`（新增）、`docs/README.md` 目录分工表。
 
 ### Added
 - **Layer G Task 2 完成：重力速度积分**（spec `docs/superpowers/specs/2026-08-31-layer-g-velocity-design.md` §4，
