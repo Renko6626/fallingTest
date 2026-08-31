@@ -3,7 +3,7 @@
 use crate::cell::Cell;
 use crate::chunk::DirtyRect;
 use crate::material::{Category, MaterialTable, DISPERSION_MAX, MAT_AIR};
-use crate::rng::{rng_u32, STREAM_DIAG};
+use crate::rng::{rng_u32, scan_flip, STREAM_DIAG};
 use crate::window::WriteWindow;
 
 /// 单 chunk 扫描的规则上下文。
@@ -20,6 +20,13 @@ struct Ctx<'a> {
 /// 单代码路径 + 动态边界（O1 spec §2.2–§2.3）：扫描中本 chunk 的写入 ±1 实时并入
 /// 活矩形（window 追踪），行边界与上边界每步重读——"前方"（上方行、本行未访问侧）
 /// 被本遍接住，"后方/下方"留给 next_dirty 下 tick（全扫按访问序也不回访，逐位等价）。
+///
+/// **该等价性论证只依赖"起点用快照、终点每步重读"这个非对称结构，不依赖行方向
+/// 取哪个值**——方向只决定"未访问侧"是左还是右。但它**要求方向在三种 ScanMode
+/// 下取值一致**，故行方向必须是 `(tick, y)` 的纯函数：`flip` 来自 `fseed`
+/// （= `(seed, tick)` 的纯函数），`y` 是全局行号，两者都与起始矩形、脏状态、
+/// chunk 是否唤醒、线程调度无关。**禁止**把活矩形/脏状态/chunk 索引掺进方向判定
+/// （charter §11 实施期决策第 3 条的红线，详见 `rng::STREAM_SCANDIR`）。
 pub(crate) fn update_chunk(
     win: &WriteWindow,
     table: &MaterialTable,
@@ -33,12 +40,15 @@ pub(crate) fn update_chunk(
         return;
     }
     win.seed_live(start);
+    // 本 tick 的行方向全局相位（charter §11 实施期决策第 3 条）。每 tick 掷一次，
+    // 与 chunk 无关——同一行在所有 chunk 必须同向，见 rng::STREAM_SCANDIR 文档。
+    let flip = scan_flip(fseed);
     let ctx = Ctx { win, table, fseed, stamp: (tick % 256) as u8 };
     // 自下而上；底边在扫描开始时固定（向下写入必属已访问区）
     let mut ly = start.y1 as i32;
     while ly >= win.live_rect().y0 as i32 {
         let y = oy + ly;
-        let ltr = (y as u64 + tick) & 1 == 0;
+        let ltr = (y as u64 ^ flip) & 1 == 0;
         let row = win.live_rect();
         if ltr {
             let mut lx = row.x0 as i32;

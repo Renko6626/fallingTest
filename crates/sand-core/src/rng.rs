@@ -41,6 +41,47 @@ pub const STREAM_EMIT: u32 = 1;
 /// 与 `Op::Emit` 同一套 `EXPLODE_ROLL_VX`/`EXPLODE_ROLL_VY` 常量）。
 pub const STREAM_EXPLODE: u32 = 2;
 
+/// 行扫描方向流（charter §11 实施期决策第 3 条，2026-08-31）。调用点：
+/// `rules.rs::update_chunk` 每 tick 掷一次，决定本 tick 的行方向全局奇偶相位。
+///
+/// **为什么不能沿用 `(y + tick) & 1`**：那个式子对**运动中**的粒子会自我抵消
+/// 失效——自由下落者 `y+1`/`tick+1` 使 `(y+tick)` 奇偶恒定，整个下落被锁死在
+/// 同一扫描方向，交替机制只对静止粒子生效。更一般地，**任何周期为 2 的定向
+/// 方案都会与周期为 2 的动力学共振**（`tick & 1` 实测更差）。实测粉末堆积因此
+/// 产生系统性右偏，详见 `docs/proposals/2026-08-31-powder-scan-direction-bias.md`。
+///
+/// **key 只取 `tick`（经 `fseed`），`x`/`y` 恒传 0** —— 每 tick 全局掷一次，
+/// 行方向 = `(y ^ flip) & 1`。这样同时拿到三件事：① 无周期，粒子每 tick 跨
+/// 任意 n 行都不会被锁死（Layer G Task 2 的速度积分会让 n ∈ 1..4，逐行哈希与
+/// `y & 1` 在 n 的某种奇偶下都会重新锁死，本方案不会）；② **保留"同一 tick 内
+/// 相邻行必然反向"**，这是一个免费的对偶变量方差缩减，也避免同向行成串带来的
+/// 剪切带伪影；③ 同一行在所有 chunk 同向——方向若随 chunk 变，物理行为就会
+/// 依赖 chunk 划分，在竖缝上引入新的各向异性。
+///
+/// **取 bit16 而非 bit0**：`rng_u32` 的 `pos` 是各分量的线性折叠、不是单射，
+/// 存在唯一一列 `x*` 使 `pos(SCANDIR, ...) == pos(DIAG, x*, ...)`（`P_X` 为奇数
+/// 可逆 ⇒ 解唯一）。当前 `x*` 远在任何世界宽度之外，但那是**凑巧安全而非构造
+/// 安全**——与 `diag_side` 的 bit0 错开一位代价为零。执法测试见本文件
+/// `tests::scandir_bit_independent_of_diag_bit`。
+///
+/// **编号 4 而非 3**：3 已由 Layer G Task 2 的 `STREAM_FALLSTEP` 预留
+/// （`docs/superpowers/specs/2026-08-31-layer-g-velocity-design.md` §4.2③），
+/// 5 预留给 Task 3 的 `STREAM_SPLASH`（同 spec §6.1）。此处一次性排好，避免
+/// 后续撞号被迫改常量、再作废一次 golden。
+pub const STREAM_SCANDIR: u32 = 4;
+
+/// 本 tick 的行方向全局相位（0 或 1）；行方向 = `(y ^ scan_flip(fseed)) & 1 == 0`
+/// 为左→右。见 [`STREAM_SCANDIR`] 的完整论证。
+///
+/// **红线（LiveRect 逐位等价的承重条件）**：行方向必须是 `(tick, y)` 的纯函数。
+/// **禁止**让它读 `WriteWindow::live_rect`、扫描起始矩形、`own_ci`/chunk 坐标、
+/// `dirty`/`next_dirty` 或任何线程上下文——O1 活矩形的等价性论证
+/// （`docs/superpowers/specs/2026-08-30-o1-live-rect-design.md` §1）要求全扫访问序 V
+/// 在三种 ScanMode 下完全一致，而 V 的行内定向正由此给出。违反即三模式分叉。
+pub fn scan_flip(fseed: u32) -> u64 {
+    ((rng_u32(fseed, STREAM_SCANDIR, 0, 0, 0, 0) >> 16) & 1) as u64
+}
+
 pub fn squirrel5(pos: u32, seed: u32) -> u32 {
     let mut m = pos.wrapping_mul(N1);
     m = m.wrapping_add(seed);
@@ -98,4 +139,67 @@ mod tests {
         let f = frame_seed(7, 9);
         assert_eq!(rng_u32(f, 0, 1, 2, 3, 4), rng_u32(f, 0, 1, 2, 3, 4));
     }
+
+    /// [`STREAM_SCANDIR`] 文档里那条"取 bit16 而非 bit0"的执法测试。
+    ///
+    /// **风险模型**：`rng_u32` 的 `pos` 是各分量的线性折叠、不是单射。存在一条
+    /// 由 `x·P_X + y·P_Y ≡ STREAM_SCANDIR·P_STREAM` 定义的格子集合，其
+    /// `rng_u32(DIAG, x, y)` 与 `rng_u32(SCANDIR, 0, 0)` **返回完全相同的 u32**。
+    /// 若行方向与斜向偏好共用同一比特，这些格子的"往哪边滑"就与"本 tick 行方向"
+    /// 永久完全相关 —— 系统性伪影。错开取位后，即便 `pos` 撞上，用的也是同一个
+    /// u32 的不同比特，只要 squirrel5 的比特间无相关即安全。
+    ///
+    /// 故本测试检验的正是那个承重前提：**squirrel5 输出的 bit0 与 bit16 不相关**。
+    ///
+    /// （注意撞车线上所有 `y` 共享同一个 `pos`、因而共享同一个输出值，所以不能
+    /// 按"每格一个独立样本"计数——那样会把有效样本数高估几十倍。这里直接对
+    /// 大量互不相同的输出取样。）
+    #[test]
+    fn scandir_bit_independent_of_diag_bit() {
+        let (mut same, mut n) = (0u32, 0u32);
+        for tick in 0..4096u64 {
+            for seed_i in 0..16u32 {
+                let v = squirrel5(tick as u32, 0xC0FF_EE00u32.wrapping_add(seed_i));
+                // scan 用 bit16（见 scan_flip），diag 用 bit0（见 rules::diag_side）
+                if ((v >> 16) & 1) == (v & 1) {
+                    same += 1;
+                }
+                n += 1;
+            }
+        }
+        let p = same as f64 / n as f64;
+        // n = 65536 ⇒ σ = 0.5/√n ≈ 0.195%，取 4σ ≈ 0.78% 作判据（留余量防偶发红）
+        assert!(
+            (p - 0.5).abs() < 0.0078,
+            "squirrel5 的 bit0 与 bit16 符合率 {p:.5} 偏离 0.5 超过 4σ（n={n}）——\
+             scan_flip 与 diag_side 的取位错开失去意义，撞车线上会出现系统性伪影"
+        );
+    }
+
+    /// 撞车线确实存在（上面那条测试的风险模型不是臆想出来的）。
+    #[test]
+    fn scandir_and_diag_pos_collision_line_exists() {
+        let inv_px = {
+            let mut inv = P_X;
+            for _ in 0..5 {
+                inv = inv.wrapping_mul(2u32.wrapping_sub(P_X.wrapping_mul(inv)));
+            }
+            inv
+        };
+        assert_eq!(P_X.wrapping_mul(inv_px), 1);
+        let fseed = frame_seed(0xC0FF_EE00, 7);
+        let y = 13i32;
+        let target = STREAM_SCANDIR
+            .wrapping_mul(P_STREAM)
+            .wrapping_sub((y as u32).wrapping_mul(P_Y));
+        let x = target.wrapping_mul(inv_px);
+        assert_eq!(
+            rng_u32(fseed, STREAM_SCANDIR, 0, 0, 0, 0),
+            rng_u32(fseed, STREAM_DIAG, x as i32, y, 0, 0),
+            "撞车线应当存在——它是 scandir 取 bit16 的全部理由"
+        );
+        // 但它落在任何合理世界宽度之外，故只是"凑巧安全"，不能依赖
+        assert!(x > 1 << 20, "撞车列 x={x} 竟落在可能的世界宽度内，取位错开成为唯一防线");
+    }
+
 }

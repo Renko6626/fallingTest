@@ -12,6 +12,16 @@
 
 ## 当前优先队列
 
+> **顺序约束（2026-08-31）**：行扫描定向修复（见下 0 项）已落地并作废了全部 golden 与
+> 逐 tick 哈希基线。因此 **双机 hashrun 必须在它之后跑**（否则那次跨机验收白跑），
+> **Layer G Task 2 也必须在它之后开**（Task 2 的 `G_ACCEL=0` 逐位回归要以重建后的
+> `docs/perf/baselines/*.grid-only.txt` 为基线）。
+
+0. **粉末方向偏置修复：已完成（2026-08-31）**——`proposals/2026-08-31-powder-scan-direction-bias.md`。
+   行扫描定向 `(y+tick)&1` → `(y ^ scan_flip(fseed))&1`；对称几何下偏置 −6.3% → +0.04%（CI 跨 0）。
+   总纲 §4 正文已订正、§11 实施期决策第 3 条已落。**遗留**：四相棋盘在镜像轴压 chunk 边界时
+   的 −0.8% 残留偏置未修，规避 = 竞技地图镜像轴避开 64 的倍数，是否真修留 M4 定。
+
 1. **下一会话首项：双机 hashrun**（M0 起挂账的唯一跨机验收项，用户手动；M0/M1 场景一起跑——
    `hashrun` 用法见 `sessions/2026-08-30-m0-implementation.md`，两机各跑后 diff 逐字比对）。
 2. **Layer G 运动语义重做（实施中，spec: Proposed）**——`superpowers/specs/2026-08-31-layer-g-velocity-design.md`。

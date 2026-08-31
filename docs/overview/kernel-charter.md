@@ -55,7 +55,7 @@
 - 64×64 chunk + 每块脏矩形；按 (chunk_x & 1, chunk_y & 1) 分四相位。
 - 确定性论证：同相位内任意两块至少隔一整块，单次 cell 更新的影响半径有硬上限 **r ≤ 16**（格内移速 ≤ 4 + 液体色散 ≤ 8 + 余量），故同相位各块读写集必然不相交——任意线程调度得到同一结果；相位间加屏障、按固定顺序执行。这是并行与确定性兼容的完整论证，属于 P4 的示范实现。
   - **实现进度（2026-08-31，Layer G Task 1）**：液体色散 ≤ 8 已落地（`crates/sand-core/src/rules.rs:125` 的 `side`，材料表 `dispersion` 字段驱动，water 现值 5）；**格内移速仍恒 1**，速度积分是 Task 2 的范围（`docs/superpowers/specs/2026-08-31-layer-g-velocity-design.md` §4）。故当前实际 r = max(色散 8, 移速 1) + 脏矩形 ±1 = 9 ≤ 16。上界常量 `DISPERSION_MAX`（`material.rs:23`）在 `side` 的使用点无条件 clamp——见 §11 实施期决策第 2 条。
-- 块内自下而上定序扫描，水平方向按 (y + tick) 奇偶交替消除方向偏置；per-cell tick 奇偶位防止同 tick 跨相位二次移动；相位顺序按 tick % 4 轮换，摊平边界各向异性。
+- 块内自下而上定序扫描，水平方向按 **每 tick 掷一次的全局奇偶相位** `(y ^ flip) & 1` 定向以消除方向偏置（`flip = rng::scan_flip(fseed)`）——原措辞为 `(y + tick)` 奇偶，2026-08-31 订正，理由见 §11 实施期决策第 3 条；per-cell tick 奇偶位防止同 tick 跨相位二次移动；相位顺序按 tick % 4 轮换，摊平边界各向异性。
 - 逻辑 cell ≤ 4 字节（material / flags / aux）。颜色抖动等表现字段不入状态，由坐标 hash 现场派生。
 
 **Layer P — 稀疏粒子层（高速弹道）**
@@ -148,6 +148,8 @@
 **实施期决策（2026-08-31，Layer G Task 1）**——编号接续上一块（实施期决策全局连续编号，便于跨文档引用"§11 实施期决策第 N 条"）：
 
 2. **影响半径类数据字段不适用"core 侧不校验"先例**（2026-08-31，`docs/superpowers/specs/2026-08-31-layer-g-velocity-design.md` §3.1）：`blast_cost` / `vaporize_threshold` 立过一条约定——取值校验只放在 I/O 层（`sand-harness::scenario`），core 侧不重复校验，理由是"错误配置的后果只是手感不对，不影响确定性红线"。新增的 `dispersion` **不适用**该先例并就此划线：凡取值直接决定 `WriteWindow` 读写半径的字段，越界后果是 debug 撞窗口断言、release 变同相邻 chunk 数据竞争 → SyncTest 分叉，即**破坏 P4 写域论证本身**。此类字段一律两道防线——I/O 层给用户可读报错（`scenario::validate_dispersion`），core 在**使用点**无条件 clamp 到上界常量（`rules::side` 用 `DISPERSION_MAX`）。判据：直接构表的调用方（测试、未来程序化材料表）绕得过 I/O 层，而写域互斥是并行正确性的地基，不能依赖"调用方守规矩"。回归测试见 `crates/sand-core/tests/rules_behavior.rs` 的 `water_dispersion_is_clamped_to_max_inside_core`。
+
+3. **行扫描定向改为每 tick 全局哈希相位，并订正本文 §4 正文**（2026-08-31，`docs/proposals/2026-08-31-powder-scan-direction-bias.md`）：原 `(y + tick) & 1` 对**运动中**的粒子自我抵消失效——自由下落者 `y+1`/`tick+1` 使奇偶恒定，整个下落被锁死在同一扫描方向，交替只对静止粒子生效。实测粉末堆积因此产生 **−6.3% 系统性右偏（32 种子 32/32 同向，95% CI 不跨 0）**。更一般地，**任何周期为 2 的定向方案都会与周期为 2 的动力学共振**（`tick & 1` 实测更差）。改为 `(y ^ scan_flip(fseed)) & 1`（新增 `STREAM_SCANDIR = 4`，取 bit16 与 `diag_side` 的 bit0 错开）后，在相位对称几何下降到 **+0.04%，95% CI 跨 0**。同条一并升格一条红线：**行扫描方向必须是 `(tick, y)` 的纯函数，禁读活矩形/脏状态/chunk 索引/线程上下文**——O1 活矩形的三模式逐位等价论证要求全扫访问序 V 三模式一致，而 V 的行内定向正由它给出，违反即分叉。另记录一个**未修的独立偏置源**：镜像轴落在 chunk 边界上时，四相棋盘使缝两侧处理次序不镜像，残留约 −0.8%；规避措施是竞技地图镜像轴避开 64 的倍数，是否真修留 M4 定（提案 §7）。golden 四个全部重录（含纯沙的 `sand_pile`）。
 
 **待决（附判据与时点）**：
 

@@ -1,0 +1,7 @@
+scenario waterfall_ci
+world 256x192 seed 1518219169 ticks 1200
+tick      256 hash 2715bb4adc3edf64
+tick      512 hash 1369ca3ad619f167
+tick      768 hash 89b557ab199156c4
+tick     1024 hash b921c224b177959b
+final 005233069b230fb0

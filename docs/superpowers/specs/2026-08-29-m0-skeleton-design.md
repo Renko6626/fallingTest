@@ -102,7 +102,7 @@ id 在 `data/materials.ron` 中**显式声明**，不从声明顺序派生：AIR
   几何上两两不相交（总纲 §4 r≤16 论证的实现面）。
 - 实现：窗口 = 含不变量安全注释的 unsafe 指针包装（`WriteWindow`）。**debug 构建每次
   cell 读写断言坐标落在窗口内**——Python M0.5 写域拒绝测试的 Rust 版，越界即 panic。
-- 块内扫描：自下而上；行内方向按 `(y + tick) & 1` 交替；只扫 `dirty` 矩形行列范围。
+- 块内扫描：自下而上；行内方向按 `(y ^ scan_flip(fseed)) & 1` 定向（**2026-08-31 由 `(y + tick) & 1` 订正**——原式对运动中的粒子自我抵消失效，见 `docs/proposals/2026-08-31-powder-scan-direction-bias.md` 与 charter §11 实施期决策第 3 条）；只扫 `dirty` 矩形行列范围。
 - 线程数 = `InitConfig.threads`（rayon 有界池），**只影响快慢不影响结果**——由 SyncTest 执法。
 
 ### 3.3 r ≤ 16 契约

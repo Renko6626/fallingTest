@@ -1,0 +1,7 @@
+scenario explosion_ci
+world 256x192 seed 3798995166 ticks 1200
+tick      256 hash 43d42c7cf3534411
+tick      512 hash faaba89b0550577f
+tick      768 hash 275b9944d4eba4b1
+tick     1024 hash ee4056314cdf26d0
+final 249852b2cb0fa7cc

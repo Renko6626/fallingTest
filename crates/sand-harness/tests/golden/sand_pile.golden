@@ -2,6 +2,6 @@ scenario sand_pile
 scenario_fp 6c269e62add21153
 materials_fp c1558de1ce2c433e
 world 128x128 seed 20260830 ticks 600
-tick      256 hash 980297cf83f91845
-tick      512 hash 96f088ded299efe6
-final 8e4f0cee2814663f
+tick      256 hash e81c6d4e7b8c6968
+tick      512 hash 0c3ab4eb957fa698
+final 819034e78850dc44
