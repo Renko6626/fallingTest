@@ -54,9 +54,9 @@
 
 - 64×64 chunk + 每块脏矩形；按 (chunk_x & 1, chunk_y & 1) 分四相位。
 - 确定性论证：同相位内任意两块至少隔一整块，单次 cell 更新的影响半径有硬上限 **r ≤ 16**（格内移速 ≤ 4 + 液体色散 ≤ 8 + 余量），故同相位各块读写集必然不相交——任意线程调度得到同一结果；相位间加屏障、按固定顺序执行。这是并行与确定性兼容的完整论证，属于 P4 的示范实现。
-  - **实现进度（2026-08-31，Layer G Task 1）**：液体色散 ≤ 8 已落地（`crates/sand-core/src/rules.rs:125` 的 `side`，材料表 `dispersion` 字段驱动，water 现值 5）；**格内移速仍恒 1**，速度积分是 Task 2 的范围（`docs/superpowers/specs/2026-08-31-layer-g-velocity-design.md` §4）。故当前实际 r = max(色散 8, 移速 1) + 脏矩形 ±1 = 9 ≤ 16。上界常量 `DISPERSION_MAX`（`material.rs:23`）在 `side` 的使用点无条件 clamp——见 §11 实施期决策第 2 条。
+  - **实现进度（2026-08-31，Layer G Task 1 + Task 2 均已落地）**：液体色散 ≤ 8（`crates/sand-core/src/rules.rs` 的 `side`，材料表 `dispersion` 字段驱动，water 现值 5）+ 格内移速 ≤ 4（`Cell` bits 17–21 存 Q3.2 竖直速度，`rules::eval` 的子步循环，`V_MAX_CELL = 4.0 格/tick`）。**r 不再是两项取最大而是串接**：色散一走到就撞停终止子步循环，故最坏路径 = (n−1) 次斜下 + 1 次满色散 = 3 + 8 = 11，加脏矩形 ±1 ⇒ **实际 r = 12 ≤ 16，余量 4**。该不等式已固化为编译期断言（`window.rs` 的 `MAX_WRITE_RADIUS`），不再是人肉纪律——见 §11 实施期决策第 5 条。上界常量 `DISPERSION_MAX`（`material.rs:23`）在 `side` 的使用点无条件 clamp——见 §11 实施期决策第 2 条。
 - 块内自下而上定序扫描，水平方向按 **每 tick 掷一次的全局奇偶相位** `(y ^ flip) & 1` 定向以消除方向偏置（`flip = rng::scan_flip(fseed)`）——原措辞为 `(y + tick)` 奇偶，2026-08-31 订正，理由见 §11 实施期决策第 3 条；per-cell tick 奇偶位防止同 tick 跨相位二次移动；相位顺序按 tick % 4 轮换，摊平边界各向异性。
-- 逻辑 cell ≤ 4 字节（material / flags / aux）。颜色抖动等表现字段不入状态，由坐标 hash 现场派生。
+- 逻辑 cell ≤ 4 字节（material / flags / aux）。颜色抖动等表现字段不入状态，由坐标 hash 现场派生。位段分配一次性定死于 `crates/sand-core/src/cell.rs` 头部表格（0–7 material / 8–15 stamp / 16 dir / **17–21 竖直速度** / 22 `free_falling` 预留 / 23–31 留白），避免每加一个字段抢一次位。
 
 **Layer P — 稀疏粒子层（高速弹道）**
 
@@ -152,6 +152,22 @@
 3. **行扫描定向改为每 tick 全局哈希相位，并订正本文 §4 正文**（2026-08-31，`docs/proposals/2026-08-31-powder-scan-direction-bias.md`）：原 `(y + tick) & 1` 对**运动中**的粒子自我抵消失效——自由下落者 `y+1`/`tick+1` 使奇偶恒定，整个下落被锁死在同一扫描方向，交替只对静止粒子生效。实测粉末堆积因此产生 **−6.3% 系统性右偏（32 种子 32/32 同向，95% CI 不跨 0）**。更一般地，**任何周期为 2 的定向方案都会与周期为 2 的动力学共振**（`tick & 1` 实测更差）。改为 `(y ^ scan_flip(fseed)) & 1`（新增 `STREAM_SCANDIR = 4`，取 bit16 与 `diag_side` 的 bit0 错开）后，在相位对称几何下降到 **+0.04%，95% CI 跨 0**。同条一并升格一条红线：**行扫描方向必须是 `(tick, y)` 的纯函数，禁读活矩形/脏状态/chunk 索引/线程上下文**——O1 活矩形的三模式逐位等价论证要求全扫访问序 V 三模式一致，而 V 的行内定向正由它给出，违反即分叉。另记录一个**未修的独立偏置源**：镜像轴落在 chunk 边界上时，四相棋盘使缝两侧处理次序不镜像，残留约 −0.8%；规避措施是竞技地图镜像轴避开 64 的倍数（放在 chunk 正中实测可降到噪声级）。**2026-08-31 用户裁定：该残留属四相调度的固有特性，不算 bug，不修，M4 不重开**（提案 §7 第 1 条）。golden 四个全部重录（含纯沙的 `sand_pile`）。
 
 4. **握手指纹改为哈希"行尾归一化后的内容"，而非磁盘原始字节**（2026-08-31，双机 hashrun 实测暴露）：`sand-harness::scenario` 的 `load_materials`/`load_scenario` 原先直接 `xxh3_64(原始文件字节)`。Windows 侧 `core.autocrlf=true` 检出成 CRLF 后，**同一个 commit** 在两平台算出不同的 `materials_fp`/`scenario_fp`，握手会被拒——而两端仿真其实**逐位一致**。这是 P5"两端数据表不一致视同版本不一致"的**假阳性**：语义相同的数据被判为不同版本。修复 = 哈希前剥 CR（`scenario::normalize_for_fingerprint`）+ `.gitattributes` 钉死 `*.ron`/`*.golden` 的 LF 检出 + `golden.rs` 的纯文本比对也做行尾归一化（后两者是配套卫生：只有代码归一化不能解决 golden 的文本比对，只有 `.gitattributes` 挡不住 zip 分发与编辑器改行尾）。**未选"改哈希解析后的结构"这条更彻底的路**，理由是裸字节哈希有"自动完备"这个宝贵性质（任何字段新增都自动进指纹），结构化折叠漏一个字段就是静默覆盖漏洞；归一化字节哈希保住完备性同时消掉唯一已知假阳性。**指纹值不变**：仓库内 `.ron` 全为 LF，归一化在规范内容上是恒等变换，既有 golden **无需重录**（实测 229 条哈希 + 18 条指纹逐字不变），CRLF 机器是向既有 LF 值收敛。
+
+**实施期决策（2026-08-31，Layer G Task 2）**：
+
+5. **格内速度积分落地：Cell 位段总规划 + r 契约升格为编译期断言 + 一个改变物理的取证 feature**（2026-08-31，`docs/superpowers/specs/2026-08-31-layer-g-velocity-design.md` §2/§4/§5）。四件事随本条落档：
+
+   ① **Cell 位段一次性定死**（见 §4 已改写的那条）。竖直速度取 bits 17–21，Q3.2 无符号、单位 ¼ 格/tick、上限 `V_MAX_CELL = 16`（4.0 格/tick）；无符号是因为粉末与液体只向下，向上运动归 Layer F（气体）或 Layer P（脱格），省一位。
+
+   ② **r ≤ 16 从人肉纪律升格为编译期契约**：`window.rs::MAX_WRITE_RADIUS = (V_MAX_CELL/VEL_ONE − 1) + DISPERSION_MAX + 1 = 12`，`const _: () = assert!(… <= HALO)`。谁把终端速度提到 8 格/tick 或色散上限提到 12，**编译直接不过**。承重前提是"色散走到即终止子步循环"（`rules::Step::MovedSide`），故两项是串接而非各自独立取最大——改动这条 `break` 等于改动 r 论证。
+
+   ③ **`STREAM_FALLSTEP = 3` 新增，`diag_side` 的 `attempt` 改传子步序号 `k`**。后者是翻案记录第 4 条点名要求的维度：同一 cell 同一 tick 内最多 4 次斜向掷骰，若不带 `k` 会全部滑向同一侧。`k = 0` 与 Task 2 之前同值，故不破坏可退化性。
+
+   ④ **写回纪律是正确性红线而非优化**：速度只在"落点已存值 ≠ 目标值"时写。静止堆体 `v = 0` → 第 0 子步 `Blocked` → 零写入 → `next_dirty` 空 → chunk 照旧入睡。若照 jason.today 原样每 tick 无条件 `v += accel` 写回，整张图永不入睡，M0 建立的稀疏性能当场退回全量扫描。执法测试 `rules_behavior.rs::resting_pile_lets_every_chunk_sleep`。
+
+   **取证手段与它的风险**：可退化性（`G_ACCEL = 0` ⇒ 全 sim 与 Task 2 之前逐位相同）由 `sand-core` 的 `zero-gravity` feature 提供，实测 4 场景 4500 条**逐 tick** 哈希 diff 全空（取证存 `.superpowers/layer-g-task2-gravity/`）。**但这是一个改变物理的构建开关**——两端 feature 不一致即分叉，而握手指纹只覆盖数据、覆盖不到代码。故 `sand-harness` 在 `G_ACCEL == 0` 时向 stderr 打警告（手改常量同样会被逮到）。这条风险是有意接受的：可退化性取证的价值大于开关本身的风险，且警告把风险压到"必须无视一行 stderr 才能踩中"。
+
+   **子裁决终裁：斜滑不清零速度**（§4.2④，用户 2026-08-31 采纳默认）。沙在下方被挡、斜下可走时算 `Moved`、循环继续，单 tick 可斜滑至多 4 格，沙堆坍塌明显变快——jason.today / Noita 同款行为。反面选项"斜滑即 stalled"仍随时可切（一处枚举值），水平 r 还会从 11 降到 4。
 
 **待决（附判据与时点）**：
 

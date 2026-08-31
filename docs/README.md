@@ -12,9 +12,9 @@
 
 ## 当前优先队列
 
-> **顺序约束（2026-08-31，前两项已满足）**：行扫描定向修复已落地并作废了全部 golden 与
-> 逐 tick 哈希基线，双机 hashrun 已在其之后跑完。仍生效的一条：**Layer G Task 2 必须以
-> 重建后的 `docs/perf/baselines/*.grid-only.txt` 为 `G_ACCEL=0` 逐位回归的基线**。
+> **顺序约束（2026-08-31，已全部满足）**：行扫描定向修复 → 双机 hashrun → Layer G Task 2
+> 的 `G_ACCEL=0` 逐位回归（以重建后的基线为准）三步已依次跑完。基线已再次用 Task 2 后的
+> 语义重建，**Task 3 的逐位回归以新基线为准**。
 
 0. **粉末方向偏置修复：已完成（2026-08-31）**——`proposals/2026-08-31-powder-scan-direction-bias.md`。
    行扫描定向 `(y+tick)&1` → `(y ^ scan_flip(fseed))&1`；对称几何下偏置 −6.3% → +0.04%（CI 跨 0）。
@@ -33,8 +33,16 @@
      重录（`sand_pile` 逐 tick 哈希逐位不变，仅 `materials_fp` 变）、SyncTest waterfall+mixed 各 2 万 tick 六配置
      零分叉、bench 见 `perf/2026-08-31-layer-g-task1-dispersion.md`。目检 GIF：`out/waterfall_disp{1,5}.gif`、
      `out/mixed_disp{1,5}.gif`（改动前/后对照，看水面锯齿与摊平速度）。总纲 §4、§11 已同步。
-   - **Task 2 重力速度积分**（← 当前工作项）：Cell 位段 17–21 存竖直速度 + 子步循环；关键取证是 `G_ACCEL=0` 逐位回归。
-   - **Task 3 撞击溅射脱格**：并行 pass 新增 `spawns` 写入源，须落总纲 §11。
+   - **Task 2 重力速度积分：代码与验收已完成（2026-08-31），仅剩 GIF 目检结论待用户**——`Cell`
+     bits 17–21 存 Q3.2 竖直速度，`rules::eval` 外包子步循环，撞停清零。零加速旁路取证
+     4 场景 4500 条**逐 tick** 哈希 diff 全空（`.superpowers/layer-g-task2-gravity/`）；
+     SyncTest waterfall+mixed 各 2 万 tick 六配置零分叉；golden 四个重录（预期全兑现）；
+     bench 见 `perf/2026-08-31-layer-g-task2-gravity.md`（一致变慢 5%–34%，预期内的语义
+     成本，绝对量级远在预算内）。r 契约升格为编译期断言（12 ≤ 16）。目检 GIF：
+     `out/sand_pile_g{0,1}.gif`、`out/mixed_g{0,1}.gif`（g0 = 改动前），重点看加速手感
+     与"斜滑不清零速度"导致的沙堆坍塌是否过快。总纲 §4、§11 已同步。
+   - **Task 3 撞击溅射脱格**（下一步）：并行 pass 新增 `spawns` 写入源，须落总纲 §11。
+     开工前 §6.1①（`MovedSide` 是否触发溅射）仍待目检终裁。
 3. **M2 场层与反应表**（Layer G 三 Task 之后）：spec 里裁决 O2 场降本 + O3 粉末惯性时点 + durability/hardness
    字段化 + 粒子穿水/弹跳评估 + M1 遗留两条测试补强（见 `sessions/2026-08-30-m1-particle-layer.md`"留给后续"；
    其中 Task 6 minor ①②③⑤ 已由 commit `098fe23` 修掉，剩 ④⑥ 两条测试债）。

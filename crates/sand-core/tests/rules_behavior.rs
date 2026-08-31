@@ -3,12 +3,15 @@
 mod common;
 
 use common::{sim, sim_with_table, test_table_with_water_dispersion, SAND, WATER};
-use sand_core::{Op, ScanMode, DISPERSION_MAX, MAT_AIR, MAT_WALL};
+use sand_core::{Op, ScanMode, DISPERSION_MAX, G_ACCEL, MAT_AIR, MAT_WALL, VEL_ONE, V_MAX_CELL};
 
 fn floor_op(w: i32, h: i32) -> Op {
     Op::Fill { material: MAT_WALL, x0: 0, y0: h - 4, x1: w - 1, y1: h - 4 }
 }
 
+/// 自由下落全程不横漂（下方为空时永远走正下方分支）。落点随 Layer G Task 2
+/// 的速度积分变化，故精确落点交给 `falling_sand_starts_at_exactly_one_cell_per_tick`
+/// 与 `free_fall_reaches_terminal_velocity_at_tick_16`，这里只锁"竖直"这一条。
 #[test]
 fn sand_falls_straight_down() {
     let mut s = sim(2, 2, 1, 1, ScanMode::LiveRect);
@@ -18,8 +21,15 @@ fn sand_falls_straight_down() {
     assert_eq!(s.world().cell(40, 11).material(), SAND);
     for _ in 0..5 {
         s.step(&[]);
+        for x in 0..128 {
+            for y in 0..128 {
+                if s.world().cell(x, y).material() == SAND {
+                    assert_eq!(x, 40, "自由下落不得横漂：沙出现在 x={x}");
+                    assert!(y > 10, "沙必须持续下落");
+                }
+            }
+        }
     }
-    assert_eq!(s.world().cell(40, 16).material(), SAND);
 }
 
 #[test]
@@ -281,4 +291,146 @@ fn higher_dispersion_levels_water_faster() {
         fast < slow,
         "色散必须加快摊平：dispersion=5 用了 {fast} tick，dispersion=1 用了 {slow} tick"
     );
+}
+
+// ==================== 重力速度积分（Layer G Task 2，spec §4）====================
+//
+// 语义：每 tick `v ← min(v + G_ACCEL, V_MAX_CELL)`（Q3.2，单位 ¼ 格/tick），
+// 子步数 `n = max(1, v/VEL_ONE + frac_roll)`，撞停（Blocked / MovedSide）清零。
+// `v = 0` 时 n = 1 ⇒ 退化为 Task 2 之前的语义（spec §4.2①）。
+
+/// 从静止起的**头 4 tick** 必然是每 tick 恰好 1 格：v1 ≤ VEL_ONE ⇒ n = 1，
+/// 与概率取整无关，是可退化性（spec §4.2①）在行为层的直接体现。
+#[test]
+fn falling_sand_starts_at_exactly_one_cell_per_tick() {
+    let mut s = sim(2, 2, 21, 1, ScanMode::LiveRect);
+    s.apply_setup(&[Op::Brush { material: SAND, x: 40, y: 10, r: 0 }]);
+    for t in 1..=4i32 {
+        s.step(&[]);
+        assert_eq!(
+            s.world().cell(40, 10 + t).material(),
+            SAND,
+            "第 {t} tick 应恰好落 1 格（v1 = {t}/4 格 < 1 ⇒ n = 1）"
+        );
+    }
+}
+
+/// 自由落体 16 tick 后达终端速度，且**第 16 tick 才首次达到**（G_ACCEL = 1
+/// ⇒ V_MAX_CELL / G_ACCEL = 16 tick）。这条同时锁死 `vel()` 位段真的被写回。
+#[test]
+fn free_fall_reaches_terminal_velocity_at_tick_16() {
+    let mut s = sim(2, 2, 22, 1, ScanMode::LiveRect);
+    s.apply_setup(&[Op::Brush { material: SAND, x: 40, y: 2, r: 0 }]);
+    let find = |s: &sand_core::Sim| (0..128).find(|&y| s.world().cell(40, y).material() == SAND);
+    for _ in 0..15 {
+        s.step(&[]);
+    }
+    let y15 = find(&s).expect("沙还在下落中");
+    assert_eq!(
+        s.world().cell(40, y15).vel(),
+        15 * G_ACCEL,
+        "第 15 tick 速度应为 15 个 ¼ 格单位，尚未封顶"
+    );
+    s.step(&[]);
+    let y16 = find(&s).expect("沙还在下落中");
+    assert_eq!(s.world().cell(40, y16).vel(), V_MAX_CELL, "第 16 tick 应首次达终端速度");
+    s.step(&[]);
+    let y17 = find(&s).expect("沙还在下落中");
+    assert_eq!(s.world().cell(40, y17).vel(), V_MAX_CELL, "终端速度必须被 clamp 住");
+    assert_eq!(y17 - y16, (V_MAX_CELL / VEL_ONE) as i32, "终端速度下每 tick 恰好 4 格");
+}
+
+/// 加速的宏观后果：同样 20 tick，加速后的落距必须显著超过匀速 1 格/tick。
+#[test]
+fn gravity_makes_sand_fall_farther_than_one_cell_per_tick() {
+    let mut s = sim(2, 2, 23, 1, ScanMode::LiveRect);
+    s.apply_setup(&[Op::Brush { material: SAND, x: 40, y: 2, r: 0 }]);
+    for _ in 0..20 {
+        s.step(&[]);
+    }
+    let y = (0..128).find(|&y| s.world().cell(40, y).material() == SAND).unwrap();
+    assert!(y - 2 > 20, "20 tick 落距 {} 格，加速后必须 > 20 格", y - 2);
+}
+
+/// 撞停清零（spec §4.1 `v_final = 0`）：高速下落砸到地板后速度必须归零，
+/// 否则休眠不变量与后续 Task 3 的溅射阈值全部失效。
+#[test]
+fn landing_resets_velocity_to_zero() {
+    let mut s = sim(2, 2, 24, 1, ScanMode::LiveRect);
+    s.apply_setup(&[floor_op(128, 128), Op::Brush { material: SAND, x: 40, y: 2, r: 0 }]);
+    for _ in 0..80 {
+        s.step(&[]);
+    }
+    assert_eq!(s.world().cell(40, 123).material(), SAND, "沙应停在地板上方");
+    assert_eq!(s.world().cell(40, 123).vel(), 0, "撞停后速度必须清零");
+}
+
+/// 子步循环逐格判定，**不得穿透**单格厚的地板（n 最大 4 ⇒ 若写成"直接跳 n 格"
+/// 就会漏检中途格子）。这是速度积分最危险的实现错误。
+#[test]
+fn fast_fall_does_not_tunnel_through_thin_floor() {
+    let mut s = sim(2, 2, 25, 1, ScanMode::LiveRect);
+    s.apply_setup(&[
+        Op::Fill { material: MAT_WALL, x0: 0, y0: 60, x1: 127, y1: 60 },
+        Op::Brush { material: SAND, x: 40, y: 2, r: 0 },
+    ]);
+    for _ in 0..120 {
+        s.step(&[]);
+    }
+    assert_eq!(s.world().cell(40, 59).material(), SAND, "沙必须停在地板正上方 y=59");
+    assert_eq!(s.world().cell(40, 60).material(), MAT_WALL, "地板不得被穿过");
+    for y in 61..128 {
+        assert_ne!(s.world().cell(40, y).material(), SAND, "沙穿透了单格地板，落到 y={y}");
+    }
+}
+
+/// 休眠不变量（验收 §0 第 4 项）：静置沙堆跑满 N tick 后，所有 chunk 的
+/// `dirty` / `next_dirty` 必须恒空。若照 jason.today 原样"每 tick 无条件
+/// `v += accel` 写回"，静止沙的速度会从 0 涨起来 → 每 tick 一次 `set()` →
+/// `mark_dirty_around` → 整张图永不入睡，M0 的稀疏性能当场退回全量扫描
+/// （spec §4.2②）。
+#[test]
+fn resting_pile_lets_every_chunk_sleep() {
+    let mut s = sim(2, 2, 26, 1, ScanMode::LiveRect);
+    s.apply_setup(&[
+        floor_op(128, 128),
+        Op::Fill { material: SAND, x0: 40, y0: 118, x1: 80, y1: 123 },
+    ]);
+    for _ in 0..400 {
+        s.step(&[]);
+    }
+    for (ci, c) in s.world().chunks.iter().enumerate() {
+        assert!(c.dirty.is_empty(), "chunk {ci} 静置后仍脏：{:?}", c.dirty);
+        assert!(
+            c.next_dirty.snapshot().is_empty(),
+            "chunk {ci} 静置后 next_dirty 非空：{:?}",
+            c.next_dirty.snapshot()
+        );
+    }
+}
+
+/// r ≤ 16 写域执法（spec §5）：最坏路径 = (n−1) 次斜下 + 1 次满色散 = 11 格
+/// 水平位移。本测试让**高速水**在满色散（DISPERSION_MAX）下跨 chunk 缝乱跑，
+/// 靠 `WriteWindow` 的 debug 断言兜底——写出窗口即 panic。
+#[test]
+fn fast_water_at_max_dispersion_stays_inside_write_window() {
+    let mut s = sim_with_table(
+        3,
+        2,
+        27,
+        1,
+        ScanMode::LiveRect,
+        test_table_with_water_dispersion(DISPERSION_MAX),
+    );
+    s.apply_setup(&[
+        floor_op(192, 128),
+        Op::Fill { material: MAT_WALL, x0: 0, y0: 60, x1: 0, y1: 123 },
+        Op::Fill { material: MAT_WALL, x0: 191, y0: 60, x1: 191, y1: 123 },
+        Op::Fill { material: WATER, x0: 60, y0: 2, x1: 100, y1: 40 },
+        Op::Fill { material: SAND, x0: 120, y0: 2, x1: 140, y1: 20 },
+    ]);
+    for _ in 0..300 {
+        s.step(&[]);
+    }
+    assert!(s.world().count_material(WATER) > 0, "水不该凭空消失");
 }

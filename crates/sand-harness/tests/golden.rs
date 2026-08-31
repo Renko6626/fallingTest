@@ -20,7 +20,7 @@ fn check(scenario: &str, golden: &str) {
         4,
         sand_core::ScanMode::LiveRect,
         sc.ticks,
-        false,
+        runner::HashStream::default(),
     )
     .unwrap();
     let got = report.lines.join("\n") + "\n";

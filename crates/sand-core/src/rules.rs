@@ -1,10 +1,45 @@
 //! 沙/水运动规则（spec §4）。分派走材料表 Category，禁 if-else 硬编码材料名。
 
-use crate::cell::Cell;
+use crate::cell::{Cell, G_ACCEL, VEL_ONE, V_MAX_CELL};
 use crate::chunk::DirtyRect;
 use crate::material::{Category, MaterialTable, DISPERSION_MAX, MAT_AIR};
-use crate::rng::{rng_u32, scan_flip, STREAM_DIAG};
+use crate::rng::{rng_u32, scan_flip, STREAM_DIAG, STREAM_FALLSTEP};
 use crate::window::WriteWindow;
+
+/// 单个子步的结果（Layer G Task 2，spec §4.1）。带上落点坐标，外层循环据此
+/// 推进 `cur`——判定逻辑一行不改，只是把"成功/失败"回传给子步循环。
+enum Step {
+    /// 竖直或斜下移动成功，速度保留，继续下一子步。
+    ///
+    /// **斜滑不清零速度**是有意选择（spec §4.2④，2026-08-31 用户裁定采纳默认）：
+    /// jason.today / Noita 都是这个行为，沙堆坍塌因此明显更快。若日后目检认为
+    /// 塌得太夸张，改成"斜滑即 stalled"只是把这里换成 `MovedSide`，
+    /// 且 §5 的水平半径余量只会变大。
+    Moved(i32, i32),
+    /// 色散横移成功。**走到这一步本身就意味着撞停**——下方与两个斜下都被挡了，
+    /// 竖直动能已经耗尽，故循环终止且速度清零（spec §4.1）。
+    MovedSide(i32, i32),
+    /// 无处可去。
+    Blocked,
+}
+
+/// 本 tick 的子步数 `n = max(1, v1/VEL_ONE + frac_roll)`（spec §4.1）。
+///
+/// **纯整数**（charter §6 数值红线：网格逻辑禁浮点）。小数部分用一次掷骰兑换
+/// 成"多走一格"的概率，等价于零存储的子像素精度：长期平均位移 = `v1/VEL_ONE`。
+/// `VEL_ONE` 是 2 的幂（`cell.rs` 有编译期断言）⇒ `% VEL_ONE` 是无偏取位，
+/// 不存在取模偏置。
+///
+/// `max(1, ..)` 是**可退化性的来源**（spec §4.2①）：`v1 < VEL_ONE` 时 n = 1，
+/// 走的就是 Task 2 之前那条路径；`G_ACCEL = 0` 时速度恒 0 ⇒ 全 sim 逐位不变。
+///
+/// key 取 cell 的**起始坐标**、不带 salt/attempt，理由见 [`STREAM_FALLSTEP`]。
+fn substeps(fseed: u32, v1: u8, x: i32, y: i32) -> u32 {
+    let whole = (v1 / VEL_ONE) as u32;
+    let frac = (v1 % VEL_ONE) as u32;
+    let roll = rng_u32(fseed, STREAM_FALLSTEP, x, y, 0, 0) % VEL_ONE as u32;
+    (whole + u32::from(roll < frac)).max(1)
+}
 
 /// 单 chunk 扫描的规则上下文。
 struct Ctx<'a> {
@@ -68,15 +103,57 @@ pub(crate) fn update_chunk(
 }
 
 impl Ctx<'_> {
+    /// 一个 cell 的一个 tick：重力积分 + 子步循环（Layer G Task 2，spec §4.1）。
+    ///
+    /// ```text
+    /// v1 = min(v0 + G_ACCEL, V_MAX_CELL)
+    /// n  = max(1, v1/VEL_ONE + frac_roll)      // 概率取整 = 零存储子像素精度
+    /// 逐子步走 powder_step / liquid_step，撞停（Blocked / MovedSide）即终止
+    /// v_final = if stalled { 0 } else { v1 }
+    /// ```
+    ///
+    /// **写回纪律 = 休眠的生命线**（spec §4.2②，不是优化而是正确性红线）：
+    /// 只在 `v_final ≠ 落点已存值` 时写。静止堆体 `v0 = 0` → 第 0 子步即
+    /// `Blocked` → `v_final = 0` = 已存值 → **零写入** → `next_dirty` 空 →
+    /// chunk 照旧入睡（`scheduler.rs:74`）。若照 jason.today 原样无条件
+    /// `v += accel` 写回，静止沙的速度会从 0 涨起来 → 每 tick 一次 `set()` →
+    /// `mark_dirty_around` → 整张图永不入睡，M0 建立的稀疏性能当场退回全量扫描。
+    /// 执法测试：`tests/rules_behavior.rs::resting_pile_lets_every_chunk_sleep`。
     fn eval(&self, x: i32, y: i32) {
         let c = self.win.get(x, y);
         let m = c.material();
-        if !self.table.is_static(m) && c.stamp() != self.stamp {
-            match self.table.category(m) {
-                Category::Powder => self.powder_step(x, y, c),
-                Category::Liquid => self.liquid_step(x, y, c),
+        if self.table.is_static(m) || c.stamp() == self.stamp {
+            return;
+        }
+        let cat = self.table.category(m);
+        let v1 = (c.vel() + G_ACCEL).min(V_MAX_CELL);
+        let n = substeps(self.fseed, v1, x, y);
+        let moving = c.with_vel(v1);
+        let (mut cx, mut cy) = (x, y);
+        let mut stalled = false;
+        for k in 0..n {
+            let step = match cat {
+                Category::Powder => self.powder_step(cx, cy, moving, k),
+                Category::Liquid => self.liquid_step(cx, cy, moving, k),
                 Category::Static => unreachable!(),
+            };
+            match step {
+                Step::Moved(nx, ny) => (cx, cy) = (nx, ny),
+                Step::MovedSide(nx, ny) => {
+                    (cx, cy) = (nx, ny);
+                    stalled = true;
+                    break;
+                }
+                Step::Blocked => {
+                    stalled = true;
+                    break;
+                }
             }
+        }
+        let v_final = if stalled { 0 } else { v1 };
+        let landed = self.win.get(cx, cy);
+        if landed.vel() != v_final {
+            self.win.set(cx, cy, landed.with_vel(v_final));
         }
     }
 
@@ -94,31 +171,50 @@ impl Ctx<'_> {
         ok
     }
 
-    fn diag_side(&self, x: i32, y: i32) -> i32 {
-        if rng_u32(self.fseed, STREAM_DIAG, x, y, 0, 0) & 1 == 0 { 1 } else { -1 }
+    /// 斜向偏好掷骰。`attempt` = 子步序号 `k`（Layer G Task 2，spec §4.2③）——
+    /// charter §11 翻案 4 点名要求保留的维度：同一 cell 同一 tick 内的多次
+    /// 掷骰必须带不同参数，否则 4 个子步会全部滑向同一侧。`k = 0` 时取值与
+    /// Task 2 之前相同，故不破坏可退化性。
+    fn diag_side(&self, x: i32, y: i32, k: u32) -> i32 {
+        if rng_u32(self.fseed, STREAM_DIAG, x, y, 0, k) & 1 == 0 { 1 } else { -1 }
     }
 
-    fn powder_step(&self, x: i32, y: i32, c: Cell) {
+    fn powder_step(&self, x: i32, y: i32, c: Cell, k: u32) -> Step {
         if self.displace(x, y, c, x, y + 1) {
-            return;
+            return Step::Moved(x, y + 1);
         }
-        let s = self.diag_side(x, y);
-        let _ = self.displace(x, y, c, x + s, y + 1) || self.displace(x, y, c, x - s, y + 1);
+        let s = self.diag_side(x, y, k);
+        if self.displace(x, y, c, x + s, y + 1) {
+            return Step::Moved(x + s, y + 1);
+        }
+        if self.displace(x, y, c, x - s, y + 1) {
+            return Step::Moved(x - s, y + 1);
+        }
+        Step::Blocked
     }
 
-    fn liquid_step(&self, x: i32, y: i32, c: Cell) {
+    fn liquid_step(&self, x: i32, y: i32, c: Cell, k: u32) -> Step {
         if self.displace(x, y, c, x, y + 1) {
-            return;
+            return Step::Moved(x, y + 1);
         }
-        let s = self.diag_side(x, y);
-        if self.displace(x, y, c, x + s, y + 1) || self.displace(x, y, c, x - s, y + 1) {
-            return;
+        let s = self.diag_side(x, y, k);
+        if self.displace(x, y, c, x + s, y + 1) {
+            return Step::Moved(x + s, y + 1);
+        }
+        if self.displace(x, y, c, x - s, y + 1) {
+            return Step::Moved(x - s, y + 1);
         }
         // 横移至多 dispersion 格（Layer G Task 1），仅入 AIR；方向承诺不变量：
         // 侧移成功后记忆 = 实际移动方向（2026-06-14 液面冻结修复的 Rust 版语义，
         // M0 spec §4.3）。失败则翻向再试一次——翻向后同样吃满色散距离。
         let d = c.dir();
-        let _ = self.side(x, y, c, d) || self.side(x, y, c, -d);
+        if let Some(nx) = self.side(x, y, c, d) {
+            return Step::MovedSide(nx, y);
+        }
+        if let Some(nx) = self.side(x, y, c, -d) {
+            return Step::MovedSide(nx, y);
+        }
+        Step::Blocked
     }
 
     /// 沿方向 `d` 探至多 `dispersion` 格，遇非 AIR 即停，移到**最远可达空格**
@@ -133,7 +229,8 @@ impl Ctx<'_> {
     /// 掠过的中途格子不写入、不标脏——它们的内容确实没变（spec §3.2 脏矩形条）。
     /// `dispersion` 缺省 1 时与改动前逐位等价：循环只跑 i=1 一轮，`far_cell`
     /// 就是原来的 `t`。
-    fn side(&self, x: i32, y: i32, c: Cell, d: i32) -> bool {
+    /// 成功则返回落点的 x（Layer G Task 2 起，外层子步循环需要落点坐标）。
+    fn side(&self, x: i32, y: i32, c: Cell, d: i32) -> Option<i32> {
         let reach = self.table.dispersion(c.material()).min(DISPERSION_MAX) as i32;
         let mut far = x;
         let mut far_cell = Cell::AIR;
@@ -146,11 +243,67 @@ impl Ctx<'_> {
             far_cell = t;
         }
         if far == x {
-            return false;
+            return None;
         }
         // 方向承诺不变量：记忆 = 实际移动方向（2026-06-14 液面冻结修复语义）
         self.win.set(far, y, c.with_dir(d > 0).with_stamp(self.stamp));
         self.win.set(x, y, far_cell.with_stamp(self.stamp));
-        true
+        Some(far)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cell::{VEL_ONE, V_MAX_CELL};
+    use crate::rng::frame_seed;
+
+    /// v1 ≤ 1.0 格/tick 时子步数恒为 1——`max(1, ..)` 的下限，也是
+    /// 可退化性（spec §4.2①）的算术根据。
+    #[test]
+    fn substeps_is_one_below_one_cell_per_tick() {
+        let f = frame_seed(42, 7);
+        for v1 in 0..=VEL_ONE {
+            for x in 0..64i32 {
+                assert_eq!(substeps(f, v1, x, 3), 1, "v1={v1} x={x} 应恒为 1 子步");
+            }
+        }
+    }
+
+    /// 终端速度下恰好 4 子步（frac = 0，无概率成分）。
+    #[test]
+    fn substeps_at_terminal_speed_is_exactly_four() {
+        let f = frame_seed(42, 7);
+        for x in 0..64i32 {
+            assert_eq!(substeps(f, V_MAX_CELL, x, 3), (V_MAX_CELL / VEL_ONE) as u32);
+        }
+    }
+
+    /// 概率取整：v1 = 1.5 格/tick（6 个 ¼ 格单位，frac = 2/4）⇒ 子步数只能是
+    /// 1 或 2，且长期比例约 50%。VEL_ONE 是 2 的幂 ⇒ `% VEL_ONE` 无取模偏置。
+    #[test]
+    fn substeps_probabilistic_rounding_matches_fraction() {
+        let f = frame_seed(0x00C0_FFEE, 11);
+        let (mut twos, mut n) = (0u32, 0u32);
+        for y in 0..128i32 {
+            for x in 0..128i32 {
+                let s = substeps(f, 6, x, y);
+                assert!(s == 1 || s == 2, "v1=6 的子步数越界：{s}");
+                if s == 2 {
+                    twos += 1;
+                }
+                n += 1;
+            }
+        }
+        let p = twos as f64 / n as f64;
+        // n = 16384 ⇒ σ = 0.5/√n ≈ 0.39%，取 4σ ≈ 1.6%
+        assert!((p - 0.5).abs() < 0.016, "frac=2/4 的取整比例 {p:.4} 偏离 0.5 超 4σ");
+    }
+
+    /// 纯函数：同 (fseed, v1, x, y) 必复现同值（charter §2 随机性法典）。
+    #[test]
+    fn substeps_is_a_pure_function() {
+        let f = frame_seed(1, 2);
+        assert_eq!(substeps(f, 7, 13, 21), substeps(f, 7, 13, 21));
     }
 }

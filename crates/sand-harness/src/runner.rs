@@ -7,7 +7,29 @@ use sand_core::{hash, InitConfig, MaterialTable, ScanMode, Sim};
 use crate::scenario::Scenario;
 
 /// 哈希流采样间隔（golden 口径，改动即口径变更）。
+/// 哈希流默认采样间隔（golden 文件的格式由它决定，改动即作废全部 golden）。
+/// `hashrun --hash-every N` 可临时改小，用于「逐位回归」取证——例如 Layer G
+/// Task 2 的零加速旁路（spec §0 验收第 2 项）要求**每 tick**都对齐，
+/// 256 的采样点不足以支撑那句断言。取证专用，不影响 golden 录制默认值。
 pub const HASH_EVERY: u64 = 256;
+
+/// 哈希流的取样口径。默认值（`grid_only = false`、`every = HASH_EVERY`）
+/// **就是 golden 文件的格式**，改它即作废全部 golden；两个字段都只在取证路径
+/// 上才偏离默认。打成一个结构体而非两个形参，是为了让 `run` 的参数表停在
+/// clippy 的 7 个上限内，也让"这两件事同属取证口径"在类型上说清楚。
+#[derive(Clone, Copy, Debug)]
+pub struct HashStream {
+    /// 用 `Sim::grid_hash()`（网格哈希树根，跳过粒子层折叠）代替 `state_hash()`。
+    pub grid_only: bool,
+    /// 采样间隔（tick）。`--hash-every 1` = 逐 tick，用于逐位回归取证。
+    pub every: u64,
+}
+
+impl Default for HashStream {
+    fn default() -> Self {
+        HashStream { grid_only: false, every: HASH_EVERY }
+    }
+}
 
 pub fn build_sim(
     sc: &Scenario,
@@ -37,7 +59,8 @@ pub struct RunReport {
 
 /// 跑完场景，产出哈希流报告。
 ///
-/// `grid_only`：用 `Sim::grid_hash()`（网格哈希树根，跳过粒子层折叠）代替
+/// `hs`：哈希流取样口径（见 [`HashStream`]）。`grid_only` 用 `Sim::grid_hash()`
+/// （网格哈希树根，跳过粒子层折叠）代替
 /// `Sim::state_hash()`。M1 golden 重录取证专用（spec §9 两步程序）——新代码
 /// 以 `grid_only=true` 跑旧 golden 场景，逐 tick 序列须与改动前（`state_hash`
 /// 即等价于当时的 `grid_hash`，因为彼时尚无粒子）一字不差。
@@ -48,7 +71,7 @@ pub fn run(
     threads: usize,
     scan: ScanMode,
     ticks: u64,
-    grid_only: bool,
+    hs: HashStream,
 ) -> Result<RunReport, String> {
     let mut sim = build_sim(sc, table, threads, scan)?;
     let mut lines = vec![
@@ -57,7 +80,7 @@ pub fn run(
         format!("materials_fp {materials_fp:016x}"),
         format!("world {}x{} seed {} ticks {}", sc.world.0 * 64, sc.world.1 * 64, sc.seed, ticks),
     ];
-    let hash_of = |sim: &sand_core::Sim| if grid_only { sim.grid_hash() } else { sim.state_hash() };
+    let hash_of = |sim: &sand_core::Sim| if hs.grid_only { sim.grid_hash() } else { sim.state_hash() };
     let mut total = 0.0f64;
     let mut max_ms = 0.0f64;
     for t in 0..ticks {
@@ -67,7 +90,7 @@ pub fn run(
         let ms = t0.elapsed().as_secs_f64() * 1e3;
         total += ms;
         max_ms = max_ms.max(ms);
-        if (t + 1) % HASH_EVERY == 0 {
+        if (t + 1) % hs.every == 0 {
             lines.push(format!("tick {:>8} hash {:016x}", t + 1, hash_of(&sim)));
         }
     }

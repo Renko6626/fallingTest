@@ -5,6 +5,13 @@ edition.workspace = true
 
 # Ring 0 铁律（program-architecture §2）：本 crate 永不依赖 godot/gdext、网络库、
 # 文件系统与墙钟。rayon（有界并行）与 xxhash（状态哈希）为纯计算，属允许清单。
+# 取证专用 feature，**绝不可进产品构建**（见 cell.rs::G_ACCEL）：
+# `zero-gravity` 把 G_ACCEL 压成 0，用于 Layer G Task 2 验收第 2 项的
+# 「零加速旁路」逐位回归——它改变物理，两端 feature 不一致即分叉。
+# sand-harness 在 G_ACCEL == 0 时向 stderr 打警告。
+[features]
+zero-gravity = []
+
 [dependencies]
 rayon = "1"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }

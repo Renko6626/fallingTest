@@ -26,7 +26,7 @@ pub mod scheduler;
 mod window;
 pub mod world;
 
-pub use cell::Cell;
+pub use cell::{Cell, G_ACCEL, VEL_ONE, V_MAX_CELL};
 pub use emit::MAX_EMIT_JITTER_RAW;
 pub use fixed::Fx;
 pub use material::{

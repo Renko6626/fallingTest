@@ -7,33 +7,45 @@
 //! `next_dirty` 原子矩形合并（可交换可结合）。跨相位由 rayon join 屏障定序。
 //! debug 构建下每次 cell 读写断言坐标落在窗口内——越界即 panic（写域执法）。
 
-use crate::cell::Cell;
+use crate::cell::{Cell, VEL_ONE, V_MAX_CELL};
 use crate::chunk::{Chunk, DirtyRect, CHUNK};
 use crate::material::DISPERSION_MAX;
 use crate::world::WALL_SENTINEL;
 
 /// 影响半径上限（charter §4 r≤16 契约）。
 ///
-/// 实际用掉多少（2026-08-31，Layer G Task 1 后）：竖直移速仍恒 1（速度积分是
-/// Task 2 的范围），水平最大位移 = 液体色散 [`DISPERSION_MAX`] = 8，加
-/// `mark_dirty_around` 的 ±1 ⇒ **实际 r = 9 ≤ 16，余量 7**。
+/// 实际用掉多少（2026-08-31，Layer G Task 2 后）：见 [`MAX_WRITE_RADIUS`]
+/// 的逐条推导，**r = 12 ≤ 16，余量 4**。
 ///
-/// 下面的编译期断言把这条不等式从人肉纪律变成契约：谁把 `DISPERSION_MAX`
-/// 提到 16 以上，编译直接不过。Task 2 引入格内移速后，本断言按 spec §5 扩写为
-/// `(V_MAX_CELL/VEL_ONE − 1) + DISPERSION_MAX + 1 <= HALO`（色散走到即撞停，
-/// 故两项是"同一 tick 内先斜下后色散"的串接而非各自独立取最大）。
+/// 下面的编译期断言把这条不等式从人肉纪律变成契约：谁把 `V_MAX_CELL` 提到 8
+/// 格/tick 或把 `DISPERSION_MAX` 提到 12，编译直接不过。
 ///
 /// 断言覆盖不到的部分仍需自证：新增**其他**移动/探测规则时，必须论证自己的
 /// 读写半径 ≤ HALO 并复审脏矩形扩张常数（spec §3.3）。
 pub const HALO: i32 = 16;
 
-/// 单次 cell 更新实际用掉的最大读写半径（Layer G Task 1 时点）：色散距离
-/// 上限 + `mark_dirty_around` 的 ±1。Task 2 加入格内移速后按 spec §5 扩写。
-pub const MAX_WRITE_RADIUS: i32 = DISPERSION_MAX as i32 + 1;
+/// 单次 cell 更新实际用掉的最大读写半径（Layer G Task 2 时点，spec §5）。
+///
+/// 逐条推导：
+/// 1. 子步循环最多 `n = V_MAX_CELL / VEL_ONE = 4` 步；世代戳（`rules::eval`）
+///    保证每 cell 每 tick 只被 `eval` 一次，不会级联叠加。
+/// 2. 色散一旦走到就撞停终止循环（`rules::Step::MovedSide`）⇒ **每 tick 至多
+///    一次色散**。故最坏水平路径 = `(n − 1)` 次同向斜下 + 1 次满色散
+///    = `3 + 8 = 11`；另一条候选（4 次全斜下 = 4）更小。
+/// 3. 最坏竖直位移 = `n` = 4 < 11。
+/// 4. `displace` 的探测半径 = 写半径；`side` 的探测路径 ≤ `dispersion` ≤ 写半径。
+/// 5. `mark_dirty_around` 再 ±1。
+///
+/// ⇒ `(V_MAX_CELL/VEL_ONE − 1) + DISPERSION_MAX + 1 = 3 + 8 + 1 = 12`。
+///
+/// 两项是**串接**（同一 tick 内先斜下、后色散）而非各自独立取最大——正因为
+/// 色散会终止子步循环，两者不可能各自吃满。
+pub const MAX_WRITE_RADIUS: i32 =
+    (V_MAX_CELL / VEL_ONE) as i32 - 1 + DISPERSION_MAX as i32 + 1;
 
 const _: () = assert!(
     MAX_WRITE_RADIUS <= HALO,
-    "r<=16 契约破裂：DISPERSION_MAX + 1（mark_dirty_around 的 ±1）必须 <= HALO"
+    "r<=16 契约破裂：(V_MAX_CELL/VEL_ONE − 1) + DISPERSION_MAX + 1 必须 <= HALO"
 );
 
 #[derive(Clone, Copy)]

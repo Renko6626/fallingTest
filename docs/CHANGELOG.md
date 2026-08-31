@@ -7,6 +7,89 @@
 
 ## 2026-08-31
 
+### Added
+- **Layer G Task 2 完成：重力速度积分**（spec `docs/superpowers/specs/2026-08-31-layer-g-velocity-design.md` §4，
+  Status: Proposed → Task 2 打勾；总纲 §11 **实施期决策第 5 条**，并订正总纲 §4 正文两处）。
+
+  **语义**：`Cell` bits 17–21 存竖直速度（Q3.2 无符号，单位 ¼ 格/tick，上限
+  `V_MAX_CELL = 16` = 4.0 格/tick），每 tick `v ← min(v + G_ACCEL, V_MAX_CELL)`
+  （`G_ACCEL = 1` ⇒ 16 tick 达终端速度），子步数
+  `n = max(1, v/VEL_ONE + frac_roll)`，撞停（`Blocked` / `MovedSide`）清零。
+  `powder_step` / `liquid_step` 的**判定逻辑一行没改**，只是返回值从 `()` 变成
+  三态枚举 `Step`，把"成功/失败 + 落点"回传给外层子步循环。
+
+  **`max(1, ..)` 是整条设计的承重点**：`v = 0` 时 n = 1，走的就是 Task 2 之前那条
+  路径。于是拿到一个**免费的强回归取证手段**——把 `G_ACCEL` 压成 0，整个 sim 必须
+  与改动前逐位相同。
+
+  **零加速旁路取证（验收 §0 第 2 项）**：`sand_pile` / `mixed` / `waterfall_ci` /
+  `explosion_ci` 四场景，**逐 tick** 哈希序列 600+1500+1200+1200 = **4500 条**
+  加 4 个 final 加 8 条指纹，`diff` **全空**。取证与复跑手册存
+  `.superpowers/layer-g-task2-gravity/`。
+  注意 `docs/perf/baselines/*.grid-only.txt` 只有每 256 tick 的采样点，**不足以支撑
+  "逐 tick 逐位相同"这句断言**——故本轮给 harness 加了 `--hash-every N`（默认仍是
+  256 = golden 格式），before 侧在 `git worktree` 里把 `HASH_EVERY` 改 1 独立编译。
+
+  **`zero-gravity` feature 是一个改变物理的构建开关，风险有意接受**：两端 feature
+  不一致即分叉，而握手指纹只覆盖数据、覆盖不到代码。缓解 = `sand-harness` 在
+  `sand_core::G_ACCEL == 0` 时向 stderr 打警告（看常量本身，故手改常量同样被逮到）。
+
+  **写回纪律 = 休眠的生命线**（不是优化，是正确性红线）：速度只在"落点已存值 ≠ 目标值"
+  时写。静止堆体 `v = 0` → 第 0 子步 `Blocked` → 零写入 → `next_dirty` 空 → chunk 照旧
+  入睡。若照 jason.today 原样每 tick 无条件 `v += accel` 写回，整张图永不入睡，M0 建立的
+  稀疏性能当场退回全量扫描。执法测试 `resting_pile_lets_every_chunk_sleep`。
+
+  **r ≤ 16 契约升格为编译期断言**：`window.rs::MAX_WRITE_RADIUS =
+  (V_MAX_CELL/VEL_ONE − 1) + DISPERSION_MAX + 1 = 3 + 8 + 1 = **12** ≤ HALO 16`。
+  两项是**串接**而非各自取最大——色散一走到就终止子步循环（`Step::MovedSide`），
+  故最坏路径 = 3 次斜下 + 1 次满色散。谁把终端速度提到 8 格/tick 或色散上限提到 12，
+  **编译不过**。
+
+  **RNG 两处**：新增 `STREAM_FALLSTEP = 3`（`frac_roll`，key 取 cell 的**起始坐标**
+  ——扫描开始时每个网格位置至多一个 cell，故同 tick 内天然唯一，不需要 salt/attempt）；
+  `diag_side` 的 `attempt` 形参从恒 0 改传**子步序号 `k`**（总纲 §11 翻案 4 点名要求
+  的维度：同 cell 同 tick 最多 4 次斜向掷骰，不带 `k` 会全部滑向同一侧）。`k = 0` 与
+  改动前同值，故不破坏可退化性。
+
+  **子裁决终裁：斜滑不清零速度**（spec §4.2④，用户 2026-08-31 采纳默认）。沙在下方
+  被挡、斜下可走时算 `Moved`、循环继续 ⇒ 单 tick 可斜滑至多 4 格，沙堆坍塌明显变快，
+  jason.today / Noita 同款。反面选项（"斜滑即 stalled"）随时可切，水平 r 还会降到 4。
+
+  **golden 预期 vs 实测**：预期"四个全变（含纯沙 `sand_pile` —— 这是反向哨兵：
+  它若没变就说明积分没生效）、两条 `_fp` 行不变"，**完全兑现**。一条**预期之外**的
+  观察：`waterfall_ci` 只有 tick 256 一行变，512/768/1024/final **逐位收敛回旧值**
+  ——稳态下所有 cell 速度位恒 0，这是"撞停清零 + 静止零写入"在哈希层的独立佐证，
+  事后看比任何单测都硬。
+
+  **验收**：① `cargo test --workspace` 全绿（171 项，新增 6 条行为测试 + 4 条 `substeps`
+  单测 + 2 条 `Cell` 位段单测）、`clippy --all-targets` 零警告；② 零加速旁路见上；
+  ③ **SyncTest 六配置在重录 golden 之前先绿**：waterfall（640×384）与 mixed 各
+  **2 万 tick** 零分叉（727.6s / 211.1s）；④ golden 四个重录；⑤ 休眠不变量执法测试；
+  ⑥ `docs/perf/baselines/*.grid-only.txt` **已用 Task 2 后的语义重建**，Task 3 的
+  逐位回归以此为新基线。
+
+  **bench：一致变慢 5%–34%，方向统一、机制清楚，属预期内的语义成本**
+  （`docs/perf/2026-08-31-layer-g-task2-gravity.md`，108 次测量，同机同轮次交替对照）。
+  `acceptance`（640×384，最接近总纲 §7 目标量级）LiveRect 下 1/8/16 线程
+  **+21.2% / +27.3% / +34.0%**，三个线程数方向一致 ⇒ 非噪声；18 格里 3 个负值幅度
+  ≤ 7.2%，在本机噪声带内，**不当作"部分场景变快"**。绝对量级仍远在预算内：产品配置
+  （`acceptance` 8 线程 live）0.536 ms/tick，60Hz 预算 16.6 ms。与 Task 1 合看，同格
+  从 Layer G 起点的 1.045 ms → 0.465 ms（Task 1）→ 0.536 ms（Task 2），**净仍快约一半**
+  ——Task 1 性能文档当时写的"别把这些数字当成可继承的余量"兑现了。
+
+  受影响文件：`crates/sand-core/src/cell.rs`（位段表 + `vel`/`with_vel` + 常量）、
+  `crates/sand-core/src/rules.rs`（`Step` 枚举 + `substeps` + `eval` 子步循环）、
+  `crates/sand-core/src/rng.rs`（`STREAM_FALLSTEP`）、`crates/sand-core/src/window.rs`
+  （`MAX_WRITE_RADIUS` 编译期断言）、`crates/sand-core/src/lib.rs`、
+  `crates/sand-core/Cargo.toml`（`zero-gravity` feature）、
+  `crates/sand-harness/src/{main,runner}.rs`（`--hash-every` + `HashStream` + G_ACCEL 警告）、
+  `crates/sand-harness/tests/golden{,/*.golden}`、`docs/perf/baselines/*.grid-only.txt`、
+  总纲 §4 与 §11、spec 实施进度与 §8 决策表。
+
+  ⏳ **待用户**：GIF 目检（验收 §0 第 7 项）——`out/sand_pile_g{0,1}.gif` 与
+  `out/mixed_g{0,1}.gif`（`g0` = 改动前，`g1` = 改动后）。重点看两件事：加速下落的手感，
+  以及 §4.2④ 那条子裁决的后果（斜滑不清零速度 ⇒ 沙堆坍塌是否塌得太夸张）。
+
 ### Changed
 - **两项挂在用户身上的裁决收口（用户口头裁定，2026-08-31）**：
   ① **Layer G Task 1 的 GIF 目检通过** —— 验收 §0 第 7 项清账，Task 1 全项完成

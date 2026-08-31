@@ -41,6 +41,20 @@ pub const STREAM_EMIT: u32 = 1;
 /// 与 `Op::Emit` 同一套 `EXPLODE_ROLL_VX`/`EXPLODE_ROLL_VY` 常量）。
 pub const STREAM_EXPLODE: u32 = 2;
 
+/// 重力速度积分的子像素概率取整流（Layer G Task 2，spec §4.2③）。调用点：
+/// `rules.rs::substeps` —— 每 tick 每 cell 掷一次，决定 `v` 的小数部分是否
+/// 兑换成额外一个子步（`n = v/VEL_ONE + [roll % VEL_ONE < v % VEL_ONE]`）。
+///
+/// **key 取该 cell 本 tick 的起始坐标**，不掺 salt/attempt：扫描开始时每个
+/// 网格位置至多一个 cell，故起始坐标在同一 tick 内天然唯一，不存在 charter
+/// §11 翻案 4 点名的"同帧同格多次掷骰返回同值"隐患。（终点坐标则**不**唯一
+/// ——高速 cell 腾空原格后上方 cell 可能同 tick 落入同格，Task 3 溅射骰的
+/// key 选择记的是同一条教训。）
+///
+/// 与 [`STREAM_SCANDIR`] 不同，本流的 key 含 `x`/`y`，与 `STREAM_DIAG` 天然
+/// 不同流；两者取的都是低位，但流号不同即 `pos` 不同，无需错开取位。
+pub const STREAM_FALLSTEP: u32 = 3;
+
 /// 行扫描方向流（charter §11 实施期决策第 3 条，2026-08-31）。调用点：
 /// `rules.rs::update_chunk` 每 tick 掷一次，决定本 tick 的行方向全局奇偶相位。
 ///
@@ -64,7 +78,7 @@ pub const STREAM_EXPLODE: u32 = 2;
 /// 安全**——与 `diag_side` 的 bit0 错开一位代价为零。执法测试见本文件
 /// `tests::scandir_bit_independent_of_diag_bit`。
 ///
-/// **编号 4 而非 3**：3 已由 Layer G Task 2 的 `STREAM_FALLSTEP` 预留
+/// **编号 4 而非 3**：3 归 Layer G Task 2 的 [`STREAM_FALLSTEP`]（2026-08-31 已落实）
 /// （`docs/superpowers/specs/2026-08-31-layer-g-velocity-design.md` §4.2③），
 /// 5 预留给 Task 3 的 `STREAM_SPLASH`（同 spec §6.1）。此处一次性排好，避免
 /// 后续撞号被迫改常量、再作废一次 golden。

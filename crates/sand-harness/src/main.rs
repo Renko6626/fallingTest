@@ -2,7 +2,7 @@
 //! 用法：
 //!   sand-harness synctest <scenario.ron> [--ticks N] [--threads N] [--materials PATH]
 //!   sand-harness replay   <scenario.ron> [--golden PATH | --write-golden PATH] [--ticks N] [--grid-only]
-//!   sand-harness hashrun  <scenario.ron> [--ticks N] [--grid-only]
+//!   sand-harness hashrun  <scenario.ron> [--ticks N] [--grid-only] [--hash-every N]
 //!   sand-harness render   <scenario.ron> -o out.gif [--every K] [--scale N] [--ticks N] [--fps F] [--from T]
 //!
 //! `--grid-only`：哈希流用网格哈希树根（跳过粒子层折叠），M1 golden 重录取证专用
@@ -29,6 +29,7 @@ struct Args {
     from: u64,
     scan: sand_core::ScanMode,
     grid_only: bool,
+    hash_every: u64,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -50,6 +51,7 @@ fn parse_args() -> Result<Args, String> {
         from: 0,
         scan: sand_core::ScanMode::LiveRect,
         grid_only: false,
+        hash_every: sand_harness::runner::HASH_EVERY,
     };
     while let Some(flag) = it.next() {
         let mut val = || it.next().ok_or(format!("{flag} 缺参数"));
@@ -65,6 +67,13 @@ fn parse_args() -> Result<Args, String> {
             "--fps" => a.fps = Some(val()?.parse().map_err(|e| format!("--fps: {e}"))?),
             "--from" => a.from = val()?.parse().map_err(|e| format!("--from: {e}"))?,
             "--grid-only" => a.grid_only = true,
+            // 取证专用：把哈希流采样间隔改小（默认 256 = golden 格式）。
+            "--hash-every" => {
+                a.hash_every = val()?.parse().map_err(|e| format!("--hash-every: {e}"))?;
+                if a.hash_every == 0 {
+                    return Err("--hash-every 必须 >= 1".into());
+                }
+            }
             "--scan" => {
                 a.scan = match val()?.as_str() {
                     "full" => sand_core::ScanMode::Full,
@@ -90,6 +99,16 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<(), String> {
+    // 取证 feature 的可见性闸门（Layer G Task 2，spec §0 验收第 2 项）：
+    // `sand-core/zero-gravity` 把重力压成 0，只用于「零加速旁路」逐位回归。
+    // 它改变物理 ⇒ 两端 feature 不一致即分叉，而握手指纹只覆盖数据、覆盖不到
+    // 代码，故这里在**运行时**直接看常量本身——手改常量同样会被这条逮到。
+    if sand_core::G_ACCEL == 0 {
+        eprintln!(
+            "警告：G_ACCEL == 0（零加速旁路构建）。仅供 Layer G Task 2 取证，\
+             产出的哈希与 golden **不代表**产品语义，切勿据此录 golden。"
+        );
+    }
     let a = parse_args()?;
     let (table, materials_fp) = load_materials(&a.materials)?;
     let sc = load_scenario(&a.scenario, &table)?;
@@ -109,7 +128,15 @@ fn run() -> Result<(), String> {
         }
         "replay" | "hashrun" => {
             let report =
-                runner::run(&sc, &table, materials_fp, a.threads, a.scan, ticks, a.grid_only)?;
+                runner::run(
+                    &sc,
+                    &table,
+                    materials_fp,
+                    a.threads,
+                    a.scan,
+                    ticks,
+                    runner::HashStream { grid_only: a.grid_only, every: a.hash_every },
+                )?;
             let text = report.lines.join("\n") + "\n";
             if let Some(path) = &a.write_golden {
                 std::fs::write(path, &text).map_err(|e| format!("写 {path} 失败：{e}"))?;
