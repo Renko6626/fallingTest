@@ -26,7 +26,7 @@
    2 万 tick，全部 tick 哈希与 final **逐位相同**。同轮查出握手指纹对行尾敏感（CRLF 检出使同一
    commit 算出不同 fp，仿真无碍），已修（总纲 §11 实施期决策第 4 条）。M0 起挂账的跨机验收项清账。
    **下一步 = Layer G Task 2（重力速度积分）。**
-2. **Layer G 运动语义重做（实施中，spec: Proposed）**——`superpowers/specs/2026-08-31-layer-g-velocity-design.md`。
+2. **Layer G 运动语义重做：三 Task 全部完成（2026-08-31，spec: Implemented），仅剩 Task 3 目检**——`superpowers/specs/2026-08-31-layer-g-velocity-design.md`。
    范围 = 液体色散 ≤8 + 重力速度积分 + 撞击溅射脱格，分三 Task 独立落地。
    - **Task 1 液体色散 ≤8：已完成并经用户目检确认（2026-08-31）**——`materials.ron` 加
      `dispersion` 字段（water 5），`rules::side` 改"最远可达空格"+ `DISPERSION_MAX` clamp。单测 10 条、golden
@@ -41,8 +41,15 @@
      成本，绝对量级远在预算内）。r 契约升格为编译期断言（12 ≤ 16）。目检 GIF：
      `out/sand_pile_g{0,1}.gif`、`out/mixed_g{0,1}.gif`（g0 = 改动前），重点看加速手感
      与"斜滑不清零速度"导致的沙堆坍塌是否过快。总纲 §4、§11 已同步。
-   - **Task 3 撞击溅射脱格**（下一步）：并行 pass 新增 `spawns` 写入源，须落总纲 §11。
-     开工前 §6.1①（`MovedSide` 是否触发溅射）仍待目检终裁。
+   - **Task 3 撞击溅射脱格：代码与验收已完成（2026-08-31），仅剩 GIF 目检结论待用户**——
+     G→P（cell 撞停脱格，`Chunk::spawn_buf` + 相位屏障后按 chunk index 升序 drain）
+     **与 P→G（粒子落格把撞击速度写进 cell 速度位，用户中途裁决并入）** 两个方向都补齐。
+     SyncTest mixed+waterfall+explosion_splash 各 2 万 tick 六配置零分叉（跑了两轮）；
+     线程数不变性 1/8/16 逐位相同；golden 四个重录；bench 见
+     `perf/2026-08-31-layer-g-task3-splash.md`（`acceptance` 中位 +2%，比 Task 2 小一个量级）。
+     目检 GIF：`out/mixed_splash{0,1}.gif`（G→P）、`out/waterfall_ci_splash{0,1}.gif`（P→G），
+     0 = 改动前；重点看水花量与 §6.1①（`MovedSide` 也触发 ⇒ 贴地横流会不会冒过量水花）。
+     **遗留**：横向撞击动量仍被丢弃（网格无水平速度场），留 M2 之后。
 3. **M2 场层与反应表**（Layer G 三 Task 之后）：spec 里裁决 O2 场降本 + O3 粉末惯性时点 + durability/hardness
    字段化 + 粒子穿水/弹跳评估 + M1 遗留两条测试补强（见 `sessions/2026-08-30-m1-particle-layer.md`"留给后续"；
    其中 Task 6 minor ①②③⑤ 已由 commit `098fe23` 修掉，剩 ④⑥ 两条测试债）。

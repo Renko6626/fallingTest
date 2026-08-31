@@ -180,8 +180,8 @@ mod tests {
 
     fn table() -> MaterialTable {
         MaterialTable::new(vec![
-            MaterialDef { id: 0, name: "air".into(), category: Category::Static, density: 0, color: (0, 0, 0), blast_cost: 0, vaporize_threshold: 255, dispersion: 1 },
-            MaterialDef { id: 1, name: "wall".into(), category: Category::Static, density: 100, color: (0, 0, 0), blast_cost: crate::material::BLAST_COST_INFINITE, vaporize_threshold: 255, dispersion: 1 },
+            MaterialDef { id: 0, name: "air".into(), category: Category::Static, density: 0, color: (0, 0, 0), blast_cost: 0, vaporize_threshold: 255, dispersion: 1, splash_chance: 0 },
+            MaterialDef { id: 1, name: "wall".into(), category: Category::Static, density: 100, color: (0, 0, 0), blast_cost: crate::material::BLAST_COST_INFINITE, vaporize_threshold: 255, dispersion: 1, splash_chance: 0 },
         ])
         .unwrap()
     }

@@ -12,6 +12,7 @@
 use rayon::prelude::*;
 use xxhash_rust::xxh3::Xxh3;
 
+use crate::cell;
 use crate::dda;
 use crate::fixed::Fx;
 use crate::material::{MaterialTable, MAT_AIR};
@@ -285,12 +286,36 @@ fn commit(
             Outcome::Fly { pos, vel } => {
                 particles.set_state(i, pos.0, pos.1, vel.0, vel.1);
             }
-            Outcome::Land { cx, cy, .. } => {
+            Outcome::Land { cx, cy, pos } => {
                 // Land 必然终止于落格或出界（Task 4 修复轮 1 C1：悬浮路径已废除）。
                 keep[i] = false;
                 match resolve_landing(world, cx, cy) {
                     Some((lx, ly)) => {
                         world.set_cell_stamped(table, lx, ly, particles.material(i), stamp);
+                        // **P→G 撞击动量传递**（Layer G Task 3，用户裁决 2026-08-31）。
+                        //
+                        // 在此之前，粒子哪怕以 MAX_SPEED（16 格/tick，网格上限的
+                        // 4 倍）砸下来，落格时动量也被整个丢弃——网格 cell 跑到
+                        // 4 格/tick 会溅射，粒子跑到 16 格/tick 反而不溅。那不是
+                        // 裁决而是两个 Task 的时间差：本落格分支写于 M1，彼时网格
+                        // 里还没有速度这个概念。
+                        //
+                        // 补法是**不新开通路**：把撞击速度量化写进 cell 的速度位，
+                        // 下一 tick 网格 eval 看到一个满速 cell、立刻撞停，直接复用
+                        // Task 3 已建好的整条溅射判定（三条件 + 本地限流 + 起始坐标
+                        // 掷骰）。不新增生成源、不动 spec §6.4 的定序论证。
+                        //
+                        // 速度取本 tick 的**实际**位移量，而不是 `particles.vy(i)`
+                        // ——后者是本 tick 重力积分**之前**的值，会少算一档重力，
+                        // 在 SPLASH_MIN_SPEED 边界上足以翻转判定。`Outcome::Land`
+                        // 的 `pos` 字段按其文档就是"未受阻时的积分终点 = 起点 +
+                        // 本 tick 速度"，故差值即实际速度（见 `Outcome` 文档与
+                        // `land_impact_velocity_matches_this_ticks_displacement`）。
+                        let impact_vy = pos.1 - particles.y(i);
+                        let v = cell::fx_to_vel(impact_vy);
+                        if v != 0 {
+                            world.set_cell_vel(lx, ly, v);
+                        }
                     }
                     None => particles.mark_buried(),
                 }
@@ -343,6 +368,35 @@ pub(crate) fn advance(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cell::V_MAX_CELL;
+    use crate::material::{Category, MaterialDef};
+
+    /// 落格撞击速度取法所依赖的契约（Layer G Task 3 的 P→G 通路）：
+    /// `Outcome::Land.pos` 按其文档 = "未受阻时的积分终点" = 起点 + 本 tick
+    /// 速度，故 `commit` 用 `pos − 起点` 取撞击速度，比读 `particles.vy(i)`
+    /// （重力积分**之前**的值）少一档重力误差——在 `SPLASH_MIN_SPEED` 边界上
+    /// 那一档足以翻转判定。
+    ///
+    /// 这条测试把那句文档变成可执行契约：谁把 `pos` 改成"实际落点"，这里立刻红。
+    #[test]
+    fn land_impact_velocity_matches_this_ticks_displacement() {
+        let table = MaterialTable::new(vec![
+            MaterialDef { id: 0, name: "air".into(), category: Category::Static, density: 0, color: (0, 0, 0), blast_cost: 0, vaporize_threshold: 255, dispersion: 1, splash_chance: 0 },
+            MaterialDef { id: 1, name: "wall".into(), category: Category::Static, density: 100, color: (0, 0, 0), blast_cost: crate::material::BLAST_COST_INFINITE, vaporize_threshold: 255, dispersion: 1, splash_chance: 0 },
+        ])
+        .unwrap();
+        let mut w = World::new(1, 1, 0);
+        for x in 0..64 {
+            w.set_cell_stamped(&table, x, 40, 1, 0); // 地板
+        }
+        let p = ParticleView { x: Fx::from_int(10), y: Fx::from_int(30), vx: Fx::ZERO, vy: Fx::from_int(12) };
+        let Outcome::Land { pos, .. } = integrate(p, &w) else {
+            panic!("12 格/tick 撞 10 格外的地板必须落格");
+        };
+        let (_, vy) = apply_gravity_and_clamp(p.vx, p.vy);
+        assert_eq!(pos.1 - p.y, vy, "Land.pos 必须是起点 + 本 tick 速度（commit 据此取撞击速度）");
+        assert_eq!(cell::fx_to_vel(pos.1 - p.y), V_MAX_CELL, "高速撞击必须量化到终端速度");
+    }
 
     fn fx(v: i32) -> Fx {
         Fx::from_int(v)
@@ -449,6 +503,7 @@ mod tests {
             blast_cost,
             vaporize_threshold: 255,
             dispersion: 1,
+            splash_chance: 0,
         };
         MaterialTable::new(vec![
             def(0, "air", Category::Static, 0, 0),

@@ -96,7 +96,17 @@ pub(crate) fn step(
                 );
             });
         });
-        // pool.install + par_iter 完成即相位屏障
+        // pool.install + par_iter 完成即相位屏障。
+        // 屏障之后立刻按 **chunk index 升序** drain 本相位各 chunk 的溅射生成
+        // 请求（Layer G Task 3，spec §6.4）：`ids` 由 cy 外层 / cx 内层构造，
+        // ci = cy*wc+cx 天然升序。最终 id 序 = (相位序, chunk index, chunk 内
+        // 扫描序)，三者都是状态的纯函数 ⇒ 与线程数、与 rayon 的完成顺序无关。
+        // 休眠 chunk 不在 ids 里，它们也不可能产出请求（根本没被扫描）。
+        for &(ci, _) in &ids {
+            // SAFETY: 相位屏障之后是单线程语境，并行段已结束。
+            let buf = unsafe { &mut (*ptr.0.add(ci)).spawn_buf };
+            spawns.append(buf);
+        }
     }
 
     for c in world.chunks.iter_mut() {

@@ -84,6 +84,21 @@ pub const STREAM_FALLSTEP: u32 = 3;
 /// 后续撞号被迫改常量、再作废一次 golden。
 pub const STREAM_SCANDIR: u32 = 4;
 
+/// 撞击溅射流（Layer G Task 3，spec §6.1③/§6.3）。调用点：`rules.rs::try_splash`
+/// —— 三颗骰共用本流，靠 `attempt` 区分（`SPLASH_ROLL_TRIGGER`/`_VX`/`_VY`），
+/// 体例同 `explode.rs` 的 `EXPLODE_ROLL_*`。
+///
+/// **key 用该 cell 本 tick 的起始坐标 `(sx, sy)`，不是撞停坐标**——这是本流
+/// 唯一需要小心的地方，也是 2026-08-31 评审专门修订过的一条。撞停坐标在同一
+/// tick 内**不唯一**：cell A 撞停脱格后原格变 AIR（盖戳不阻止它被 `displace`
+/// 当作目标），上方 cell B 同 tick 落入同格再撞停；若 key 取撞停坐标，A 与 B
+/// 掷出同一个值 —— 同材质则"A 溅则 B 必溅"，整列连锁全脱或全停，正是 charter
+/// §11 翻案 4 点名的"同帧同格多骰同值"偏置。起始坐标每 tick 每 cell 唯一
+/// （与 [`STREAM_FALLSTEP`] 同一条论证），撞停位置只决定粒子出生点、不进 key。
+///
+/// 不需要 `salt`：每 cell 每 tick 至多触发一次溅射，起始坐标已经唯一。
+pub const STREAM_SPLASH: u32 = 5;
+
 /// 本 tick 的行方向全局相位（0 或 1）；行方向 = `(y ^ scan_flip(fseed)) & 1 == 0`
 /// 为左→右。见 [`STREAM_SCANDIR`] 的完整论证。
 ///

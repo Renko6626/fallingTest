@@ -22,6 +22,7 @@ pub fn test_table_with_water_dispersion(dispersion: u8) -> MaterialTable {
             blast_cost,
             vaporize_threshold: 255,
             dispersion: disp,
+            splash_chance: 0,
         }
     };
     MaterialTable::new(vec![
@@ -47,6 +48,34 @@ pub fn sim_with_table(
     Sim::new(&cfg, table).unwrap()
 }
 
+/// 自定义 splash_chance 的材料表（Layer G Task 3，spec §6）。`chance` 是
+/// **量化后的 u8**（0 = 永不溅射、255 = 必溅射），与 harness 的 `×255 round`
+/// 量化域同口径——core 边界只见整数。water 额外给足色散，让"下方被挡 → 色散
+/// 走开"（`MovedSide`）这条路径可达，它正是 §6.1① 要观察的触发面。
+#[allow(dead_code)]
+pub fn test_table_with_splash(water_chance: u8, sand_chance: u8) -> MaterialTable {
+    let def = |id: u8, name: &str, category: Category, density: u16, splash: u8, disp: u8| {
+        MaterialDef {
+            id,
+            name: name.into(),
+            category,
+            density,
+            color: (0, 0, 0),
+            blast_cost: 1,
+            vaporize_threshold: 255,
+            dispersion: disp,
+            splash_chance: splash,
+        }
+    };
+    MaterialTable::new(vec![
+        def(0, "air", Category::Static, 0, 0, 1),
+        def(1, "wall", Category::Static, 100, 0, 1),
+        def(SAND, "sand", Category::Powder, 40, sand_chance, 1),
+        def(WATER, "water", Category::Liquid, 16, water_chance, 5),
+    ])
+    .unwrap()
+}
+
 pub fn test_table() -> MaterialTable {
     // blast_cost 取 spec §6 的口径值（air 0 / water 1 / sand 2 / wall 免疫）。
     // 爆炸行为测试并未独立成 `explode_behavior.rs` 文件，而是内联在
@@ -63,6 +92,7 @@ pub fn test_table() -> MaterialTable {
         blast_cost,
         vaporize_threshold: 255,
         dispersion: 1,
+        splash_chance: 0,
     };
     MaterialTable::new(vec![
         def(0, "air", Category::Static, 0, 0),

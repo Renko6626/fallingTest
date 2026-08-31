@@ -168,6 +168,7 @@ mod tests {
             // （见下方"vaporize_threshold"分节）。
             vaporize_threshold: 255,
             dispersion: 1,
+            splash_chance: 0,
         };
         MaterialTable::new(vec![
             def(0, "air", Category::Static, 0, 0),

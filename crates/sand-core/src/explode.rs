@@ -5,7 +5,7 @@
 
 use crate::dda::CellWalk;
 use crate::emit::emit_jitter;
-use crate::fixed::{isqrt, Fx};
+use crate::fixed::{isqrt, Fx, HALF_CELL};
 use crate::material::{MaterialTable, MAT_AIR};
 use crate::particle::clamp_speed;
 use crate::rng;
@@ -67,11 +67,6 @@ const EXPLODE_SPEED: Fx = Fx(8 << 16);
 /// `clamp_speed` 封顶 ±MAX_SPEED）。密度取 `max(1)` 防御除零（air 不会
 /// 走到溅射路径，纯防御）。
 const REF_BLAST_DENSITY: i32 = 40;
-
-/// 半格偏移（Q16.16 的 0.5）：格坐标 → 格心连续坐标，供爆炸射线的起点/
-/// 落点定位（cell_walk 的 DDA 几何要求连续坐标，格心比格角更安全——见
-/// `dda.rs` 顶部注释关于恰好贴边界时 `rem=0` 的讨论）。
-const HALF_CELL: Fx = Fx(0x0000_8000);
 
 /// Bresenham 圆周（半径 `r` 格，圆心偏移量）：返回圆心到每个周长格的整数
 /// 偏移 `(dx, dy)`，**定序、无重复**（spec §6 point 1 + §10 单测
@@ -331,6 +326,7 @@ mod tests {
             // （见下方"vaporize_threshold"分节）。
             vaporize_threshold: 255,
             dispersion: 1,
+            splash_chance: 0,
         };
         MaterialTable::new(vec![
             def(0, "air", Category::Static, 0, 0),
@@ -464,6 +460,7 @@ mod tests {
             blast_cost,
             vaporize_threshold,
             dispersion: 1,
+            splash_chance: 0,
         };
         MaterialTable::new(vec![
             def(0, "air", Category::Static, 0, 255),
@@ -524,6 +521,7 @@ mod tests {
             blast_cost,
             vaporize_threshold: 255,
             dispersion: 1,
+            splash_chance: 0,
         };
         let t = MaterialTable::new(vec![
             def(0, "air", Category::Static, 0),
@@ -641,7 +639,7 @@ mod tests {
     fn mixed_vaporize_table() -> MaterialTable {
         use crate::material::BLAST_COST_INFINITE;
         let def = |id: u8, name: &str, category: Category, density: u16, blast_cost: u32, vaporize_threshold: u8| {
-            MaterialDef { id, name: name.into(), category, density, color: (0, 0, 0), blast_cost, vaporize_threshold, dispersion: 1 }
+            MaterialDef { id, name: name.into(), category, density, color: (0, 0, 0), blast_cost, vaporize_threshold, dispersion: 1, splash_chance: 0 }
         };
         MaterialTable::new(vec![
             def(0, "air", Category::Static, 0, 0, 255),

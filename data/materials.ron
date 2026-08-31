@@ -35,11 +35,25 @@
 // 已重录；含 water 的 mixed/waterfall_ci/explosion_ci 状态哈希全变（语义
 // 变更，预期内），sand_pile 无 water，逐 tick 哈希逐位不变（重录前已用
 // `hashrun --grid-only` diff 取证）。
+// splash_chance（Layer G Task 3，spec §6.2）：本 tick 撞停且速度达
+// SPLASH_MIN_SPEED（2.0 格/tick）时，按此概率把该格脱格成一颗向上飞的粒子
+// （撞击水花）。RON 写 0.0..=1.0 十进制，加载期经
+// `sand-harness::scenario::quantize_splash_chance` 量化为 u8（×255 round）；
+// 不写即缺省 0.0 = 永不溅射，故未声明该字段的材质行为逐位不变。
+// 现值：water 0.6（量化 153，瀑布砸地的水花是本 Task 的主要目标）、
+// sand 0.1（量化 26，沙以堆积为主，少量迸溅）；air/wall 不写吃缺省
+// （air 不会撞停，wall 是 Static 根本不进 eval）。
+//
+// 与 dispersion 不同，本字段**不进** P4 写域论证——溅射产出的是粒子，走
+// Layer P 自己的 DDA 与串行落格，不经 WriteWindow。故沿用 blast_cost /
+// vaporize_threshold 的"core 侧不校验"先例。
+//
+// 本文件内容哈希（materials_fp）随之改变，全部 golden 已重录。
 (
     materials: [
         (id: 0, name: "air",   category: Static, density: 0,   color: (16, 16, 24),    blast_cost: 0),
         (id: 1, name: "wall",  category: Static, density: 100, color: (110, 106, 118), blast_cost: 4294967295),
-        (id: 2, name: "sand",  category: Powder, density: 40,  color: (214, 176, 96),  blast_cost: 2, vaporize_threshold: 0.95),
-        (id: 3, name: "water", category: Liquid, density: 16,  color: (48, 108, 220),  blast_cost: 1, vaporize_threshold: 0.4, dispersion: 5),
+        (id: 2, name: "sand",  category: Powder, density: 40,  color: (214, 176, 96),  blast_cost: 2, vaporize_threshold: 0.95, splash_chance: 0.1),
+        (id: 3, name: "water", category: Liquid, density: 16,  color: (48, 108, 220),  blast_cost: 1, vaporize_threshold: 0.4, dispersion: 5, splash_chance: 0.6),
     ],
 )

@@ -1,9 +1,9 @@
 scenario waterfall_ci
 scenario_fp c968fb551611c0e7
-materials_fp c1558de1ce2c433e
+materials_fp 75b13c8987c3bfc0
 world 256x192 seed 1518219169 ticks 1200
-tick      256 hash 7979ef43498006b8
-tick      512 hash 1369ca3ad619f167
-tick      768 hash 89b557ab199156c4
-tick     1024 hash b921c224b177959b
-final 005233069b230fb0
+tick      256 hash 726f3132609539ff
+tick      512 hash 0cf065a977a3043e
+tick      768 hash 2f1aa9ec7acf6587
+tick     1024 hash 110562fd6fcbe594
+final c9eadaabdbed87d3

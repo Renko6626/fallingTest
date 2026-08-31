@@ -2,8 +2,8 @@
 
 mod common;
 
-use common::{sim, sim_with_table, test_table_with_water_dispersion, SAND, WATER};
-use sand_core::{Op, ScanMode, DISPERSION_MAX, G_ACCEL, MAT_AIR, MAT_WALL, VEL_ONE, V_MAX_CELL};
+use common::{sim, sim_with_table, test_table_with_splash, test_table_with_water_dispersion, SAND, WATER};
+use sand_core::{Fx, Op, ScanMode, DISPERSION_MAX, G_ACCEL, MAT_AIR, MAT_WALL, VEL_ONE, V_MAX_CELL};
 
 fn floor_op(w: i32, h: i32) -> Op {
     Op::Fill { material: MAT_WALL, x0: 0, y0: h - 4, x1: w - 1, y1: h - 4 }
@@ -433,4 +433,174 @@ fn fast_water_at_max_dispersion_stays_inside_write_window() {
         s.step(&[]);
     }
     assert!(s.world().count_material(WATER) > 0, "水不该凭空消失");
+}
+
+// ==================== 撞击溅射脱格（Layer G Task 3，spec §6）====================
+//
+// 三条触发条件全中才脱格：① 本 tick 撞停（`Blocked` 或 `MovedSide`）；
+// ② `v1 >= SPLASH_MIN_SPEED`；③ 概率骰命中 `splash_chance`。
+// 下面每条各有一个"不满足即不溅射"的反面测试——只测正面的话，一个恒真的
+// 实现照样全绿。
+//
+// 场景约定：深井（左右墙 + 地板）里丢一格水，落差足够吃满终端速度，
+// 三个方向全被挡 ⇒ `Blocked` 撞停。
+
+/// 深井：左右墙 + 地板，井口在 y0，水从井口落到地板。
+fn well_ops(w: i32, h: i32, x: i32, y0: i32) -> Vec<Op> {
+    vec![
+        Op::Fill { material: MAT_WALL, x0: 0, y0: h - 4, x1: w - 1, y1: h - 4 },
+        Op::Fill { material: MAT_WALL, x0: x - 1, y0, x1: x - 1, y1: h - 5 },
+        Op::Fill { material: MAT_WALL, x0: x + 1, y0, x1: x + 1, y1: h - 5 },
+    ]
+}
+
+/// 正面：高速水撞底 → 网格格变 air、粒子 +1（质量账对齐），且粒子向上飞。
+#[test]
+fn fast_impact_ejects_a_splash_particle() {
+    let mut s = sim_with_table(2, 2, 41, 1, ScanMode::LiveRect, test_table_with_splash(255, 0));
+    let mut ops = well_ops(128, 128, 40, 80);
+    ops.push(Op::Brush { material: WATER, x: 40, y: 81, r: 0 });
+    s.apply_setup(&ops);
+    for _ in 0..60 {
+        s.step(&[]);
+        if !s.particles().is_empty() {
+            break;
+        }
+    }
+    assert_eq!(s.particles().len(), 1, "撞停必溅射（splash_chance 量化 255）");
+    assert_eq!(s.world().count_material(WATER), 0, "脱格后网格里不该再有水");
+    assert!(s.particles().vy(0).0 < 0, "溅射粒子必须向上飞（Fx 的 y 轴向下为正）");
+}
+
+/// 反面①：还在自由下落（`stalled == false`）就不该溅射，哪怕速度已封顶。
+#[test]
+fn free_falling_cell_never_splashes() {
+    let mut s = sim_with_table(2, 2, 42, 1, ScanMode::LiveRect, test_table_with_splash(255, 255));
+    s.apply_setup(&[Op::Brush { material: WATER, x: 40, y: 2, r: 0 }]);
+    for _ in 0..20 {
+        s.step(&[]);
+        assert_eq!(s.particles().len(), 0, "下落途中不得溅射");
+    }
+}
+
+/// 反面②：速度不足 `SPLASH_MIN_SPEED` 的撞停不溅射——水直接放在地板上，
+/// 第一 tick 就 `Blocked`，`v1 = G_ACCEL = 1` 远低于阈值。
+#[test]
+fn slow_impact_does_not_splash() {
+    let mut s = sim_with_table(2, 2, 43, 1, ScanMode::LiveRect, test_table_with_splash(255, 0));
+    let mut ops = well_ops(128, 128, 40, 100);
+    ops.push(Op::Brush { material: WATER, x: 40, y: 123, r: 0 });
+    s.apply_setup(&ops);
+    for _ in 0..20 {
+        s.step(&[]);
+    }
+    assert_eq!(s.particles().len(), 0, "低速撞停不得溅射");
+    assert_eq!(s.world().count_material(WATER), 1, "水必须原地留在网格里");
+}
+
+/// 反面③：`splash_chance = 0`（缺省）的材质永不溅射，哪怕高速撞停。
+#[test]
+fn zero_splash_chance_never_splashes() {
+    let mut s = sim_with_table(2, 2, 44, 1, ScanMode::LiveRect, test_table_with_splash(0, 0));
+    let mut ops = well_ops(128, 128, 40, 80);
+    ops.push(Op::Brush { material: WATER, x: 40, y: 81, r: 0 });
+    s.apply_setup(&ops);
+    for _ in 0..60 {
+        s.step(&[]);
+    }
+    assert_eq!(s.particles().len(), 0, "splash_chance=0 必须永不溅射");
+    assert_eq!(s.world().count_material(WATER), 1, "水必须留在网格里");
+}
+
+/// 概率是**逐格独立**的，不是全有或全无：一整行水同时砸地，
+/// `splash_chance ≈ 0.5` 时脱格数量必须落在两端之间。
+///
+/// 这条锁的正是 §6.1③ 的 RNG key 选择——若 key 取撞停坐标而非起始坐标，
+/// 同 tick 落进同一格的连锁会掷出同值，整列同进同退。
+#[test]
+fn splash_probability_is_per_cell_not_all_or_nothing() {
+    let mut s = sim_with_table(2, 2, 45, 1, ScanMode::LiveRect, test_table_with_splash(128, 0));
+    let mut ops = vec![Op::Fill { material: MAT_WALL, x0: 0, y0: 124, x1: 127, y1: 124 }];
+    ops.push(Op::Fill { material: WATER, x0: 10, y0: 80, x1: 109, y1: 80 });
+    s.apply_setup(&ops);
+    // 数**峰值**而非终值：溅射粒子几 tick 内就落回网格（Layer P 的落格闭环），
+    // 跑完再数必然是 0。
+    let mut peak = 0usize;
+    for _ in 0..80 {
+        s.step(&[]);
+        peak = peak.max(s.particles().len());
+    }
+    assert!(peak > 10 && peak < 90, "100 格水在 chance≈0.5 下应部分脱格，峰值实际 {peak}");
+}
+
+/// 线程数不变性（验收 §0 第 3 项）：溅射发生在**并行**四相 pass 里，
+/// 生成序必须只由 (相位序, chunk index, chunk 内扫描序) 决定，与线程数无关。
+#[test]
+fn splash_spawn_order_is_thread_count_invariant() {
+    let run = |threads: usize| {
+        let mut s =
+            sim_with_table(4, 3, 46, threads, ScanMode::LiveRect, test_table_with_splash(128, 60));
+        s.apply_setup(&[
+            Op::Fill { material: MAT_WALL, x0: 0, y0: 188, x1: 255, y1: 188 },
+            Op::Fill { material: WATER, x0: 10, y0: 20, x1: 120, y1: 40 },
+            Op::Fill { material: SAND, x0: 130, y0: 20, x1: 240, y1: 40 },
+        ]);
+        let mut hashes = Vec::new();
+        let mut peak = 0usize;
+        for _ in 0..200 {
+            s.step(&[]);
+            hashes.push(s.state_hash());
+            peak = peak.max(s.particles().len());
+        }
+        (hashes, peak)
+    };
+    let (h1, n1) = run(1);
+    let (h8, n8) = run(8);
+    let (h16, n16) = run(16);
+    assert!(n1 > 0, "场景必须真的产出溅射粒子（峰值），否则这条测试是空转");
+    assert_eq!(h1, h8, "1 线程与 8 线程的逐 tick 状态哈希必须逐位相同");
+    assert_eq!(h1, h16, "1 线程与 16 线程的逐 tick 状态哈希必须逐位相同");
+    assert_eq!((n1, n8), (n1, n16));
+}
+
+/// **P→G 撞击动量传递**（用户裁决 2026-08-31，并入 Task 3）：粒子落格前
+/// 动量整个被丢弃 —— 网格 cell 跑到 4 格/tick 会溅射，粒子跑到 16 格/tick
+/// 反而不溅。补法是把撞击速度量化写进 cell 速度位，复用已有的溅射路径。
+///
+/// 这条测试锁两段：① 落格 cell 真的带上了速度；② 下一 tick 它经既有溅射
+/// 判定重新脱格（粒子回来了）。只测 ① 的话，一个写了速度却永远触发不了
+/// 溅射的实现照样全绿。
+#[test]
+fn landing_particle_carries_impact_momentum_into_the_grid() {
+    let mut s = sim_with_table(2, 2, 47, 1, ScanMode::LiveRect, test_table_with_splash(255, 0));
+    s.apply_setup(&[
+        Op::Fill { material: MAT_WALL, x0: 0, y0: 124, x1: 127, y1: 124 },
+        Op::Emit {
+            material: WATER,
+            x: Fx::from_int(64),
+            y: Fx::from_int(4),
+            vx: Fx::ZERO,
+            vy: Fx::from_int(8),
+            count: 1,
+            jitter: Fx::ZERO,
+        },
+    ]);
+    // 跑到粒子落格：网格里出现水
+    let mut landed = None;
+    for _ in 0..60 {
+        s.step(&[]);
+        if let Some(y) = (0..124).find(|&y| s.world().cell(64, y).material() == WATER) {
+            landed = Some(y);
+            break;
+        }
+    }
+    let y = landed.expect("粒子应在 60 tick 内落格");
+    assert_eq!(
+        s.world().cell(64, y).vel(),
+        V_MAX_CELL,
+        "落格 cell 必须带上撞击速度（自由落体 120 格早已封顶）"
+    );
+    s.step(&[]);
+    assert_eq!(s.particles().len(), 1, "满速落格 cell 应在下一 tick 经溅射判定重新脱格");
+    assert_eq!(s.world().count_material(WATER), 0, "脱格后网格里不该再有水");
 }

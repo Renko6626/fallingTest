@@ -127,6 +127,18 @@ impl World {
         self.mark_dirty_around(x, y);
     }
 
+    /// 给已存在的 cell 写竖直速度位（Layer G Task 3 的 **P→G 通路**）。
+    ///
+    /// 只在 `particle::commit` 的落格分支调用，紧跟 `set_cell_stamped` 之后
+    /// ——那一格刚被写过，脏矩形已标，这里不重复标记。
+    pub(crate) fn set_cell_vel(&mut self, x: i32, y: i32, v: u8) {
+        if !self.in_bounds(x, y) {
+            return;
+        }
+        let (ci, li) = self.locate(x, y);
+        self.chunks[ci].cells[li] = self.chunks[ci].cells[li].with_vel(v);
+    }
+
     /// (x,y)±1 邻域并入所辖 chunk 的 next_dirty（跨界唤醒，spec §1.4）。
     pub fn mark_dirty_around(&self, x: i32, y: i32) {
         let x0 = (x - 1).max(0);

@@ -5,6 +5,7 @@
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use crate::cell::Cell;
+use crate::world::SpawnRequest;
 
 pub const CHUNK: usize = 64;
 pub const CELLS_PER_CHUNK: usize = CHUNK * CHUNK;
@@ -111,6 +112,16 @@ pub struct Chunk {
     pub dirty: DirtyRect,
     /// 本 tick 写入积累，tick 末 take() 换入 dirty。
     pub next_dirty: AtomicDirty,
+    /// 本 chunk 本 tick 的溅射生成请求（Layer G Task 3，spec §6.4）。
+    ///
+    /// **这是并行网格 pass 成为粒子生成队列写入源的落点。** 每个 chunk 只写
+    /// 自己那份，安全论证与 `cells` 完全同构（写域互斥由 `WriteWindow::own_ci`
+    /// 保证）；直接 push 全局队列则必然破坏确定性——并行任务的完成顺序不定。
+    /// 每个相位屏障之后由 `scheduler::step` 按 **chunk index 升序** drain，
+    /// 故最终 id 序 = (相位序, chunk index, chunk 内扫描序)，全链确定、与线程数无关。
+    ///
+    /// 缓冲跨 tick 复用（drain 用 `Vec::append`，容量留着），不重新分配。
+    pub(crate) spawn_buf: Vec<SpawnRequest>,
 }
 
 impl Chunk {
@@ -119,6 +130,7 @@ impl Chunk {
             cells: [Cell::AIR; CELLS_PER_CHUNK],
             dirty: DirtyRect::EMPTY,
             next_dirty: AtomicDirty::empty(),
+            spawn_buf: Vec::new(),
         }
     }
 }

@@ -58,6 +58,18 @@ pub struct MaterialDef {
     /// clamp 兜底（见 [`DISPERSION_MAX`]）。只对 `Category::Liquid` 有意义
     /// （粉末不走 `side`，spec §1.3 Non-goals）。
     pub dispersion: u8,
+    /// 撞击溅射概率（Layer G Task 3，spec §6.2）：本 tick 撞停且速度达
+    /// [`crate::cell::SPLASH_MIN_SPEED`] 时，按此概率把该格脱格成粒子。
+    /// 量化域是 u8：RON 里写 `0.0..=1.0` 十进制，
+    /// `sand-harness::scenario::quantize_splash_chance` 在加载期一次性
+    /// `×255 round`，core 边界只见整数——完全照 `vaporize_threshold` 的体例。
+    /// **0 = 缺省 = 永不溅射**，故未声明该字段的材质行为与 Task 3 之前逐位相同。
+    ///
+    /// 与 `dispersion` 不同，本字段**不进** P4 写域论证：溅射产出的是粒子，
+    /// 走 Layer P 自己的 DDA 与串行落格，不经 `WriteWindow`。故沿用
+    /// `blast_cost`/`vaporize_threshold` 的"core 侧不校验"先例——配错的后果
+    /// 只是水花多寡不对。
+    pub splash_chance: u8,
 }
 
 #[derive(Clone, Debug)]
@@ -130,6 +142,10 @@ impl MaterialTable {
     pub fn dispersion(&self, id: u8) -> u8 {
         self.defs[id as usize].dispersion
     }
+
+    pub fn splash_chance(&self, id: u8) -> u8 {
+        self.defs[id as usize].splash_chance
+    }
 }
 
 #[cfg(test)]
@@ -137,7 +153,7 @@ mod tests {
     use super::*;
 
     fn def(id: u8, name: &str, category: Category, density: u16) -> MaterialDef {
-        MaterialDef { id, name: name.into(), category, density, color: (0, 0, 0), blast_cost: 1, vaporize_threshold: 255, dispersion: 1 }
+        MaterialDef { id, name: name.into(), category, density, color: (0, 0, 0), blast_cost: 1, vaporize_threshold: 255, dispersion: 1, splash_chance: 0 }
     }
 
     #[test]
@@ -173,6 +189,7 @@ mod tests {
             blast_cost: cost,
             vaporize_threshold: 255,
             dispersion: 1,
+            splash_chance: 0,
         };
         let t = MaterialTable::new(vec![mk(0, "air", 0), mk(1, "wall", BLAST_COST_INFINITE)]).unwrap();
         assert_eq!(t.blast_cost(0), 0);
@@ -192,6 +209,7 @@ mod tests {
             blast_cost: 1,
             vaporize_threshold: threshold,
             dispersion: 1,
+            splash_chance: 0,
         };
         let t = MaterialTable::new(vec![mk(0, "air", 255), mk(1, "wall", 102)]).unwrap();
         assert_eq!(t.vaporize_threshold(0), 255);

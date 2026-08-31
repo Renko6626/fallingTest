@@ -9,11 +9,19 @@
 
 use std::ops::{Add, Neg, Sub};
 
-const FRAC_BITS: u32 = 16;
+pub(crate) const FRAC_BITS: u32 = 16;
 
 /// Q16.16 定点：高位整数部分 + 低 16 位小数部分，二补码 `i32`。
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct Fx(pub i32);
+
+/// 半格偏移（Q16.16 的 0.5）：格坐标 → 格心连续坐标。
+///
+/// 粒子出生点一律取格中心而非格角——`cell_walk` 的 DDA 几何要求连续坐标，
+/// 格心比格角安全（格角会撞上"恰好贴边界时 `rem = 0`"那条讨论，见 `dda.rs`
+/// 顶部注释）。两个使用者：`explode` 的爆炸溅射与 `rules` 的撞击溅射
+/// （Layer G Task 3 起），故提到本模块共享。
+pub(crate) const HALF_CELL: Fx = Fx(0x0000_8000);
 
 impl Fx {
     pub const ZERO: Fx = Fx(0);

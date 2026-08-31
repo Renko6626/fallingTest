@@ -3,7 +3,7 @@
 > 文档路径：`docs/superpowers/specs/2026-08-31-layer-g-velocity-design.md`
 > 运行时版本：Rust（内核）+ Godot 4 + gdext（表现层）
 > 最近更新：2026-08-31 (UTC+8)
-> **Status**: Proposed（Task 1 已落地；三 Task 全完才转 Implemented，见 §0）
+> **Status**: Implemented（三 Task 均已落地并验收，2026-08-31；仅 Task 3 的 GIF 目检结论待用户）
 
 ---
 
@@ -12,8 +12,8 @@
 | Task | 状态 | 落账 |
 |---|---|---|
 | 1 · 液体色散 ≤8 | ✅ **完成（2026-08-31）**，GIF 目检已过用户确认 | CHANGELOG 2026-08-31 块；perf `docs/perf/2026-08-31-layer-g-task1-dispersion.md` |
-| 2 · 重力速度积分 | ✅ **代码与验收完成（2026-08-31）**，仅剩 GIF 目检结论待用户 | CHANGELOG 2026-08-31 块；perf `docs/perf/2026-08-31-layer-g-task2-gravity.md`；零加速取证 `.superpowers/layer-g-task2-gravity/` |
-| 3 · 撞击溅射脱格 | 未开始 | — |
+| 2 · 重力速度积分 | ✅ **完成（2026-08-31）**，GIF 目检已过用户确认 | CHANGELOG 2026-08-31 块；perf `docs/perf/2026-08-31-layer-g-task2-gravity.md`；零加速取证 `.superpowers/layer-g-task2-gravity/` |
+| 3 · 撞击溅射脱格 | ✅ **代码与验收完成（2026-08-31）**，仅剩 GIF 目检结论待用户 | CHANGELOG 2026-08-31 块；perf `docs/perf/2026-08-31-layer-g-task3-splash.md` |
 
 **Task 1 实测 vs 预期**：§3.5 的 golden 预期全部兑现（`sand_pile` 逐 tick 哈希逐位不变、仅 `materials_fp` 行变；三个含水场景状态哈希全变）。摊平速度 254 → 96 tick（2.6×）。两处与本文原计划的偏离，均已记 CHANGELOG：
 
@@ -347,9 +347,9 @@ const _: () = assert!(
 | | Task 1 色散 | Task 2 速度积分 | Task 3 溅射脱格 |
 |---|---|---|---|
 | 单测 | §3.4 | §4.4 | §6.7 |
-| golden | 重录①（预期见 §3.5） | 重录②（已完成，预期全兑现） | 重录③ |
+| golden | 重录①（预期见 §3.5） | 重录②（已完成，预期全兑现） | 重录③（已完成，两轮：G→P 一轮 + P→G 一轮） |
 | SyncTest | waterfall + mixed 2 万 tick 六配置 | 同上 | + explosion_splash |
-| 目检 | 水面锯齿是否消失 | 加速下落手感 + §4.2④ 子裁决 | 瀑布砸地水花 + §6.1① 子裁决（横流水花是否过量） |
+| 目检 | 水面锯齿是否消失 | 加速下落手感 + §4.2④ 子裁决 | 瀑布砸地水花 + §6.1① 子裁决（横流水花是否过量）。**注意**：`waterfall*` 的水是 `Op::Emit` 粒子，其水花走的是决策 13 的 P→G 通路，不是 §6.1 的 G→P |
 | bench | 对照 M0/M1 基线，记录活跃 cell 更新次数涨幅 | 同左（Task 2 是涨幅主要来源） | 同左 |
 
 **性能预期**：子步循环只对**正在下落**的 cell 生效（静止堆体恒 `n = 1`），故 dense 场景实际涨幅应远小于最坏 ×4。这是预期不是结论——按总纲纪律，须跑 harness-bench 实测并落 `docs/perf/`，超预算如实记录。
@@ -379,4 +379,7 @@ const _: () = assert!(
 | 9 | 斜滑**不**清零速度（`Moved`，循环继续，单 tick 可斜滑至多 4 格） | §4.2④；jason.today / Noita 同款，沙堆坍塌明显变快。**用户 2026-08-31 采纳默认**。反面选项随时可切（一处枚举值），水平 r 还会从 11 降到 4 |
 | 10 | 溅射两骰（触发 + 抖动）的 RNG key 用起始坐标而非撞停坐标 | §6.1③/§6.3；撞停坐标同 tick 不唯一（脱格后同格可被二次占据），撞车即翻案 4 偏置。2026-08-31 评审修订 |
 | 11 | `side()` 循环上界 core 侧 clamp 到 `DISPERSION_MAX` | §3.1；`dispersion` 越界破坏 P4 写域论证（release 数据竞争），与 `blast_cost` 手感旋钮不同类，不能只靠 I/O 校验。2026-08-31 评审修订 |
-| 12 | `MovedSide` 撞停也触发溅射（暂定） | §6.1①；瀑布入水的水花正走此路径。横流水花是否过量**待 Task 3 目检**后终裁 |
+| 12 | `MovedSide` 撞停也触发溅射（暂定） | §6.1①；瀑布入水的水花正走此路径。横流水花是否过量**待目检**后终裁 |
+| 13 | **粒子落格把撞击速度写进 cell 速度位（P→G 通路）** | 用户裁决 2026-08-31。原实现丢弃粒子全部动量 ⇒ 网格 cell 4 格/tick 会溅、粒子 16 格/tick 不溅，是 M1/Task 2 的时间差而非裁决。补法选"写速度位复用既有溅射路径"而非新开通路：不新增生成源、不动 §6.4 定序论证，改动约三行。**副作用**：`waterfall*` 场景的水全是 `Op::Emit` 粒子，本条落地前它们完全不经过溅射路径（`waterfall_ci` golden 状态哈希一条不变，实测确认） |
+| 14 | 撞击速度取 `Land.pos − 起点` 而非 `particles.vy(i)` | 后者是重力积分**之前**的值，少算一档重力，在 `SPLASH_MIN_SPEED` 边界上足以翻转判定。`Outcome::Land.pos` 的文档定义即"起点 + 本 tick 速度"，已由 `land_impact_velocity_matches_this_ticks_displacement` 变成可执行契约 |
+| 15 | 横向撞击动量仍然丢弃 | 速度位段是**无符号竖直**速度，网格没有水平速度场。补它要再开位段，属 M2 之后；就地注释如实记录，不假装处理 |

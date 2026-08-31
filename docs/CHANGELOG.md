@@ -8,6 +8,81 @@
 ## 2026-08-31
 
 ### Added
+- **Layer G Task 3 完成：撞击溅射脱格（G→P）+ 粒子落格撞击（P→G）**——**Layer G
+  运动语义重做三 Task 全部落地，spec 转 Implemented**（`docs/superpowers/specs/2026-08-31-layer-g-velocity-design.md` §6；
+  总纲 §11 **实施期决策第 6 条**）。
+
+  **G→P（spec 原范围）**：cell 本 tick 撞停（`Blocked` 或 `MovedSide`）、速度达
+  `SPLASH_MIN_SPEED`（2.0 格/tick）、且概率骰命中 `splash_chance` —— 三条件全中
+  即脱格成一颗向上飞的粒子（`vy = −v1 × 0.5` + 抖动）。`materials.ron` 新增
+  `splash_chance`（water 0.6 / sand 0.1，×255 量化，缺省 0 = 永不溅射）。
+
+  **确定性生成序是本 Task 的核心工程**：溅射发生在**并行**四相 pass 里，直接 push
+  全局队列必然破坏确定性。方案 = `Chunk` 加 `spawn_buf`（每 chunk 只写自己那份，
+  写域互斥与 `cells` 完全同构）+ **每个相位屏障之后按 chunk index 升序 drain**。
+  最终 id 序 = `(相位序, chunk index, chunk 内扫描序)`，全是状态的纯函数。
+  执法：`splash_spawn_order_is_thread_count_invariant`（1/8/16 线程逐 tick 状态哈希
+  逐位相同）+ SyncTest 六配置。
+
+  **RNG key 用起始坐标而非撞停坐标**（`STREAM_SPLASH = 5`）：撞停坐标同 tick 内
+  不唯一（A 脱格后原格变 AIR，上方 B 同 tick 落入同格再撞停），用它当 key 会让
+  整列连锁全脱或全停 —— 总纲 §11 翻案 4 点名的偏置。回归测试
+  `splash_probability_is_per_cell_not_all_or_nothing`。
+
+  **两道限流**：本地 `MAX_SPLASH_PER_CHUNK = 64`/tick/chunk（纯本地计数 ⇒ 与调度
+  无关；超限即不脱格，不排队——排队要跨 tick 状态，会把限流变成状态机）+ 全局
+  `MAX_PARTICLES`。**已知质量守恒缺口**（脱格已置 air，若被全局容量拒绝则质量消失）
+  与 M1 爆炸路径同一权衡，就地注释。
+
+  **P→G：用户中途提问带出的真实语义缺口，当场并入本 Task**。原实现里粒子落格
+  （`particle.rs` 的 `Outcome::Land`）直接 `set_cell_stamped` 写一个全新 cell，
+  **动量整个丢弃**——粒子哪怕以 `MAX_SPEED`（16 格/tick，网格上限 4 倍）砸下来也
+  不溅射，而网格 cell 跑到 4 格/tick 就会溅。这不是裁决，是 M1 落格逻辑与 Task 2
+  速度语义之间的**时间差**：落格分支写于 M1，那时网格里还没有速度这个概念。
+  补法刻意选**最省的一条**——把撞击速度量化写进 cell 速度位，下一 tick 网格 eval
+  看到满速 cell 立刻撞停，**复用已建好的整条溅射判定**，不新增生成源、不动定序论证，
+  改动约三行。速度取 `Land.pos − 起点`（本 tick 实际位移）而非 `particles.vy(i)`
+  （重力积分**之前**的值，少一档重力，在阈值边界足以翻转判定）；`Outcome::Land.pos`
+  的文档定义已由 `land_impact_velocity_matches_this_ticks_displacement` 变成可执行契约。
+  **仍未覆盖**：横向撞击动量——速度位段是无符号竖直速度，网格没有水平速度场，
+  补它要再开位段，留 M2 之后，就地注释如实记录。
+
+  **golden 预期 vs 实测（两轮，第二轮的哨兵最有价值）**：
+  - 第一轮（只有 G→P）：预期"四个状态哈希全变"，实测 **`waterfall_ci` 只有
+    `materials_fp` 变、状态哈希一条不变**。查明原因不是缺陷而是场景性质——
+    `waterfall`/`waterfall_ci` 的水全部由 `Op::Emit` 注入，**以 Layer P 粒子形式
+    飞行、低速落格**，网格水从不自由下落到 `SPLASH_MIN_SPEED`。**叫"瀑布"的场景
+    其实根本不经过撞击溅射路径**，这条发现直接促成了 P→G 的补齐。
+  - 第二轮（补上 P→G）：预期"`waterfall_ci` 状态哈希这次必须变，不变即说明落格
+    动量没接上"——实测 4 条 tick 哈希 + final **全变**，反向哨兵打中。
+
+  **验收**：① `cargo test --workspace` 全绿（184 项，新增 8 条行为测试 + 3 条单测：
+  `Cell` 量纲往返 / 两端 clamp、`push_spawn` 本地限流、`Land.pos` 契约）、
+  `clippy --all-targets` 零警告；② **SyncTest 六配置在重录 golden 之前先绿**：
+  mixed + waterfall + **explosion_splash** 各 **2 万 tick** 零分叉（P→G 落地后
+  **完整重跑一轮**，共两轮）；③ golden 四个重录、`docs/perf/baselines/*.grid-only.txt`
+  同步重建；④ 线程数不变性（验收 §0 第 3 项）1/8/16 逐 tick 状态哈希逐位相同。
+
+  **bench：无回退，代价比 Task 2 小一个量级**
+  （`docs/perf/2026-08-31-layer-g-task3-splash.md`，108 次测量，同机同轮次交替对照）。
+  `acceptance` 六格 +7.3/+1.5/+1.2/−3.0/+8.0/+2.9%，中位约 +2%（对比 Task 2 同场景
+  的 +21%~+34%）。机制：溅射只在撞停那一 tick 触发一次判定（最便宜的速度条件短路在
+  最前），不像速度积分那样给每个下落 cell 加子步循环。`mixed`/`sparse` 的大数值
+  方向不一致（`mixed 1 live −0.6%` 对 `8 live +28.6%`），是本机噪声形状，**不单独引用**。
+  Layer G 三 Task 累计（`acceptance` 8 线程 live）：**1.045 → 0.465 → 0.536 → 0.502 ms/tick**，
+  相对起点 **−52%**，占 60Hz 预算约 3%。
+
+  受影响文件：`crates/sand-core/src/{material,cell,fixed,rng,chunk,window,scheduler,rules,world,particle,explode}.rs`、
+  `crates/sand-harness/src/scenario.rs`、`data/materials.ron`、
+  `crates/sand-harness/tests/golden/*.golden`、`docs/perf/baselines/*.grid-only.txt`、
+  总纲 §11、spec 实施进度与 §8 决策表（新增第 13–15 条）。
+
+  ⏳ **待用户**：GIF 目检（验收 §0 第 7 项）——`out/mixed_splash{0,1}.gif`（网格水
+  自由落体，走 G→P）与 `out/waterfall_ci_splash{0,1}.gif`（Emit 粒子落格，走 P→G），
+  `0` = 改动前。重点看两件事：水花量是否合适，以及 §6.1① 那条子裁决的后果
+  （`MovedSide` 也触发 ⇒ 高速水贴地横流会不会冒出过量的向上水花）。
+
+### Added
 - **Layer G Task 2 完成：重力速度积分**（spec `docs/superpowers/specs/2026-08-31-layer-g-velocity-design.md` §4，
   Status: Proposed → Task 2 打勾；总纲 §11 **实施期决策第 5 条**，并订正总纲 §4 正文两处）。
 

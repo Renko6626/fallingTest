@@ -1,10 +1,36 @@
 //! 沙/水运动规则（spec §4）。分派走材料表 Category，禁 if-else 硬编码材料名。
 
-use crate::cell::{Cell, G_ACCEL, VEL_ONE, V_MAX_CELL};
+use crate::cell::{vel_to_fx, Cell, G_ACCEL, SPLASH_MIN_SPEED, VEL_ONE, V_MAX_CELL};
 use crate::chunk::DirtyRect;
+use crate::emit::emit_jitter;
+use crate::fixed::{Fx, HALF_CELL};
 use crate::material::{Category, MaterialTable, DISPERSION_MAX, MAT_AIR};
-use crate::rng::{rng_u32, scan_flip, STREAM_DIAG, STREAM_FALLSTEP};
+use crate::particle::clamp_speed;
+use crate::rng::{rng_u32, scan_flip, STREAM_DIAG, STREAM_FALLSTEP, STREAM_SPLASH};
 use crate::window::WriteWindow;
+use crate::world::SpawnRequest;
+
+/// 溅射反弹系数（Layer G Task 3，spec §6.3）：脱格粒子的竖直初速
+/// = −v1 × 本值。0.5 = 撞击动能一半转成向上的水花。
+const SPLASH_RESTITUTION: Fx = Fx(0x0000_8000);
+
+/// 溅射速度的逐轴抖动幅度（格/tick）。取 0.5 是为了让水花散开又不至于翻向
+/// 下：竖直初速在阈值处已是 `SPLASH_MIN_SPEED × VEL_UNIT × RESTITUTION`
+/// = 1.0 格/tick，减去至多 0.5 的抖动仍然向上。同名单测钉死该不等式。
+const SPLASH_JITTER: Fx = Fx(0x0000_8000);
+
+/// 三颗溅射骰的 `attempt` 标号（共用 [`STREAM_SPLASH`]，体例同
+/// `explode.rs` 的 `EXPLODE_ROLL_*`）。
+const SPLASH_ROLL_TRIGGER: u32 = 0;
+const SPLASH_ROLL_VX: u32 = 1;
+const SPLASH_ROLL_VY: u32 = 2;
+
+/// 概率骰的量化分母。`splash_chance` 由 harness 按 `×255 round` 量化，
+/// 故这里也除以 255：`chance = 255` ⇒ `roll % 255` 恒 `< 255` ⇒ 必溅射；
+/// `chance = 0` ⇒ 恒不溅射。两个端点都精确，中间值有 `2^32 mod 255` 量级的
+/// 取模偏置（相对 2^-24），远低于任何可观测阈值——同 `emit_jitter` 文档记的
+/// "残余非均匀性"处理方式，不做额外校正。
+const SPLASH_CHANCE_DEN: u32 = 255;
 
 /// 单个子步的结果（Layer G Task 2，spec §4.1）。带上落点坐标，外层循环据此
 /// 推进 `cur`——判定逻辑一行不改，只是把"成功/失败"回传给子步循环。
@@ -150,11 +176,72 @@ impl Ctx<'_> {
                 }
             }
         }
+        // 撞击溅射脱格（Layer G Task 3，spec §6.1）：三条件全中才走。放在速度
+        // 写回**之前**——脱格后该格已是 AIR，再写速度就是往空气里写垃圾。
+        if stalled && self.try_splash(cx, cy, x, y, c, v1) {
+            return;
+        }
         let v_final = if stalled { 0 } else { v1 };
         let landed = self.win.get(cx, cy);
         if landed.vel() != v_final {
             self.win.set(cx, cy, landed.with_vel(v_final));
         }
+    }
+
+    /// 撞击溅射的三条件判定与执行（spec §6.1/§6.3）。返回是否真的脱格了。
+    ///
+    /// `(cx, cy)` = 撞停格（粒子出生点），`(sx, sy)` = 该 cell 本 tick 的
+    /// **起始**坐标（三颗骰的 RNG key）。两者必须分开传：撞停坐标同 tick 内
+    /// 不唯一，用它当 key 会让整列连锁同进同退，详见 [`STREAM_SPLASH`]。
+    ///
+    /// **`Blocked` 与 `MovedSide` 都算撞停，是有意为之**（spec §6.1①）：
+    /// 瀑布砸进水面走的正是"下方被挡 → 色散走开"这条 `MovedSide` 路径，而它
+    /// 恰是水花的主要来源。副作用是高速水贴地横流也会冒向上的水花——此项
+    /// 列入目检清单，若认为不对，改成"仅 `Blocked` 触发"是一行判别的事。
+    fn try_splash(&self, cx: i32, cy: i32, sx: i32, sy: i32, c: Cell, v1: u8) -> bool {
+        if v1 < SPLASH_MIN_SPEED {
+            return false;
+        }
+        let chance = self.table.splash_chance(c.material());
+        if chance == 0 {
+            return false;
+        }
+        let roll = rng_u32(self.fseed, STREAM_SPLASH, sx, sy, 0, SPLASH_ROLL_TRIGGER);
+        if roll % SPLASH_CHANCE_DEN >= chance as u32 {
+            return false;
+        }
+        let speed = vel_to_fx(v1).mul(SPLASH_RESTITUTION);
+        let rx = rng_u32(self.fseed, STREAM_SPLASH, sx, sy, 0, SPLASH_ROLL_VX);
+        let ry = rng_u32(self.fseed, STREAM_SPLASH, sx, sy, 0, SPLASH_ROLL_VY);
+        let vx = clamp_speed(emit_jitter(rx, SPLASH_JITTER));
+        let vy = clamp_speed(-speed + emit_jitter(ry, SPLASH_JITTER));
+        self.eject_cell(cx, cy, c, vx, vy)
+    }
+
+    /// **G→P 通路本身**（spec §6.6）：把一格网格内容变成一颗粒子——置 AIR +
+    /// 盖当前戳，并往本 chunk 的生成缓冲追加请求。M3 刚体撞击、M4 法术冲量
+    /// 届时加一个 Op 分支调它即可，不预建接口。
+    ///
+    /// 先 push 后置 AIR：本地限流拒绝时 cell 原样留在网格里（照旧停住）。
+    ///
+    /// ⚠️ **质量守恒缺口**：脱格已把网格置 air，若该请求随后被
+    /// `Particles::spawn` 的全局容量（`MAX_PARTICLES`）确定性拒绝，这份质量
+    /// 就凭空消失了。这与 M1 爆炸路径是同一个**已知**权衡（`explode.rs` 同款
+    /// 就地注释），两端行为一致故不破坏确定性；真要补，得在粒子层加"拒绝即
+    /// 回填网格"的反向通路，那是 M2 之后的事。
+    fn eject_cell(&self, x: i32, y: i32, c: Cell, vx: Fx, vy: Fx) -> bool {
+        let req = SpawnRequest {
+            material: c.material(),
+            x: Fx::from_int(x) + HALF_CELL,
+            y: Fx::from_int(y) + HALF_CELL,
+            vx,
+            vy,
+        };
+        if !self.win.push_spawn(req) {
+            return false;
+        }
+        self.win.set(x, y, Cell::AIR.with_stamp(self.stamp));
+        true
     }
 
     /// 目标是 AIR → 移入；目标非 Static 且密度更小 → 置换。双方盖戳。
@@ -298,6 +385,24 @@ mod tests {
         let p = twos as f64 / n as f64;
         // n = 16384 ⇒ σ = 0.5/√n ≈ 0.39%，取 4σ ≈ 1.6%
         assert!((p - 0.5).abs() < 0.016, "frac=2/4 的取整比例 {p:.4} 偏离 0.5 超 4σ");
+    }
+
+    /// 定点常量的金值（手写位模式，必须与 `from_ratio` 一致——写错一位就是
+    /// 全场水花速度错一倍，且不会有任何测试自然发现）。
+    #[test]
+    fn splash_fixed_point_constants_match_their_ratios() {
+        assert_eq!(SPLASH_RESTITUTION, Fx::from_ratio(1, 2));
+        assert_eq!(SPLASH_JITTER, Fx::from_ratio(1, 2));
+    }
+
+    /// 阈值速度下的竖直初速减去最大抖动后**仍然向上**——否则"溅射"会有一部分
+    /// 粒子朝下钻进地里，那不是水花是穿模。
+    #[test]
+    fn splash_stays_upward_even_at_worst_case_jitter() {
+        let speed = vel_to_fx(SPLASH_MIN_SPEED).mul(SPLASH_RESTITUTION);
+        assert!(speed > SPLASH_JITTER, "阈值速度 {speed:?} 必须大于抖动幅度 {SPLASH_JITTER:?}");
+        // 抖动闭区间上界即 +SPLASH_JITTER（emit_jitter 的两端可达性已有单测）
+        assert!((-speed + SPLASH_JITTER).0 < 0, "最坏抖动下溅射粒子仍须向上");
     }
 
     /// 纯函数：同 (fseed, v1, x, y) 必复现同值（charter §2 随机性法典）。

@@ -10,7 +10,7 @@
 use crate::cell::{Cell, VEL_ONE, V_MAX_CELL};
 use crate::chunk::{Chunk, DirtyRect, CHUNK};
 use crate::material::DISPERSION_MAX;
-use crate::world::WALL_SENTINEL;
+use crate::world::{SpawnRequest, WALL_SENTINEL};
 
 /// 影响半径上限（charter §4 r≤16 契约）。
 ///
@@ -47,6 +47,16 @@ const _: () = assert!(
     MAX_WRITE_RADIUS <= HALO,
     "r<=16 契约破裂：(V_MAX_CELL/VEL_ONE − 1) + DISPERSION_MAX + 1 必须 <= HALO"
 );
+
+/// 单 chunk 单 tick 的溅射脱格上限（Layer G Task 3，spec §6.5 本地防线）。
+///
+/// 本地计数不依赖任何全局状态，故与线程调度无关——这是它能当确定性限流的
+/// 全部理由。超限即不脱格（该 cell 照旧停在网格里），**不是**排队等下 tick：
+/// 排队需要跨 tick 状态，那会把限流变成状态机而不是纯判定。
+///
+/// 640×384 图 60 个 chunk ⇒ 最坏 3840 粒子/tick，仍在 `MAX_PARTICLES`（65536）
+/// 的第二道防线之内。
+pub const MAX_SPLASH_PER_CHUNK: usize = 64;
 
 #[derive(Clone, Copy)]
 pub(crate) struct ChunksPtr(pub *mut Chunk);
@@ -140,6 +150,24 @@ impl WriteWindow {
         self.mark_dirty_around(x, y);
     }
 
+    /// 往**本 chunk** 的溅射生成缓冲追加一条请求；达到
+    /// [`MAX_SPLASH_PER_CHUNK`] 即拒绝（返回 `false`，调用方照旧把 cell 留在
+    /// 网格里）。计数直接取缓冲长度，不另设计数器——缓冲每个相位屏障后被
+    /// drain 清空，两者不可能不同步。
+    pub(crate) fn push_spawn(&self, req: SpawnRequest) -> bool {
+        // SAFETY: 只写 own_ci 这一块的 spawn_buf，写域互斥与 cells 完全同构
+        // （同相 chunk 的窗口两两不交，见本文件顶部安全论证）。`&mut (*p).field`
+        // 是 place 表达式，**不形成 `&mut Chunk`**——这一点很要紧：邻块此刻
+        // 可能正持有本块 `next_dirty` 的 `&AtomicDirty`，整块可变引用会与之
+        // 别名（UB）。同 `cell_ptr` 的纪律。
+        let buf = unsafe { &mut (*self.chunks.0.add(self.own_ci)).spawn_buf };
+        if buf.len() >= MAX_SPLASH_PER_CHUNK {
+            return false;
+        }
+        buf.push(req);
+        true
+    }
+
     /// 与 `World::mark_dirty_around` 同语义（并行段专用，原子合并）。
     fn mark_dirty_around(&self, x: i32, y: i32) {
         let x0 = (x - 1).max(0);
@@ -177,6 +205,7 @@ impl WriteWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fixed::Fx;
     use crate::world::World;
 
     #[test]
@@ -187,6 +216,27 @@ mod tests {
         let ptr = ChunksPtr(w.chunks.as_mut_ptr());
         let win = WriteWindow::new(ptr, 4, 4, 0, 0);
         win.set(200, 200, Cell::AIR);
+    }
+
+    /// 本地限流（spec §6.5）：第 65 次 `push_spawn` 起必须被拒，且拒绝是
+    /// **纯本地**判定——不看全局粒子数、不看线程。超限的 cell 由调用方留在
+    /// 网格里，不排队等下 tick（排队需要跨 tick 状态，那会把限流变成状态机）。
+    #[test]
+    fn push_spawn_is_capped_per_chunk() {
+        let mut w = World::new(2, 2, 0);
+        let ptr = ChunksPtr(w.chunks.as_mut_ptr());
+        let win = WriteWindow::new(ptr, 2, 2, 0, 0);
+        let req = || SpawnRequest {
+            material: 3,
+            x: Fx::ZERO,
+            y: Fx::ZERO,
+            vx: Fx::ZERO,
+            vy: Fx::ZERO,
+        };
+        let accepted = (0..100).filter(|_| win.push_spawn(req())).count();
+        assert_eq!(accepted, MAX_SPLASH_PER_CHUNK, "本地限流必须恰好放行 MAX_SPLASH_PER_CHUNK 条");
+        assert_eq!(w.chunks[0].spawn_buf.len(), MAX_SPLASH_PER_CHUNK);
+        assert!(w.chunks[1].spawn_buf.is_empty(), "只许写 own_ci 那一块的缓冲");
     }
 
     #[test]

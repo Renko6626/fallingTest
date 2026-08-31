@@ -26,6 +26,11 @@ fn default_dispersion() -> u8 {
     1
 }
 
+/// 缺省 0.0 = 永不溅射 ⇒ 未声明该字段的材质与 Layer G Task 3 之前逐位相同。
+fn default_splash_chance() -> f64 {
+    0.0
+}
+
 // ---------- materials.ron ----------
 
 #[derive(Deserialize)]
@@ -59,6 +64,12 @@ struct MatSpec {
     /// "core 侧不校验"的先例。
     #[serde(default = "default_dispersion")]
     dispersion: u8,
+    /// 撞击溅射概率（Layer G Task 3，spec §6.2）：RON 写 `0.0..=1.0` 十进制，
+    /// 缺省 **0.0 = 永不溅射**（故未声明该字段的材质行为与 Task 3 之前逐位
+    /// 相同）。加载期经 [`quantize_splash_chance`] 一次性 `×255 round` 量化
+    /// 为 u8——完全照 `vaporize_threshold` 的体例，core 边界只见整数。
+    #[serde(default = "default_splash_chance")]
+    splash_chance: f64,
 }
 
 #[derive(Deserialize)]
@@ -120,6 +131,9 @@ pub fn load_materials(path: &str) -> Result<(MaterialTable, u64), String> {
                 dispersion: validate_dispersion(m.dispersion).map_err(|e| {
                     format!("材料 '{}'（id={}）的 dispersion 非法：{e}", m.name, m.id)
                 })?,
+                splash_chance: quantize_splash_chance(m.splash_chance).map_err(|e| {
+                    format!("材料 '{}'（id={}）的 splash_chance 非法：{e}", m.name, m.id)
+                })?,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -154,6 +168,24 @@ pub fn validate_dispersion(d: u8) -> Result<u8, String> {
 /// 结果必须落在 `[0, 255]`（对应输入必须落在约 `[-0.00196, 1.00196]`，
 /// 但校验对象是 **round 之后的值**而非输入本身——同 `quantize_fx` 文档
 /// 阐述的理由：避免"输入在近似阈值附近、round 后才越界"的边界疏漏）。
+/// 撞击溅射概率的加载期量化（Layer G Task 3，spec §6.2）：`0.0..=1.0` →
+/// `0..=255`，`×255 round`。与 [`quantize_vaporize_threshold`] 同一套数学，
+/// 只是报错文案与语义不同——**没有合并成一个泛用函数**是有意的：两者的取值
+/// 域含义（阈值 vs 概率）与缺省端点（1.0 = 永不汽化 vs 0.0 = 永不溅射）都
+/// 相反，合并后报错信息会退化成"某个 0..1 字段错了"，排查成本反而更高。
+pub fn quantize_splash_chance(v: f64) -> Result<u8, String> {
+    if !v.is_finite() {
+        return Err(format!("splash_chance 量化失败：{v} 不是有限数"));
+    }
+    let raw = (v * 255.0).round();
+    if !(0.0..=255.0).contains(&raw) {
+        return Err(format!(
+            "splash_chance 量化失败：{v} 超出 [0.0, 1.0] 可表示范围（四舍五入后 raw={raw}，需落在 [0, 255]）"
+        ));
+    }
+    Ok(raw as u8)
+}
+
 pub fn quantize_vaporize_threshold(v: f64) -> Result<u8, String> {
     if !v.is_finite() {
         return Err(format!("vaporize_threshold 量化失败：{v} 不是有限数"));
@@ -410,9 +442,9 @@ mod tests {
 
     fn table_with_water() -> MaterialTable {
         MaterialTable::new(vec![
-            MaterialDef { id: 0, name: "air".into(), category: Category::Static, density: 0, color: (0, 0, 0), blast_cost: 0, vaporize_threshold: 255, dispersion: 1 },
-            MaterialDef { id: 1, name: "wall".into(), category: Category::Static, density: 100, color: (0, 0, 0), blast_cost: sand_core::BLAST_COST_INFINITE, vaporize_threshold: 255, dispersion: 1 },
-            MaterialDef { id: 2, name: "water".into(), category: Category::Liquid, density: 16, color: (0, 0, 0), blast_cost: 1, vaporize_threshold: 255, dispersion: 1 },
+            MaterialDef { id: 0, name: "air".into(), category: Category::Static, density: 0, color: (0, 0, 0), blast_cost: 0, vaporize_threshold: 255, dispersion: 1, splash_chance: 0 },
+            MaterialDef { id: 1, name: "wall".into(), category: Category::Static, density: 100, color: (0, 0, 0), blast_cost: sand_core::BLAST_COST_INFINITE, vaporize_threshold: 255, dispersion: 1, splash_chance: 0 },
+            MaterialDef { id: 2, name: "water".into(), category: Category::Liquid, density: 16, color: (0, 0, 0), blast_cost: 1, vaporize_threshold: 255, dispersion: 1, splash_chance: 0 },
         ])
         .unwrap()
     }
