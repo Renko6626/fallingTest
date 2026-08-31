@@ -8,6 +8,11 @@
 ## 2026-08-31
 
 ### Added
+- **目检场景：油-木篝火**（`data/scenarios/oil_wood_bonfire.ron`，不挂 golden/SyncTest）。
+  首版 fire_oil_chain 埋火只有 1 格、点燃是掷硬币，此场景按三条经验重构：点火成排埋进
+  燃料、木头做细件（立柱/横梁/带氧气隙的柴堆）、**油池做浅**——深池烧穿表层后回流复平
+  会把燃烧格盖进液体闷熄（requires_oxygen 的正确副作用，实测深 8 池只烧 25% 即自灭，
+  浅 3 池烧掉 88% 油 + 98% 木）。目检产物 `oil_wood_bonfire.gif`（未入库）。
 - **M2 收口（Task 4）：bench + u64 对照 + 总纲同步**。
   ① `sand-core` 新增 `cell-u64` feature（对照测量专用，体例同 `zero-gravity`；
   双宽度 sand-core 全测试绿）；② 三侧 bench 入档

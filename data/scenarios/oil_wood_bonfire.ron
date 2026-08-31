@@ -1,0 +1,44 @@
+// 油-木篝火目检场景（M2 燃烧演示，2026-08-31）。设计要点（吸取 fire_oil_chain
+// 首版"没烧起来"的教训）：
+//   ① 点火必须**成排埋进燃料内部**——火是气体、一 tick 就升离表面，单格埋火
+//      是掷硬币；这里在油池里埋整整一行。
+//   ② 木头做成**细件**（2 格宽立柱 + 2 格厚横梁 + 带空隙的柴堆）：wood
+//      fire_hp 250（≈4.2s/格）且 requires_oxygen 只烧表面，实心大块只会
+//      表面焦化；细件才能看到烧穿。
+//   ③ 立柱**竖插进油池**：上升的火贴着竖直木面爬，是点燃木头的最好几何。
+//   ④ 顶上留足空间给烟（lifetime 200，聚顶后渐散）。
+Scenario(
+    name: "oil_wood_bonfire",
+    world: (4, 3),
+    seed: 20260901,
+    ticks: 1200,
+    setup: [
+        // 地板 + 油盆唇沿
+        Fill(material: "wall", x0: 0, y0: 180, x1: 255, y1: 181),
+        Fill(material: "wall", x0: 36, y0: 168, x1: 38, y1: 179),
+        Fill(material: "wall", x0: 122, y0: 168, x1: 124, y1: 179),
+        // 油池 83×3——**浅池是有意的**：深池烧穿表层后周围油回流复平，会把
+        // 燃烧格盖进液体内部 → 闷熄（requires_oxygen 的正确副作用，实测
+        // 深 8 池只烧掉 25% 就自灭）；浅池搅动小，能整池烧完。
+        Fill(material: "oil", x0: 39, y0: 177, x1: 121, y1: 179),
+        // 四根木立柱，脚泡在油里，撑一条横梁（亭子）
+        Fill(material: "wood", x0: 50, y0: 132, x1: 51, y1: 179),
+        Fill(material: "wood", x0: 72, y0: 132, x1: 73, y1: 179),
+        Fill(material: "wood", x0: 94, y0: 132, x1: 95, y1: 179),
+        Fill(material: "wood", x0: 110, y0: 132, x1: 111, y1: 179),
+        Fill(material: "wood", x0: 44, y0: 130, x1: 117, y1: 131),
+        // 右侧柴堆：横木条带空隙（氧气通道），烧起来逐层塌
+        Fill(material: "wood", x0: 150, y0: 176, x1: 210, y1: 177),
+        Fill(material: "wood", x0: 154, y0: 172, x1: 206, y1: 173),
+        Fill(material: "wood", x0: 158, y0: 168, x1: 202, y1: 169),
+        Fill(material: "wood", x0: 164, y0: 164, x1: 196, y1: 165),
+        Fill(material: "wood", x0: 170, y0: 160, x1: 190, y1: 161),
+    ],
+    script: [
+        // 油池点火：整行埋进油面下一层，横贯大半个池子——必燃
+        At(tick: 30, op: Fill(material: "fire", x0: 45, y0: 178, x1: 115, y1: 178)),
+        // 柴堆点火：两处埋进木条间隙
+        At(tick: 90, op: Brush(material: "fire", x: 178, y: 175, r: 2)),
+        At(tick: 90, op: Brush(material: "fire", x: 190, y: 171, r: 2)),
+    ],
+)
