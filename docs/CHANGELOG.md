@@ -7,6 +7,19 @@
 
 ## 2026-08-31
 
+### Changed
+- **M2 spec 审阅补漏 4 处 + 备忘 3 条**（`docs/superpowers/specs/2026-08-31-m2-reactions-and-fire-design.md`，
+  §8 决策记录第 9 条）。锚点核查全部属实（`rules.rs:150` 准入、cell 位段留白、RNG 流
+  0–5、`MAX_WRITE_RADIUS=12`、`displace` 双格盖戳、原型 `reaction.py:44-46` 双向注册）。
+  四处补漏：① §5.2 点燃判定加"源 `counter > 0`"门（否则冷油声明 `fire_temp` 后会自发
+  点燃邻居）+ 目标氧气前置（堵无氧格装填/清零 ping-pong）；② §4.5 定死反应邻居检查
+  **跳过已盖当前戳格**（堵同格一 tick 二次转化）；③ §5.7 与总纲翻案 6"尤其延迟点燃
+  队列"措辞相抵，记为 Task 3 落地时同步总纲 §11 的待办；④ §3.1 gas 镜像对象由
+  `powder_step` 更正为 `liquid_step`，扩散恒 1、不读 `dispersion` 并加载期校验。
+  三条备忘：counter 8 位天花板（255 tick，慢烧走分频不扩位，§2.3）；两端皆眠的反应对
+  不推进（依赖 `mark_dirty_around` ±1 唤醒发起方，§6.5）；`needs_eval` 的 per-material
+  flags 合并提示（§2.6）。
+
 ### Added
 - **M2 设计 spec 落地：反应表与燃烧**（`docs/superpowers/specs/2026-08-31-m2-reactions-and-fire-design.md`，
   新增，Status: Proposed）——经 `superpowers:brainstorming` 全流程逐节确认，是翻案第 6 条
