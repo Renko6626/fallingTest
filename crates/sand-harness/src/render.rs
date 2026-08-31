@@ -47,13 +47,25 @@ pub fn render_gif(
         return Err(format!("输出尺寸 {ow}x{oh} 超过 GIF 上限"));
     }
 
-    // 调色板：index = material id；空位填黑
+    // 调色板：index = material id；空位填黑。
+    // 128..128+n 段是"燃烧变体"（M2 目检修订 2026-08-31）：counter > 0 的
+    // 可燃格向其 flame_to 材质（即"火"）的颜色混合 2/3——不可视化燃烧状态时，
+    // 烧着的油和冷油在 GIF 里一模一样，"根本没烧起来"的观感大头在此。
+    // 数据驱动：火色来自 materials.ron 的 flame_to 目标色，无硬编码。
     let mut palette = vec![0u8; 256 * 3];
     for id in 0..table.len() {
         let (r, g, b) = table.color(id as u8);
         palette[id * 3] = r;
         palette[id * 3 + 1] = g;
         palette[id * 3 + 2] = b;
+        if table.fire_hp(id as u8) > 0 {
+            let (fr, fg, fb) = table.color(table.flame_to(id as u8));
+            let mix = |a: u8, b: u8| ((a as u16 + 2 * b as u16) / 3) as u8;
+            let slot = BURN_SLOT + id;
+            palette[slot * 3] = mix(r, fr);
+            palette[slot * 3 + 1] = mix(g, fg);
+            palette[slot * 3 + 2] = mix(b, fb);
+        }
     }
 
     let mut file = File::create(&opts.out).map_err(|e| format!("建 {} 失败：{e}", opts.out))?;
@@ -67,7 +79,7 @@ pub fn render_gif(
     for t in 0..ticks {
         sim.step(&sc.ops_for_tick(t));
         if t >= opts.from && (t % opts.every == 0 || t + 1 == ticks) {
-            fill_frame(sim, w, h, opts.scale, &mut buf);
+            fill_frame(sim, table, w, h, opts.scale, &mut buf);
             draw_particles(sim, w, h, opts.scale, &mut buf);
             let frame = gif::Frame {
                 width: ow as u16,
@@ -106,13 +118,21 @@ fn draw_particles(sim: &Sim, w: usize, h: usize, scale: usize, buf: &mut [u8]) {
     }
 }
 
-fn fill_frame(sim: &Sim, w: usize, h: usize, scale: usize, buf: &mut [u8]) {
+/// 燃烧变体色槽起点（材质 id 段用 0..=127 绰绰有余，128 起放燃烧色）。
+const BURN_SLOT: usize = 128;
+
+fn fill_frame(sim: &Sim, table: &MaterialTable, w: usize, h: usize, scale: usize, buf: &mut [u8]) {
     let ow = w * scale;
     for y in 0..h {
         // 先铺一行像素，再整行复制 scale 次（最近邻整数放大）
         let row_start = y * scale * ow;
         for x in 0..w {
-            let id = sim.world().cell(x as i32, y as i32).material();
+            let c = sim.world().cell(x as i32, y as i32);
+            let mut id = c.material();
+            // 燃烧中的可燃格换燃烧变体色（纯渲染面，不进任何哈希）。
+            if c.counter() > 0 && table.fire_hp(id) > 0 {
+                id = (BURN_SLOT + id as usize) as u8;
+            }
             for sx in 0..scale {
                 buf[row_start + x * scale + sx] = id;
             }
