@@ -7,6 +7,51 @@
 
 ## 2026-08-31
 
+### Changed
+- **删除 Layer F 场层——总纲 §11 翻案记录第 6 条（用户裁决）**。推翻翻案记录第 2 条
+  （温度作为 Layer F pull 双缓冲扩散场回归主线），**场层整体删除**，温度与气体一并回归
+  Noita 体系。**三层内核 → 两层**（四相 push 网格 + 稀疏粒子）。
+
+  **依据（性能，已入档事实而非预估）**：Layer F 是每 tick O(全图) 的 pull pass，与 M0
+  建立的睡眠稀疏性直接冲突 —— `docs/perf/2026-08-30-m0-rust-informal.md` 早已记录
+  "场层落地后'睡眠让大图免费'不再成立，大图成本下限 = 场层全图 pass"。翻案 2 当初只论证了
+  温度场表达力更强、未对成本定价；本条按已测数据补上定价并据此翻回。**结论反转：睡眠让大图
+  免费继续成立**，M2 新增成本（反应表/燃烧/气体）全是 O(活跃格)，随睡眠一起归零。
+
+  **替代去向**（均有 Noita 出货实现背书，字段级一手核查见 `reference/noita-material-schema.md`）：
+  ① **温度 → 材质静态常量 + 反应表**（`autoignition_temperature` 着火点 / `temperature_of_fire`
+  火温 / `fire_hp` 燃料池 / `requires_oxygen`），全部是 O(活跃格) 局部判定；
+  ② **气体 → Layer G 的第四个 `Category`**，走专用规则分支做上浮 + 横向扩散。
+
+  **Cell 位段与 r 契约不受影响**：气体不占竖直速度位段（bits 17–21），实施期决策第 5 条 ① 的
+  位段分配与 `window.rs::MAX_WRITE_RADIUS` 的 r ≤ 12 编译期断言全部保持成立 —— 仅"无符号"的
+  **理由**从"向上运动归 Layer F"换锚为"气体走 Layer G 专用规则分支"。结论不变。
+  佐证：Noita 四个 `gas_*` 参数在整个 vanilla materials.xml 里**一次都没被写过**（20 种气体全吃
+  默认），per-material 气体调参不产生玩法价值，起步一套全局参数即可。
+
+  **落地范围**（Layer F **一行代码都还没写**，删除成本为零，仅文档与 3 处注释）：
+  - `overview/kernel-charter.md`：§4 Layer F 小节改写为已删除记；M2 里程碑重定义为
+    **"M2 反应表与燃烧"**；"已决"行改两层内核；翻案 2 就地标注被第 6 条推翻（原文保留作历史）；
+    实施期决策第 5 条 ① 加"理由换锚"注；新增翻案记录第 6 条（含**复议条件**）。
+  - `overview/program-architecture.md`：§3 删 `fields（Layer F）` 行、`state` 删"场双缓冲"、
+    `grid` 读集删"F 层上一 tick 场值"（并补"含气体上浮/扩散"）；§4 规范 tick 管线**第 6 步标记
+    为已删除且编号刻意不重排**——重排会使"粒子相 = 第 5 步"等既有决策日志引用失效，编号本身属协议表述。
+  - `CLAUDE.md`：§1 三层内核 → 两层；里程碑串 M2 改名。
+  - `crates/sand-core/src/cell.rs`：速度位段"无符号"注释换锚（活文档，必须改；`cargo check` 通过）。
+  - `proposals/2026-08-30-noita-derived-optimizations.md`：**O2（Layer F 低分辨率场格 + 半频）
+    随前提消失而作废**，原文保留作复议时的现成方案；总判断里的"②多背一个 Noita 没有的全图场 pass"
+    差距标注已消失。
+  - `specs/2026-05-26-fire-system-design.md`（fire spec v2）：**主线解挂、重新生效** —— 它本就是
+    Noita 式 fire_hp + 静态温度比较，翻案 2 曾整体挂起待重审。运行时仍为 Python 原型，M2 按 Rust
+    内核另立 spec 并复用其设计，**延迟点燃队列**尤其要带过去（防帧内沿扫描方向的连锁偏置，与翻案 4 同源）。
+  - `perf/` 两篇的前视 caveat 订正（结论反转）；`specs/2026-08-30-m1-particle-layer-design.md` 与
+    `specs/2026-08-31-layer-g-velocity-design.md` 的两处引用加订正注；`README.md` 优先队列同步。
+
+  **本条为暂时性裁决**（用户措辞"目前我们先优先 follow 这个 Noita 体系"）。**复议条件**：若 M4
+  法术设计确认需要**连续温度量**（加热/冷却作为可叠加可读数的战术状态，而非离散的着火/熔化反应），
+  则重开；届时优先评估作废的 O2 方案（4×4 低分辨率场格 + 半频），且**重开前必须先有 bench 数据**
+  证明降本方案落在 tick 预算内。
+
 ### Added
 - **Noita wiki 通读第二轮：引擎侧笔记**（`docs/reference/noita-grid-api-and-rng.md`，新增；
   `noita-material-schema.md` 与 `noita-deep-dive.md` 已加交叉指针）——第一轮只读了 3 个

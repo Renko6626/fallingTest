@@ -50,7 +50,8 @@
      目检 GIF：`out/mixed_splash{0,1}.gif`（G→P）、`out/waterfall_ci_splash{0,1}.gif`（P→G），
      0 = 改动前；重点看水花量与 §6.1①（`MovedSide` 也触发 ⇒ 贴地横流会不会冒过量水花）。
      **遗留**：横向撞击动量仍被丢弃（网格无水平速度场），留 M2 之后。
-3. **M2 场层与反应表**（Layer G 三 Task 之后）：spec 里裁决 O2 场降本 + O3 粉末惯性时点 + durability/hardness
+3. **M2 反应表与燃烧**（Layer G 三 Task 之后；**2026-08-31 重定义**——Layer F 场层已删除，见总纲 §11 翻案记录第 6 条：
+   温度 → 材质静态常量 + 反应表、气体 → Layer G 第四个 Category）：spec 里裁决 ~~O2 场降本~~（作废）+ O3 粉末惯性时点 + durability/hardness
    字段化 + 粒子穿水/弹跳评估 + M1 遗留两条测试补强（见 `sessions/2026-08-30-m1-particle-layer.md`"留给后续"；
    其中 Task 6 minor ①②③⑤ 已由 commit `098fe23` 修掉，剩 ④⑥ 两条测试债）。
 4. **M1 粒子层：已完成并经用户验收（2026-08-31）**（spec → Implemented，会话总账 `sessions/2026-08-30-m1-particle-layer.md`）：

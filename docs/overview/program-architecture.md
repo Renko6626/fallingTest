@@ -71,11 +71,10 @@ workspace/
 
 | 模块 | 职责 | 读 | 写 |
 |---|---|---|---|
-| state | 状态本体：网格（chunk 化）、粒子 SoA、场双缓冲、物理世界、实体表、tick 计数。快照/恢复、per-chunk 序列化与哈希树 | — | 状态内存的唯一属主 |
+| state | 状态本体：网格（chunk 化）、粒子 SoA、物理世界、实体表、tick 计数。快照/恢复、per-chunk 序列化与哈希树 | — | 状态内存的唯一属主 |
 | scheduler | `step(state, inputs)`：按 §4 规范管线驱动各模块，管理 rayon 有界线程池 | 确认输入 | 调用序即时序契约 |
-| grid（Layer G） | 四相棋盘 push、材料规则、反应表结算、破坏 | cells、材料/反应表、F 层上一 tick 场值、hash-RNG | cells、脏矩形、粒子生成队列、Channel B 事件 |
+| grid（Layer G） | 四相棋盘 push、材料规则（含气体上浮/扩散）、反应表结算、燃烧与破坏 | cells、材料/反应表、hash-RNG | cells、脏矩形、粒子生成队列、Channel B 事件 |
 | particles（Layer P） | 弹道积分（并行）+ 落格提交（串行按 id）、法术弹体 payload | cells（DDA 碰撞查询）、生成队列、hash-RNG | cells（落格/爆炸写入）、物理冲量队列、Channel B 事件 |
-| fields（Layer F） | 气体/温度 pull 双缓冲扩散 | 本 tick 网格源项、F_prev | F_next（G 层下一 tick 才读到） |
 | stamp | 像素刚体管线：位图↔网格盖章、浮力采样、破坏对账、marching squares → 简化 → 三角化重提取（滞回+每 tick 限额） | cells、body 变换、body 位图 | cells（盖章/反盖章）、物理力队列、collider 重建请求 |
 | physics-adapter | 物理引擎适配层（trait 隔离 Box2D v3 / Rapier 待决项）：固定 dt 步进、按调用序建删 body、只读查询、（rollback 期）快照/恢复 | 冲量与力队列 | body 变换、接触事件（定序） |
 | entities & spells | 玩家运动学控制器（自研定点，采样网格碰撞，不用物理引擎 body）、法术实例与状态效果、loadout 实例化 | 确认输入、cells、法术表 | 玩家状态、粒子生成队列、物理冲量队列、Channel B 事件 |
@@ -123,7 +122,7 @@ workspace/
 3. **刚体**——反盖章上一 tick 像素 → 浮力/阻力按上一 tick 淹没重叠采样入力队列 → 物理步进（固定 dt）→ 按新变换重新盖章。
 4. **网格四相 pass**——材料运动、反应表结算、破坏与点燃；期间产生的溅射入粒子生成队列。
 5. **粒子层**——生成队列按入队序赋 id → 全体并行积分 + DDA → 串行按 id 提交落格（同格冲突 id 小者胜）。
-6. **场层**——读本 tick 网格源项 + F_prev，写 F_next。G 与 F 的双向耦合被拆成一 tick 延迟的两条单向边，tick 内部无环。
+6. ~~**场层**~~——**已删除（2026-08-31，`kernel-charter.md` §11 翻案记录第 6 条）**。原文："读本 tick 网格源项 + F_prev，写 F_next"。气体改由第 4 步的网格四相 pass 承担，温度改为材质静态常量 + 反应表。**本步编号刻意保留不重排**：重排会使"粒子相 = 第 5 步"等既有决策日志引用失效，而编号本身属于协议表述。
 7. **刚体对账**——盖章像素被删者 → body 位图更新 → 滞回判定后将重提取任务入队（每 tick 限额，超限顺延，队列本身入状态）。
 8. **封帧**——Channel B 事件定序封帧；周期性计算状态哈希交给 session。
 

@@ -99,7 +99,7 @@ impl Cell {
     }
 
     /// 竖直速度（Q3.2 无符号，单位 ¼ 格/tick；`0..=V_MAX_CELL`）。
-    /// 无符号是有意的：粉末与液体只向下，向上运动走 Layer F（气体）或
+    /// 无符号是有意的：粉末与液体只向下，向上运动走 Layer G 的气体规则分支（气体不占本位段）或
     /// Layer P（脱格粒子），省一位（spec §2）。
     pub fn vel(self) -> u8 {
         ((self.0 & VEL_MASK) >> VEL_SHIFT) as u8
