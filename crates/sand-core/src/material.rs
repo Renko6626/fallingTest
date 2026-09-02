@@ -203,6 +203,12 @@ impl MaterialTable {
         self.defs.iter().find(|d| d.name == name).map(|d| d.id)
     }
 
+    /// 材质名（只读工具路径用：`sand-harness materials/rasterize` 的 JSON 输出）。
+    /// core 运行期不读名字——这是 I/O 层往回看的反查，不进任何逻辑。
+    pub fn name_of(&self, id: u8) -> &str {
+        &self.defs[id as usize].name
+    }
+
     pub fn len(&self) -> usize {
         self.defs.len()
     }

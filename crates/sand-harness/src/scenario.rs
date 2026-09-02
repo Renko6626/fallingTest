@@ -2,6 +2,8 @@
 //! 数据即确定性输入（P5）：materials.ron 与场景文件都算 xxh3 指纹，
 //! 进入 replay/golden 头部——指纹不符即拒绝比对。
 
+use std::collections::BTreeMap;
+
 use serde::Deserialize;
 use xxhash_rust::xxh3::{xxh3_64, Xxh3};
 
@@ -471,10 +473,157 @@ pub struct ScenarioFile {
     pub world: (usize, usize),
     pub seed: u64,
     pub ticks: u64,
+    /// 手绘网格（地图编辑器 spec §3）：加载期编译成 `Op::Fill` 前缀、放在
+    /// `setup` 之前；缺省不铺，老场景逐位不变。
+    #[serde(default)]
+    pub grid: Option<GridSpec>,
     #[serde(default)]
     pub setup: Vec<OpSpec>,
     #[serde(default)]
     pub script: Vec<ScriptEntry>,
+}
+
+// ---------- grid：行级 RLE + 材质名图例（地图编辑器 spec §3）----------
+
+/// `grid` 的 RON 表面形式。`legend` 反序列化成有序对列表而非 map：ron 对
+/// 重复键**静默覆盖**（实测 0.8），而 spec 要求"字符重复 ⇒ 报错"。
+#[derive(Deserialize)]
+pub struct GridSpec {
+    #[serde(deserialize_with = "legend_pairs")]
+    pub legend: Vec<(char, String)>,
+    pub rows: Vec<String>,
+}
+
+fn legend_pairs<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<(char, String)>, D::Error> {
+    struct V;
+    impl<'de> serde::de::Visitor<'de> for V {
+        type Value = Vec<(char, String)>;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a map of char -> material name")
+        }
+        fn visit_map<A: serde::de::MapAccess<'de>>(self, mut m: A) -> Result<Self::Value, A::Error> {
+            let mut out = Vec::new();
+            while let Some((k, v)) = m.next_entry::<char, String>()? {
+                out.push((k, v));
+            }
+            Ok(out)
+        }
+    }
+    d.deserialize_map(V)
+}
+
+/// 自动图例的字符池（`rasterize` 输出与编辑器新建场景共用，**两处必须一致**，
+/// 见 `tools/map-editor/README.md`）：air 固定 `'.'`，其余按材质 id 依次取。
+/// 刻意排除数字（RLE 的 count 位）、空白、`.`、引号/反斜杠/斜杠（RON 字符串
+/// 与注释语法）。
+pub const LEGEND_POOL: &str = "#WSOFAwsofa~@%&*+=-BCDEGHIJKLMNPQRTUVXYZbcdeghijklmnpqrtuvxyz";
+
+/// 自动图例：`symbols[id]` = 该材质的字符。air 固定 `'.'`；其余**优先取材质名
+/// 首字母**（大写、其次小写，人读 RON 时 `W`=wall/`S`=sand/`O`=oil 一眼可辨），
+/// 首字母已被占用或非 ASCII 字母才按 id 序从 [`LEGEND_POOL`] 补。确定性：只依赖
+/// 材质表内容。材质数超过字符池 ⇒ Err。
+pub fn default_legend(table: &MaterialTable) -> Result<Vec<char>, String> {
+    let mut used: Vec<char> = vec!['.'];
+    let mut out = Vec::with_capacity(table.len());
+    for id in 0..table.len() {
+        if id == sand_core::MAT_AIR as usize {
+            out.push('.');
+            continue;
+        }
+        let initial = table.name_of(id as u8).chars().next().filter(|c| c.is_ascii_alphabetic());
+        let pick = initial
+            .into_iter()
+            .flat_map(|c| [c.to_ascii_uppercase(), c.to_ascii_lowercase()])
+            .chain(LEGEND_POOL.chars())
+            .find(|c| !used.contains(c))
+            .ok_or(format!("材质数 {} 超过自动图例字符池", table.len()))?;
+        used.push(pick);
+        out.push(pick);
+    }
+    Ok(out)
+}
+
+/// 单行 RLE 解码：token 形如 `<count><char>`，count 省略即 1，token 间空白
+/// 可选（`"2W 60. 40o"` 与 `"2W60.40o"` 等价）。展开长度 ≠ `width`、未知
+/// 字符、count 为 0、行尾悬空数字 ⇒ Err。
+pub fn rle_decode_row(row: &str, width: usize, legend: &BTreeMap<char, u8>) -> Result<Vec<u8>, String> {
+    let mut out = Vec::with_capacity(width);
+    let mut count: Option<usize> = None;
+    for ch in row.chars() {
+        if let Some(d) = ch.to_digit(10) {
+            count = Some(count.unwrap_or(0) * 10 + d as usize);
+        } else if ch.is_whitespace() {
+            if count.is_some() {
+                return Err(format!("行 \"{row}\"：数字后紧跟空白，count 与符号被拆开"));
+            }
+        } else {
+            let id = *legend.get(&ch).ok_or(format!("行 \"{row}\"：图例里没有字符 '{ch}'"))?;
+            let n = count.take().unwrap_or(1);
+            if n == 0 {
+                return Err(format!("行 \"{row}\"：count 为 0（'{ch}'）"));
+            }
+            out.extend(std::iter::repeat_n(id, n));
+        }
+    }
+    if count.is_some() {
+        return Err(format!("行 \"{row}\"：行尾悬空数字，缺符号"));
+    }
+    if out.len() != width {
+        return Err(format!("行 \"{row}\"：展开长度 {} ≠ 世界宽度 {width}", out.len()));
+    }
+    Ok(out)
+}
+
+/// 单行 RLE 编码（`rle_decode_row` 的逆）：连续同 id 段输出 `<count><char>`，
+/// count = 1 时省略，token 间单空格。
+pub fn rle_encode_row(ids: &[u8], symbols: &[char]) -> String {
+    let mut tokens: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < ids.len() {
+        let id = ids[i];
+        let mut n = 1;
+        while i + n < ids.len() && ids[i + n] == id {
+            n += 1;
+        }
+        let sym = symbols[id as usize];
+        tokens.push(if n == 1 { sym.to_string() } else { format!("{n}{sym}") });
+        i += n;
+    }
+    tokens.join(" ")
+}
+
+/// `grid` → `Op::Fill` 前缀（spec §3"关键取巧"）：非 air 的 RLE 段各一条
+/// `Fill{x0..x1, y}`，行主序；air 段不生成（世界初始即 air，语义相同）。
+/// 加载期契约：图例字符重复 / 材质不存在 / 行数 ≠ 高度 / 行宽不符 ⇒ Err。
+pub fn expand_grid(spec: &GridSpec, table: &MaterialTable, world: (usize, usize)) -> Result<Vec<Op>, String> {
+    let (w, h) = (world.0 * 64, world.1 * 64);
+    let mut legend: BTreeMap<char, u8> = BTreeMap::new();
+    for (ch, name) in &spec.legend {
+        let id = table.id_by_name(name).ok_or(format!("grid 图例 '{ch}' 引用不存在的材质 '{name}'"))?;
+        if legend.insert(*ch, id).is_some() {
+            return Err(format!("grid 图例字符 '{ch}' 重复"));
+        }
+    }
+    if spec.rows.len() != h {
+        return Err(format!("grid 行数 {} ≠ 世界高度 {h}（{} chunk × 64）", spec.rows.len(), world.1));
+    }
+    let mut ops = Vec::new();
+    for (y, row) in spec.rows.iter().enumerate() {
+        let ids = rle_decode_row(row, w, &legend).map_err(|e| format!("grid 第 {y} 行：{e}"))?;
+        let mut x = 0;
+        while x < w {
+            let id = ids[x];
+            let mut x1 = x;
+            while x1 + 1 < w && ids[x1 + 1] == id {
+                x1 += 1;
+            }
+            if id != sand_core::MAT_AIR {
+                ops.push(Op::Fill { material: id, x0: x as i32, y0: y as i32, x1: x1 as i32, y1: y as i32 });
+            }
+            x = x1 + 1;
+        }
+    }
+    Ok(ops)
 }
 
 #[derive(Deserialize, Clone)]
@@ -653,13 +802,22 @@ pub fn load_scenario(path: &str, table: &MaterialTable) -> Result<Scenario, Stri
     let bytes = std::fs::read(path).map_err(|e| format!("读 {path} 失败：{e}"))?;
     let source_fp = xxh3_64(&normalize_for_fingerprint(&bytes));
     let text = String::from_utf8(bytes).map_err(|e| format!("{path} 不是 UTF-8：{e}"))?;
-    let file: ScenarioFile =
-        ron::from_str(&text).map_err(|e| format!("解析 {path} 失败：{e}"))?;
-    let setup = file
-        .setup
-        .iter()
-        .map(|s| resolve_op(s, table))
-        .collect::<Result<Vec<_>, _>>()?;
+    // IMPLICIT_SOME：`grid` 是 Option 字段，作者格式裸写 `grid: (...)`（同 materials）。
+    let file: ScenarioFile = ron::Options::default()
+        .with_default_extension(ron::extensions::Extensions::IMPLICIT_SOME)
+        .from_str(&text)
+        .map_err(|e| format!("解析 {path} 失败：{e}"))?;
+    // grid 前缀先铺、文件 setup 后叠（spec §3 铺设顺序写死）。
+    let mut setup = match &file.grid {
+        Some(g) => expand_grid(g, table, file.world)?,
+        None => Vec::new(),
+    };
+    setup.extend(
+        file.setup
+            .iter()
+            .map(|s| resolve_op(s, table))
+            .collect::<Result<Vec<_>, _>>()?,
+    );
     let script = file
         .script
         .iter()
@@ -1230,5 +1388,106 @@ mod tests {
             ref other => panic!("期望 Op::Emit，实际 {other:?}"),
         };
         assert_ne!(vx_of(&sc_a), vx_of(&sc_b));
+    }
+
+    // ==================== grid：RLE + 图例（地图编辑器 spec §3/§7）====================
+
+    fn legend_aw() -> BTreeMap<char, u8> {
+        BTreeMap::from([('.', 0u8), ('W', 1u8), ('~', 2u8)])
+    }
+
+    #[test]
+    fn rle_decode_handles_omitted_count_and_optional_whitespace() {
+        let l = legend_aw();
+        assert_eq!(rle_decode_row("2W 3. ~", 6, &l).unwrap(), vec![1, 1, 0, 0, 0, 2]);
+        assert_eq!(rle_decode_row("2W3.~", 6, &l).unwrap(), vec![1, 1, 0, 0, 0, 2], "空白可选");
+        assert_eq!(rle_decode_row("W W . . . ~", 6, &l).unwrap(), vec![1, 1, 0, 0, 0, 2]);
+    }
+
+    #[test]
+    fn rle_decode_rejects_bad_rows() {
+        let l = legend_aw();
+        assert!(rle_decode_row("2W 3.", 6, &l).is_err(), "展开长度 5 ≠ 6");
+        assert!(rle_decode_row("7.", 6, &l).is_err(), "展开长度 7 ≠ 6");
+        assert!(rle_decode_row("6X", 6, &l).is_err(), "未知字符");
+        assert!(rle_decode_row("0W 6.", 6, &l).is_err(), "count 为 0");
+        assert!(rle_decode_row("6. 3", 6, &l).is_err(), "行尾悬空数字");
+        assert!(rle_decode_row("2 W 4.", 6, &l).is_err(), "数字后空白");
+    }
+
+    #[test]
+    fn rle_encode_decode_roundtrip_on_pseudo_random_rows() {
+        let symbols = ['.', 'W', '~'];
+        let l = legend_aw();
+        for seed in 0..32u32 {
+            let ids: Vec<u8> = (0..256u32)
+                .map(|x| (sand_core::rng::squirrel5(x, seed) % 3) as u8)
+                .collect();
+            let row = rle_encode_row(&ids, &symbols);
+            assert_eq!(rle_decode_row(&row, 256, &l).unwrap(), ids, "seed {seed} 往返不恒等：{row}");
+        }
+        assert_eq!(rle_encode_row(&[1, 1, 0, 0, 0, 2], &symbols), "2W 3. ~");
+    }
+
+    #[test]
+    fn default_legend_pins_air_to_dot_and_is_unique() {
+        let t = table_with_water();
+        let syms = default_legend(&t).unwrap();
+        assert_eq!(syms[0], '.', "air 固定 '.'");
+        assert_eq!(syms[1], 'W', "wall → 首字母 W");
+        assert_eq!(syms[2], 'w', "water → W 已占用则小写 w");
+        let mut sorted = syms.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), syms.len(), "图例字符必须唯一");
+        assert!(syms.iter().all(|c| !c.is_ascii_digit() && !c.is_whitespace()));
+    }
+
+    fn write_temp_scenario_text(tag: &str, body: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir()
+            .join(format!("sand_harness_test_grid_{}_{tag}.ron", std::process::id()));
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    /// 1×1 chunk 世界（64×64）：第 0 行 "64."，第 1 行 "2W 60. 2~"，其余全 air；
+    /// 外加一条 setup Brush 叠在 grid 之上——验证前缀顺序与 Fill 段坐标。
+    #[test]
+    fn grid_compiles_to_fill_prefix_before_setup_ops() {
+        let t = table_with_water();
+        let mut rows = vec![String::from("64."), String::from("2W 60. 2~")];
+        rows.extend(std::iter::repeat_n(String::from("64."), 62));
+        let rows_ron = rows.iter().map(|r| format!("\"{r}\"")).collect::<Vec<_>>().join(",");
+        let ron = format!(
+            "Scenario(name:\"g\",world:(1,1),seed:0,ticks:1,\
+             grid:(legend:{{'.':\"air\",'W':\"wall\",'~':\"water\"}},rows:[{rows_ron}]),\
+             setup:[Brush(material:\"water\",x:5,y:5,r:0)])"
+        );
+        let path = write_temp_scenario_text("prefix", &ron);
+        let sc = load_scenario(path.to_str().unwrap(), &t).unwrap();
+        std::fs::remove_file(&path).ok();
+        assert_eq!(sc.setup.len(), 3, "两条 grid Fill 段 + 一条 setup Brush");
+        assert!(matches!(sc.setup[0], Op::Fill { material: 1, x0: 0, y0: 1, x1: 1, y1: 1 }), "{:?}", sc.setup[0]);
+        assert!(matches!(sc.setup[1], Op::Fill { material: 2, x0: 62, y0: 1, x1: 63, y1: 1 }), "{:?}", sc.setup[1]);
+        assert!(matches!(sc.setup[2], Op::Brush { material: 2, x: 5, y: 5, r: 0 }), "setup 必须在 grid 之后");
+    }
+
+    #[test]
+    fn grid_rejects_bad_legend_and_row_count() {
+        let t = table_with_water();
+        let mk = |legend: &str, nrows: usize| {
+            let rows = std::iter::repeat_n("\"64.\"", nrows).collect::<Vec<_>>().join(",");
+            format!("Scenario(name:\"g\",world:(1,1),seed:0,ticks:1,grid:(legend:{{{legend}}},rows:[{rows}]))")
+        };
+        for (tag, body, why) in [
+            ("dup", mk("'.':\"air\",'.':\"wall\"", 64), "图例字符重复必须报错（ron 本身静默覆盖）"),
+            ("unknown", mk("'.':\"air\",'L':\"lava\"", 64), "图例引用不存在材质必须报错"),
+            ("rows", mk("'.':\"air\"", 63), "行数 ≠ 高度必须报错"),
+        ] {
+            let path = write_temp_scenario_text(tag, &body);
+            let r = load_scenario(path.to_str().unwrap(), &t);
+            std::fs::remove_file(&path).ok();
+            assert!(r.is_err(), "{why}");
+        }
     }
 }

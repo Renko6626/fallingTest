@@ -8,6 +8,12 @@
 ## 2026-09-01
 
 ### Added
+- **地图编辑器 Task 1：harness 契约**（`crates/sand-harness/src/{scenario,main}.rs`、
+  `sand-core/material.rs` 加只读 `name_of`）。场景 RON 新增 `grid` 字段（行级 RLE +
+  材质名图例；图例经自定义 MapAccess 反序列化以捕获重复键——ron 0.8 对重复键静默
+  覆盖），加载期编译成 `Op::Fill` 前缀置于 `setup` 之前，core/Sim 零改动；七条报错
+  路径 + 往返恒等单测；新子命令 `materials --json`、`rasterize <scenario>`（自动图例
+  优先材质名首字母）。既有五个 golden 原样绿。
 - **地图编辑器支线 spec**（`docs/superpowers/specs/2026-09-01-map-editor-design.md`，Status: Proposed）。
   brainstorm 四问用户逐一裁决：深度 B（改完即渲）、边界 C（先画网格、格式内嵌进场景文件、
   时间线手写）、格式 B（场景 RON 新增 `grid` 字段：行级 RLE 文本 + 材质名图例）、胶水 A

@@ -12,7 +12,7 @@
 
 | Task | 内容 | 状态 |
 |---|---|---|
-| 1 | harness：`grid` 字段解析/校验 + `materials --json` + `rasterize` 子命令 | ⬜ |
+| 1 | harness：`grid` 字段解析/校验 + `materials --json` + `rasterize` 子命令 | ✅ 2026-09-01 |
 | 2 | `tools/map-editor/`：`index.html` + `serve.py` + README | ⬜ |
 | 3 | 端到端目检（用户）+ 收口（CHANGELOG / 架构文档工程布局表加 `tools/`） | ⬜ |
 
@@ -70,7 +70,7 @@ grid: (
 ## 4. 两个只读子命令（`sand-harness/src/main.rs`）
 
 - `sand-harness materials --json [--materials PATH]`：输出 `[{id, name, color:[r,g,b], category}]`。
-- `sand-harness rasterize <scenario.ron> [--materials PATH]`：建 Sim、`apply_setup`（含 grid 前缀）、不 step，读整幅网格输出 `{width, height, legend:{char:name}, rows:[…]}`——legend 由材质表生成（air 固定 `'.'`，其余按 id 顺序分配可打印字符），rows 用与 §3 相同的 RLE 编码，可被编辑器原样再导出。
+- `sand-harness rasterize <scenario.ron> [--materials PATH]`：建 Sim、`apply_setup`（含 grid 前缀）、不 step，读整幅网格输出 `{width, height, legend:{char:name}, rows:[…]}`——legend 由材质表生成（air 固定 `'.'`，其余优先材质名首字母大写/小写，冲突再按 id 序从固定字符池补——`scenario::default_legend`），rows 用与 §3 相同的 RLE 编码，可被编辑器原样再导出。
 
 两者都不产生副作用，不进 golden。
 
