@@ -63,7 +63,7 @@ grid: (
 - **铺设顺序写死**：`grid` 先铺，`setup` ops 再叠。`grid` 缺省 = 不铺（老场景零变化）。
 - **写入路径**：每个非 air 的 RLE 段编译成一条 `Op::Fill{x0..x1, y}`（见下"实现位置"），最终经 Brush/Fill 同一条 `set_cell_stamped` 路径落格（盖戳、脏矩形、液体/气体 dir 初始化、lifetime 装填）。air 段不生成 Fill——世界初始即 air，`set_cell_stamped(air)` 与初始态逐位相同，跳过不改变语义。
 - **指纹**：场景字节哈希（行尾归一化后）已覆盖 `grid` 文本；解析结果是纯整数展开，无需像 `Op::Emit` 的 `Fx` 那样二次折叠。
-- **实现位置**：`sand-harness/src/scenario.rs` 新增 `GridSpec` 反序列化 + `expand_grid()`；`Scenario` 加 `grid: Option<Vec<u8>>`（按行主序的材质 id，长度 w×h）；`runner::build_sim` 在 `apply_setup` 之前铺 grid（经 `Sim::apply_setup` 同款路径——为保持"setup 只在 tick 0 前"的断言，grid 铺设复用 `Op::Fill` 的逐格写入原语即可：把每个 RLE 段直接转成一条 `Op::Fill{x0..x1, y}`，作为 setup 的前缀 ops 送入 `apply_setup`。这样 **core 零改动**，且铺设语义与手写 Fill 完全等价）。
+- **实现位置**：`sand-harness/src/scenario.rs` 新增 `GridSpec` 反序列化 + `expand_grid() -> Vec<Op>`，把每个非 air 的 RLE 段转成一条 `Op::Fill{x0..x1, y}`，作为 **`Scenario::setup` 的前缀**（`load_scenario` 里拼接：grid 段在前、文件里的 setup ops 在后）。`Scenario` 结构不加新字段、`runner::build_sim` 不改、`Sim::apply_setup` 照旧——**core 零改动**，铺设语义与手写 Fill 完全等价。
 
 > 上一条是本 spec 的关键取巧：`grid` 在 harness 内部**编译成 Fill 前缀**，core 与 `Sim` 接口一字不动，所有既有写入纪律自动继承。
 
