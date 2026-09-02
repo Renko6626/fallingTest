@@ -5,6 +5,19 @@
 
 ## [Unreleased]
 
+## 2026-09-01
+
+### Added
+- **地图编辑器支线 spec**（`docs/superpowers/specs/2026-09-01-map-editor-design.md`，Status: Proposed）。
+  brainstorm 四问用户逐一裁决：深度 B（改完即渲）、边界 C（先画网格、格式内嵌进场景文件、
+  时间线手写）、格式 B（场景 RON 新增 `grid` 字段：行级 RLE 文本 + 材质名图例）、胶水 A
+  （Python 标准库 serve.py + 单文件 HTML）。关键取巧：`grid` 在 harness 内编译成 `Fill`
+  前缀 ops，core/Sim 零改动；回读经新子命令 `rasterize` 走真实加载器。
+
+### Changed
+- **M3 刚体延后**（用户裁决 2026-09-01）：里程碑定义不动，地图编辑器支线插入 M2 与 M3 之间；
+  硬约束 = M3 须在 M5/M6 之前补上（M6 rollback 决策门依赖物理快照）。
+
 ## 2026-08-31
 
 ### Added
