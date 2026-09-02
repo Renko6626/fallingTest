@@ -3,7 +3,7 @@
 > 文档路径：`docs/superpowers/specs/2026-08-31-m2-reactions-and-fire-design.md`
 > 运行时版本：Rust（内核）+ Godot 4 + gdext（表现层）
 > 最近更新：2026-08-31 (UTC+8)
-> **Status**: Implemented（2026-08-31 四 Task 全落地；GIF 目检待用户，见 `fire_oil_chain_preview.gif`）
+> **Status**: Implemented（2026-08-31 四 Task 全落地；2026-09-02 用户签收）
 > 上游：`docs/overview/kernel-charter.md` §11 翻案记录第 6 条（删除 Layer F 场层）、M2 里程碑重定义
 > 调研依据：`docs/reference/noita-material-schema.md`（材质字段一手核查）、`docs/reference/noita-grid-api-and-rng.md`（引擎侧笔记与 PRNG 事故史）
 > 解挂复用：`docs/superpowers/specs/2026-05-26-fire-system-design.md`（fire spec v2，Noita 式主线随翻案 6 重新生效）
@@ -30,7 +30,7 @@ Task 0 是 1–3 的共同地基，不单独验收，随 Task 1 一起落地。
 3. ✅ **休眠不退化**：`resting_wood_lets_chunk_sleep` + `trapped_gas_lets_chunk_sleep` 执法通过。
 4. ✅ **分布回归**：点燃方向骰 961 腔四向 4σ 内、反应触发率 1722 对贴近 128/255（§7.2 新规矩）。
 5. ✅ **golden 重录取证**：四旧场景哈希流三次（Task 1/2/3 各一次）逐位一致后仅重录 fp 行。
-6. ⏳ **GIF 目检**（用户手动执行）：火油连锁、烟上升、木头由外向内烧——`fire_oil_chain_preview.gif`。
+6. ✅ **GIF 目检**（用户签收 2026-09-02）：`oil_burn_demo` / `oil_wood_bonfire` / `fire_oil_chain_preview`。
 7. ✅ **bench + u64 对照入档** `docs/perf/2026-08-31-m2-reactions-and-fire.md`：活跃格成本
    ≈ +20%（发起方邻检，Layer G Task 2 同量级的预期语义成本，绝对量级远在预算内；
    睡眠稀疏性不受影响）；u64 本机噪声内无一致回退。

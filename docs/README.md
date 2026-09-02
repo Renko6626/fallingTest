@@ -50,7 +50,7 @@
      目检 GIF：`out/mixed_splash{0,1}.gif`（G→P）、`out/waterfall_ci_splash{0,1}.gif`（P→G），
      0 = 改动前；重点看水花量与 §6.1①（`MovedSide` 也触发 ⇒ 贴地横流会不会冒过量水花）。
      **遗留**：横向撞击动量仍被丢弃（网格无水平速度场），留 M2 之后。
-3. **M2 反应表与燃烧：已完成（2026-08-31，GIF 目检待用户）**——spec
+3. **M2 反应表与燃烧：已完成并经用户签收（2026-09-02）**——spec
    `superpowers/specs/2026-08-31-m2-reactions-and-fire-design.md`（Status: Implemented），
    四 Task 全落：数据层 + `Category::Gas`、反应表（tag 展开/发起方约定/`STREAM_REACT`）、
    `hp`+`durability` 双层破坏（哨兵退役）、counter 燃烧链（点燃/产火/衰变/闷熄/灭火）。
@@ -62,11 +62,12 @@
    横向撞击动量（无水平速度场）。
    **2026-09-01 追加**：Gas `rise_chance`（火焰逗留，Noita 查证）+ 渲染器燃烧可视化；
    目检 GIF `oil_burn_demo.gif` / `oil_wood_bonfire.gif`。
-3b. **地图编辑器支线：已完成（2026-09-01，用户端到端目检待做）**——spec
+3b. **地图编辑器支线：已完成并经用户签收（2026-09-02）**——spec
    `superpowers/specs/2026-09-01-map-editor-design.md`（Status: Implemented）。场景 RON
    新增 `grid` 字段（行级 RLE + 材质名图例，加载期编译成 Fill 前缀，core 零改动）；
    `sand-harness materials --json` / `rasterize`；`tools/map-editor/`（单文件画布 +
-   Python 改完即渲服务，见其 README）。**M3 刚体延后**（用户裁决）：硬约束 = M5/M6 之前。
+   Python 改完即渲服务，见其 README）。**M3 刚体：2026-09-02 用户改判——回到 M4 之前**（先把世界层
+   做完整）；`fire_oil_chain` 等场景不翻新（用户裁决）。**下一步 = M3 brainstorm。**
 4. **M1 粒子层：已完成并经用户验收（2026-08-31）**（spec → Implemented，会话总账 `sessions/2026-08-30-m1-particle-layer.md`）：
    脱格/落格闭环、DDA、`Op::Emit`/`Op::Explode`（Noita 射线模型 + 近心汽化 + 密度冲量 + 方向涨落）、容量限流；验收 §0
    五项全过（GIF 目检经用户四轮迭代后确认）。后续爆炸手感收口 + `world.rs` 拆分 `explode.rs`/`emit.rs` 见 CHANGELOG
