@@ -59,7 +59,14 @@
    `perf/2026-08-31-m2-reactions-and-fire.md`。目检 GIF：`fire_oil_chain_preview.gif`
    （repo 根，未入库；重点看火油连锁、烟上升、木头由外向内烧）。
    **遗留债不变**：O3 粉末惯性、粒子穿水/弹跳、M1 两条测试债（用户裁决推迟）、
-   横向撞击动量（无水平速度场）。**下一步：M3 刚体（先 brainstorm 立 spec）**。
+   横向撞击动量（无水平速度场）。
+   **2026-09-01 追加**：Gas `rise_chance`（火焰逗留，Noita 查证）+ 渲染器燃烧可视化；
+   目检 GIF `oil_burn_demo.gif` / `oil_wood_bonfire.gif`。
+3b. **地图编辑器支线：已完成（2026-09-01，用户端到端目检待做）**——spec
+   `superpowers/specs/2026-09-01-map-editor-design.md`（Status: Implemented）。场景 RON
+   新增 `grid` 字段（行级 RLE + 材质名图例，加载期编译成 Fill 前缀，core 零改动）；
+   `sand-harness materials --json` / `rasterize`；`tools/map-editor/`（单文件画布 +
+   Python 改完即渲服务，见其 README）。**M3 刚体延后**（用户裁决）：硬约束 = M5/M6 之前。
 4. **M1 粒子层：已完成并经用户验收（2026-08-31）**（spec → Implemented，会话总账 `sessions/2026-08-30-m1-particle-layer.md`）：
    脱格/落格闭环、DDA、`Op::Emit`/`Op::Explode`（Noita 射线模型 + 近心汽化 + 密度冲量 + 方向涨落）、容量限流；验收 §0
    五项全过（GIF 目检经用户四轮迭代后确认）。后续爆炸手感收口 + `world.rs` 拆分 `explode.rs`/`emit.rs` 见 CHANGELOG

@@ -59,6 +59,7 @@ workspace/
     sand-relay/      期权：VPS UDP 转发器（后期，独立部署）
   data/              材料表·反应表·法术表·地图（RON）
   godot/             Godot 项目：场景、GDScript、shader、音频资产
+  tools/             四环之外的开发工具（map-editor：手绘场景 → data/scenarios，改完即渲）
 ```
 
 依赖方向单向向内：`bridge → session → core`，`harness → session → core`。反向依赖一律禁止。执法手段写进 CI：`sand-core` 的依赖清单里出现 godot / gdext / 网络库 / 逻辑路径上的 `std::time`，构建即失败。

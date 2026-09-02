@@ -3,7 +3,7 @@
 > 文档路径：`docs/superpowers/specs/2026-09-01-map-editor-design.md`
 > 运行时版本：Rust（sand-harness 契约）+ Python 标准库（胶水）+ 单文件 HTML（页面）
 > 最近更新：2026-09-01 (UTC+8)
-> **Status**: Proposed（brainstorm 四问经用户逐一裁决，待实施）
+> **Status**: Implemented（2026-09-01 三 Task 落地；用户端到端目检待做——`tools/map-editor/README.md`）
 > 里程碑关系：**M3 刚体延后**（用户裁决 2026-09-01），本支线插入 M2 与 M3 之间；M3 须在 M5/M6 之前补上（M6 rollback 决策门依赖物理快照）。
 
 ---
@@ -14,7 +14,7 @@
 |---|---|---|
 | 1 | harness：`grid` 字段解析/校验 + `materials --json` + `rasterize` 子命令 | ✅ 2026-09-01 |
 | 2 | `tools/map-editor/`：`index.html` + `serve.py` + README | ✅ 2026-09-01（curl 端到端 + 无头 Firefox 加载验证） |
-| 3 | 端到端目检（用户）+ 收口（CHANGELOG / 架构文档工程布局表加 `tools/`） | ⬜ |
+| 3 | 端到端目检（用户）+ 收口（CHANGELOG / 架构文档工程布局表加 `tools/`） | ✅ 收口 2026-09-01；目检待用户 |
 
 ---
 

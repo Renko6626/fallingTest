@@ -8,6 +8,8 @@
 ## 2026-09-01
 
 ### Added
+- **地图编辑器收口**：`program-architecture.md` §2 工程布局加 `tools/`；`docs/README.md`
+  优先队列加 3b（支线完成、M3 延后）；spec Status → Implemented（用户端到端目检待做）。
 - **地图编辑器 Task 2：页面 + 服务**（`tools/map-editor/{index.html,serve.py,README.md}`，
   `.gitignore` 加 `tools/map-editor/out/`）。单文件 Canvas 编辑器（笔刷/矩形/油漆桶/橡皮/
   吸管、撤销重做、chunk 缝线、材质调色板来自 `materials --json`、RLE 编解码与 harness
