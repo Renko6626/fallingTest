@@ -15,7 +15,7 @@
 |---|---|---|
 | 1 | `physics` 适配层（Rapier2D 封装、确定性红线、快照）+ 几何工具（marching squares / DP / 耳切） | ⬜ |
 | 2 | `body` 本体：位图、盖章/反盖章（含 counter 往返）、`Op::SpawnBody`、哈希入 `state_hash` | ⬜ |
-| 3 | 地形碰撞（B′：刚体附近 chunk 缓存的硬格 polyline）+ 浮沉（Noita 逐像素反作用） | ⬜ |
+| 3 | 地形碰撞（B′：刚体附近 chunk 缓存的硬格 polyline）+ 浮沉（水面线采样阿基米德） | ⬜ |
 | 4 | 破坏对账 + 限额重提取 + 碎片脱格；燃烧散架端到端 | ⬜ |
 | 5 | 收口：`crate_yard` golden/SyncTest、快照往返、bench、总纲 §11、GIF 目检 | ⬜ |
 
@@ -40,14 +40,14 @@
 3. **小碎片 B**：面积 < 阈值的分量脱格成粒子（复用 G→P 通路），不换材质（`debris_to` 留 M4）。
 4. **引擎：Rapier2D**（`enhanced-determinism` + `serde-serialize`）。
 5. **刚体可燃**：刚体像素照常参与 CA 燃烧，烧掉即对账重算（Noita 语义）。
-6. **浮沉：Noita 方式**——不写阿基米德公式，逐像素反作用涌现；`density` 单字段。
+6. **浮沉：采样式阿基米德**（2026-09-02 二次裁决，推翻同日"Noita 逐像素反作用"之议：更优雅、更省）；`density` 单字段复用为刚体密度。溢出（"箱子掉进满池水就漫出来"）由 §3 的排开脱格保证质量守恒，与浮力公式无关。
 
 ### 1.2 Noita 一手查证（wiki + 仓库调研）
 
 1. `liquid_sand_never_box2d="1"` 的释义是"让 box2d 物体**穿过**该材质而不被卡住"——它是关闭开关，说明**沙默认托得住刚体**；地面本就是 `liquid_static` 静态沙而非 `solid`（`solid` 铺满世界会"lag like hell"）。
 2. `density` 字段原文 `(liquids, sand) More dense materials seep through lesser ones`——**只定义给液体/沙**，没有任何 solid/box2d 或浮力字段；水 4、木 11。
 3. `[box2d]` 木材（`wood_prop` / `wood_player_b2` / `wood_loose`…）全部 "Burns: Yes"；Purho："每个像素知道自己属于哪个刚体……像素被毁就重算形状（可能切成多块）"——烧掉与炸掉走同一条路。
-4. 浮力（社区共识，`noita-deep-dive.md:300`）：tick 末遍历 body 像素，遇沙/液体 → 该像素转入粒子系统（飞溅）+ 在该点施加反向力与阻尼；**没有显式公式**。冲量的精确方向未见文字记载——本 spec 钉为逆重力方向（§5）。
+4. 浮力（社区共识，`noita-deep-dive.md:300`）：tick 末遍历 body 像素，遇沙/液体 → 该像素转入粒子系统（飞溅）+ 在该点施加反向力与阻尼；**没有显式公式**。我们只采纳其"排开像素进粒子系统"这一半（§3），浮力本身走阿基米德（§5，用户二次裁决）。
 5. FSS Issue #4：刚体旋转后网格出现缝隙、沙漏进箱内——盖章必须实心光栅化（§3）。
 
 ## 2. 架构与数据流
@@ -82,7 +82,7 @@ pub struct Bodies { list: Vec<Body> /* 按 id 升序 */, next_id: u16, reextract
 - **盖章 = 实心光栅化（逆映射）**：对变换后 AABB 内每格，格心逆变换回局部坐标查 `occ`——天然无洞（§1.2 第 5 条）。两 body 争同一格：**id 小者赢**，盖章按 id 序。
 - **被盖住的非 air 格**：Liquid/Powder 经 `eject_cell` 脱格成粒子（chunk `spawn_buf` 定序，质量守恒、即溅射）；Gas 直接覆盖（气体无质量语义）；Static 非刚体格（wall/wood）**不覆盖**——盖章跳过该格（刚体嵌进地形是物理层该防的事，不在这里销毁地形）。
 - **反盖章** = 按 `stamped` 清单把格写回 air，**同时把每格 counter 读回 `occ`**（燃烧进度随刚体走，§1.1 第 5 条）。
-- **休眠刚体零写入**：Rapier 判定 sleeping 的 body 跳过反盖章/采样/盖章，格子原样留着（火照样在格子里烧）；执法测试 `resting_body_lets_chunk_sleep`。
+- **休眠/静止刚体零写入**：Rapier 判定 sleeping、或本 tick 变换与上 tick 逐位相同的 body，跳过反盖章/采样/盖章，格子原样留着（火照样在格子里烧）；执法测试 `resting_body_lets_chunk_sleep`。
 
 ## 4. 碰撞几何
 
@@ -90,13 +90,15 @@ pub struct Bodies { list: Vec<Body> /* 按 id 升序 */, next_id: u16, reextract
 - **刚体形状**：`occ` → Marching Squares → DP → **自写耳切三角化**（遍历序固定；**不用** Rapier 的凸分解，其定序无保证）→ 三角形 compound collider；质量由引擎按面积 × 材质 `density` 算（§5）。位图变了才重算。
 - 材质表新增 `body_passable: bool`（缺省 false）。
 
-## 5. 浮沉与阻力（Noita 方式，用户裁决第 6 条）
+## 5. 浮沉与阻力（采样式阿基米德，用户裁决第 6 条）
 
 - **质量**：collider 密度 = 材质 `density`（Static 材质的 `density` 自此定义为"作为刚体的密度"——CA 里 Static 永远先被 `is_static` 拦掉、从不比密度，此字段此前无消费者，零副作用）。`materials.ron`：wood 60 → **12**（< 水 16，浮）；新增 `stone`（Static，密度 40，沉）。
-- **逐像素反作用**：清醒刚体反盖章后，扫 `stamped` 清单，凡当前是 Liquid 的格（液体在上一 tick 流进来的）：① 该格液体按 §3 脱格成粒子（溅射）；② 在该格中心对刚体施加冲量 `J = K_REACT × ρ_liq × ĝ⁻`（逆重力方向，`ρ_liq` = 该液体材质 `density`）；③ 在该点施加阻尼冲量 `−K_DRAG × ρ_liq × v_point`（`v_point` = 刚体在该点速度）。粉末不参与（B′ 里粉末是硬地形）。
-- 冲量按 **id 序、格清单 (y, x) 序**逐个施加（浮点求和顺序固定 ⇒ 确定）；格数与密度是整数，进引擎前才转 f32。
-- **涌现**：淹没像素 × `ρ_liq × K_REACT` 与 `质量 × g` 对抗——木箱上浮、石箱下沉；到达液面后淹没格减少、力自平衡；引擎入睡后停止采样与盖章，格子里的液体不再被排开，稳定漂浮。`K_REACT` / `K_DRAG` 为常量，目检调。
-- **实施期钉死项**：冲量方向取逆重力，因 Noita 文字资料未载其精确规则；若目检发现漂浮抖动，第一杠杆是 `K_DRAG`，第二是把反作用改按"该格相对刚体质心的方向"。
+- **淹没体积 = 水面线采样**（不是"数流进脚印的液体格"——一 tick 只流进一层，那会把力算成正比于周长）：对每个清醒刚体，扫 AABB 左右各外扩 1 列、在脚印之外自上而下找第一个 Liquid 格，得各列水面高度；取**中位数** `h`（偶数个取较高者，整数）；找不到液体的列不计；一列都没有 ⇒ 未淹没。淹没像素集 = 刚体占位像素（世界坐标）中 `y ≥ h` 者，`n_sub` 为其计数，`ρ_liq` 取各列水面格里出现最多的液体材质的 `density`。
+- **力**：`F_浮 = n_sub × ρ_liq × g` 逆重力，施于**淹没像素质心**（白送扶正力矩，箱子会自己翻正）；阻力 `F_阻 = −K_DRAG × n_sub × v_质心`。引擎重力照常施加 `−m g`，净力即 `(n_sub ρ_liq − n_total ρ_body) g`——真阿基米德，与尺寸无关。
+- **确定性**：全部整数计数，进引擎前才转 f32；按 id 序施力。O(AABB) / 清醒刚体 / tick。
+- **排开与溢出**：盖章覆盖到的液体格按 §3 脱格成粒子（质量守恒）——满池入箱即漫出，是 §3 的副产物，不需要额外机制。
+- **防抖**：本 tick 变换与上 tick 逐位相同（`to_bits` 相等）的刚体**跳过反盖章/采样/盖章**——浮着不动或堆着不动的箱子零写入、零溅射；睡眠刚体同样跳过（§3）。
+- `K_DRAG` 常量，目检调；第一版不做角阻尼（Rapier 自带 angular damping 参数，需要时开）。
 
 ## 6. 破坏对账与重提取（第 7 步）
 
@@ -118,13 +120,13 @@ pub struct Bodies { list: Vec<Body> /* 按 id 升序 */, next_id: u16, reextract
 
 - `Op::SpawnBody { material, x, y, w, h }`（RON `SpawnBody(material: "wood", x: 100, y: 40, w: 24, h: 16)`）：加载期校验材质 Static、尺寸 ≥ 阈值、落在世界内；生成 = 全占位图 → §4 形状 → 插入引擎（静止无旋转）→ 下一 tick 首次盖章。`MAX_BODIES = 256` 超限确定性拒绝并计数（粒子池先例）。
 - `materials.ron`：`body_passable`（缺省 false）；wood `density: 12`；新增 `stone`（id 8，Static，density 40，hp 6，durability 8）。
-- 常量（`pub const`，目检可调）：`MIN_BODY_PIXELS = 12`、`MAX_REEXTRACT_PER_TICK = 2`、`DP_EPSILON = 0.5`、`TERRAIN_MARGIN = 1`、`K_REACT`、`K_DRAG`、`MAX_BODIES = 256`。
+- 常量（`pub const`，目检可调）：`MIN_BODY_PIXELS = 12`、`MAX_REEXTRACT_PER_TICK = 2`、`DP_EPSILON = 0.5`、`TERRAIN_MARGIN = 1`、`K_DRAG`、`MAX_BODIES = 256`。
 - 指纹：场景字节哈希自动覆盖；`Op::SpawnBody` 无 `Fx` 字段不折叠。
 
 ## 9. 测试矩阵
 
 - **单测**：耳切定序与面积守恒；Marching Squares 多轮廓含洞；DP 端点保持；逆映射盖章旋转 45° 无洞（FSS #4 回归）；连通分量 + 阈值分流；`physics`"两世界同序操作 → 快照字节相同"；`occ` counter 往返（反盖章读回 / 盖章写回）。
-- **行为测试**（`tests/body_behavior.rs`）：木箱落墙静止后全图入睡；木箱停在沙堆上（B′）；木箱落水上浮、石箱下沉；爆炸切割 body 1 → 2；小碎片脱格粒子；**木箱点燃后 `occ` 单调减少、最终 body 消失**；快照往返恒等。
+- **行为测试**（`tests/body_behavior.rs`）：木箱落墙静止后全图入睡；木箱停在沙堆上（B′）；木箱落水上浮、石箱下沉；**满池入箱水漫出**（池外出现液体格且总水量守恒）；爆炸切割 body 1 → 2；小碎片脱格粒子；**木箱点燃后 `occ` 单调减少、最终 body 消失**；快照往返恒等。
 - **SyncTest**：`crate_yard`（木箱×3 + 石箱 + 沙堆 + 水塘 + 定时爆炸与点火）六配置 2 万 tick；引擎快照 checksum 每 256 tick 双实例比对。
 - **golden**：`crate_yard` 新录；既有五个按验收 5 程序重录。
 - **bench**：无刚体场景对照 `f807e54`…当前；`crate_yard` 入档。
@@ -135,9 +137,9 @@ pub struct Bodies { list: Vec<Body> /* 按 id 升序 */, next_id: u16, reextract
 
 ## 11. 决策记录
 
-1. C / B′ / B / Rapier2D / 刚体可燃 / Noita 浮沉（§1.1）。
+1. C / B′ / B / Rapier2D / 刚体可燃 / 采样式阿基米德（§1.1；Noita 逐像素反作用之议同日撤回）。
 2. `BODY_FLAG` 只做所有权标记，不豁免 CA（§3）。
 3. `density` 单字段复用为刚体密度，不开 `body_density`（§5）。
-4. 反作用冲量方向 = 逆重力（实施期钉死，Noita 未载）（§5）。
+4. 淹没体积用水面线采样而非脚印回填计数——后者只数到一层、力正比于周长（§5）。
 5. 静态地形用 polyline、刚体用自写耳切，不用引擎凸分解（§4）。
 6. 哈希不折引擎内部状态，另以 serde checksum 巡检（§7）。
