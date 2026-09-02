@@ -367,3 +367,99 @@ fn physics_snapshot_restore_is_lossless() {
         assert_eq!(a.physics_checksum(), b.physics_checksum(), "tick {t}：恢复后引擎快照分叉");
     }
 }
+
+// ==================== 目检修订（2026-09-02）====================
+
+/// 半悬空的箱子必须翻倒掉下（旋转发生：下落中 bbox 明显偏离 24×16）并离开台面。
+#[test]
+fn overhanging_crate_topples_off_ledge() {
+    let mut s = body_sim(41, 1);
+    s.apply_setup(&[
+        floor(128, 128),
+        Op::Fill { material: 1, x0: 20, y0: 90, x1: 60, y1: 123 }, // 台子
+        Op::SpawnBody { material: WOOD, x: 50, y: 60, w: 24, h: 16 }, // 一半悬在台沿外
+    ]);
+    let mut rotated = false;
+    for _ in 0..300 {
+        s.step(&[]);
+        let cells = body_cells(&s);
+        if cells.is_empty() {
+            continue;
+        }
+        let (x0, x1) = (cells.iter().map(|c| c.0).min().unwrap(), cells.iter().map(|c| c.0).max().unwrap());
+        let (y0, y1) = (cells.iter().map(|c| c.1).min().unwrap(), cells.iter().map(|c| c.1).max().unwrap());
+        if x1 - x0 + 1 >= 27 && y1 - y0 + 1 >= 20 {
+            rotated = true;
+        }
+    }
+    assert!(rotated, "翻倒过程中必须发生旋转（bbox 明显变形）");
+    let cells = body_cells(&s);
+    let x0 = cells.iter().map(|c| c.0).min().unwrap();
+    assert!(x0 > 60, "箱子应掉出台面（x0={x0}）");
+}
+
+/// 浮体最终静止入睡：稳定后 300 tick 内无粒子产生、脚印不变（不再周期性把水弹上箱顶）。
+#[test]
+fn floating_crate_settles_and_stops_ejecting_water() {
+    let mut s = body_sim(17, 1);
+    s.apply_setup(&[
+        Op::Fill { material: 1, x0: 0, y0: 120, x1: 127, y1: 123 },
+        Op::Fill { material: 1, x0: 10, y0: 60, x1: 11, y1: 119 },
+        Op::Fill { material: 1, x0: 116, y0: 60, x1: 117, y1: 119 },
+        Op::Fill { material: 3, x0: 12, y0: 80, x1: 115, y1: 119 },
+        Op::SpawnBody { material: WOOD, x: 30, y: 40, w: 16, h: 12 },
+    ]);
+    for _ in 0..900 {
+        s.step(&[]);
+    }
+    let footprint = body_cells(&s);
+    for t in 0..300 {
+        s.step(&[]);
+        assert_eq!(s.particles().len(), 0, "tick {}：稳定后不应再弹出粒子", 900 + t);
+        assert_eq!(body_cells(&s), footprint, "tick {}：稳定后脚印不应变化", 900 + t);
+    }
+}
+
+const WOOD_DEBRIS: u8 = 8;
+
+/// 爆炸碎屑按 `debris_to` 以粉末落地：稳定后不存在任何"非刚体的静态木格"（那会悬空、
+/// 粘在箱子上、还变成卡住刚体的地形），且确有木屑粉末落下。
+#[test]
+fn explosion_debris_lands_as_powder_not_static() {
+    let t = MaterialTable::new(vec![
+        MaterialDef::base(0, "air", Category::Static, 0),
+        MaterialDef::base(1, "wall", Category::Static, 100),
+        MaterialDef::base(2, "sand", Category::Powder, 40),
+        MaterialDef::base(3, "water", Category::Liquid, 16),
+        MaterialDef { debris_to: WOOD_DEBRIS, ..MaterialDef::base(WOOD, "wood", Category::Static, 12) },
+        MaterialDef::base(STONE, "stone", Category::Static, 40),
+        MaterialDef::base(FIRE, "fire", Category::Gas, 1),
+        MaterialDef::base(SMOKE, "smoke", Category::Gas, 2),
+        MaterialDef::base(WOOD_DEBRIS, "wood_debris", Category::Powder, 12),
+    ])
+    .unwrap();
+    let r = ReactionTable::empty(&t);
+    let mut s = sim_with_reactions(2, 2, 43, 1, ScanMode::LiveRect, t, r);
+    s.apply_setup(&[floor(128, 128), Op::SpawnBody { material: WOOD, x: 40, y: 100, w: 24, h: 16 }]);
+    for _ in 0..200 {
+        s.step(&[]);
+    }
+    let cells = body_cells(&s);
+    let cx = (cells.iter().map(|c| c.0).min().unwrap() + cells.iter().map(|c| c.0).max().unwrap()) / 2;
+    let cy = (cells.iter().map(|c| c.1).min().unwrap() + cells.iter().map(|c| c.1).max().unwrap()) / 2;
+    s.step(&[Op::Explode { x: cx, y: cy, r: 10, power: 400, max_durability: 10 }]);
+    for _ in 0..400 {
+        s.step(&[]);
+    }
+    let body_set: std::collections::BTreeSet<(i32, i32)> = body_cells(&s).into_iter().collect();
+    let mut static_wood_outside = 0;
+    for y in 0..128 {
+        for x in 0..128 {
+            if s.world().cell(x, y).material() == WOOD && !body_set.contains(&(x, y)) {
+                static_wood_outside += 1;
+            }
+        }
+    }
+    assert_eq!(static_wood_outside, 0, "不得留下悬空/粘连的静态木格");
+    assert!(s.world().count_material(WOOD_DEBRIS) > 0, "碎屑应以粉末落地");
+}

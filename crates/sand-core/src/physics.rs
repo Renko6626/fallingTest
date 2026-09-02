@@ -33,7 +33,9 @@ pub(crate) const GRAVITY_CELLS_PER_S2: f32 = 900.0;
 /// 固定步长（60 Hz tick 同步，无子步）。
 pub(crate) const DT: f32 = 1.0 / 60.0;
 /// 入睡的线速度阈值（格/s；rapier 的 normalized 口径 = 速度 / 长度尺度，本项目长度尺度 = 1 格）。
-pub(crate) const SLEEP_LINEAR_THRESHOLD: f32 = 6.0;
+/// 带碰撞体的刚体其角阈值由本值 ÷ 尺寸推导：取 1.0 ⇒ 24 格箱子约 0.08 rad/s——真在
+/// 翻倒的箱子（α ≈ 26 rad/s²）远超此值，不会被冻在半途；浮体靠分数淹没平滑后能压到此下。
+pub(crate) const SLEEP_LINEAR_THRESHOLD: f32 = 1.0;
 /// 入睡的角速度阈值（rad/s）。
 pub(crate) const SLEEP_ANGULAR_THRESHOLD: f32 = 0.3;
 
@@ -143,18 +145,20 @@ impl PhysicsWorld {
     }
 
     /// 在世界点 `at` 施加力（本 tick 生效，`step` 后由本模块清零——rapier 的
-    /// `add_force` 是持久力，不清会累积）。
+    /// `add_force` 是持久力，不清会累积）。**不唤醒**：调用方只对清醒刚体施力，
+    /// 若这里传 `wake_up = true`，水里的刚体每 tick 被强制唤醒、永远睡不着
+    /// （目检修订 2026-09-02 实测）。
     pub(crate) fn apply_force_at(&mut self, h: BodyHandle, f: (f32, f32), at: (f32, f32)) {
         if let Some(rb) = self.inner.bodies.get_mut(h.0) {
-            rb.add_force_at_point(Vector::new(f.0, f.1), Vector::new(at.0, at.1), true);
+            rb.add_force_at_point(Vector::new(f.0, f.1), Vector::new(at.0, at.1), false);
         }
     }
 
-    /// 线阻力：`F = −k · v`（质心处）。
+    /// 线阻力：`F = −k · v`（质心处）。不唤醒，理由同上。
     pub(crate) fn apply_drag(&mut self, h: BodyHandle, k: f32) {
         if let Some(rb) = self.inner.bodies.get_mut(h.0) {
             let v = rb.linvel();
-            rb.add_force(Vector::new(-k * v.x, -k * v.y), true);
+            rb.add_force(Vector::new(-k * v.x, -k * v.y), false);
         }
     }
 

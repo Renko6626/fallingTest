@@ -119,7 +119,7 @@ pub struct Bodies { list: Vec<Body> /* 按 id 升序 */, next_id: u16, reextract
 ## 8. 场景 op、数据与常量
 
 - `Op::SpawnBody { material, x, y, w, h }`（RON `SpawnBody(material: "wood", x: 100, y: 40, w: 24, h: 16)`）：加载期校验材质 Static、尺寸 ≥ 阈值、落在世界内；生成 = 全占位图 → §4 形状 → 插入引擎（静止无旋转）→ 下一 tick 首次盖章。`MAX_BODIES = 256` 超限确定性拒绝并计数（粒子池先例）。
-- `materials.ron`：`body_passable`（缺省 false）；wood `density: 12`；新增 `stone`（id 8，Static，density 40，hp 6，durability 8）。
+- `materials.ron`：`body_passable`（缺省 false）；wood `density: 12`；新增 `stone`（id 8，Static，density 40，hp 6，durability 8）；`debris_to`（目检修订）：wood → `wood_debris`（id 9，Powder）、stone → `stone_debris`（id 10，Powder）。
 - 常量（`pub const`，目检可调）：`MIN_BODY_PIXELS = 12`、`MAX_REEXTRACT_PER_TICK = 2`、`DP_EPSILON = 0.5`、`TERRAIN_MARGIN = 1`、`K_DRAG`、`MAX_BODIES = 256`。
 - 指纹：场景字节哈希自动覆盖；`Op::SpawnBody` 无 `Fx` 字段不折叠。
 
@@ -143,6 +143,17 @@ pub struct Bodies { list: Vec<Body> /* 按 id 升序 */, next_id: u16, reextract
 4. 淹没体积用水面线采样而非脚印回填计数——后者只数到一层、力正比于周长（§5）。
 5. 静态地形用 polyline、刚体用自写耳切，不用引擎凸分解（§4）。
 6. 哈希不折引擎内部状态，另以 serde checksum 巡检（§7）。
+11. **目检修订（2026-09-02，用户三问）**：① "刚体不倾倒"——机制无恙（引擎与 Sim 两级探针
+    都证实半悬空箱子翻倒），是 `crate_yard` 没安排会倒的物件；场景加台沿高箱子，行为测试
+    `overhanging_crate_topples_off_ledge` 钉死。② "碎屑落回粘连"——爆炸/碎片粒子按原材质
+    （Static wood）落格成悬空静态格，既像粘回箱上又成为卡住刚体的地形：落地原推迟的
+    `debris_to` 字段（wood → `wood_debris`、stone → `stone_debris` 两种 Powder），
+    `explode::fire_ray` 与碎片脱格都走它；测试 `explosion_debris_lands_as_powder_not_static`。
+    ③ "水卡在浮箱顶"——两个根因叠加：浮力按整行计数使力随位置阶跃、浮体困在极限环里
+    反复把回填水弹上箱顶；且施力用 `wake_up = true` **每 tick 强制唤醒**，水里的刚体永远
+    睡不着。修：淹没量改按像素分数（用引擎变换算每像素世界 y）平滑，施力不唤醒，睡眠
+    阈值收回 1 格/s；测试 `floating_crate_settles_and_stops_ejecting_water`（稳定后 300 tick
+    零粒子、脚印不变）。
 10. **实施期决定（Task 4，两条实测教训）**：① **盖章格用上一 tick 的世代戳**——`eval`
     以 `stamp == 当前` 判"本 tick 已处理"，若用当前戳，清醒刚体每 tick 重盖章 ⇒ 其燃烧格
     永远轮不到 CA 评估，燃烧只在刚体睡着时推进（火场里的箱子烧到 103 像素卡死）；盖章格

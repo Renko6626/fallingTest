@@ -132,6 +132,9 @@ struct MatSpec {
     /// 刚体可穿过（M3 spec §4，Noita `liquid_sand_never_box2d`）：缺省 false。
     #[serde(default)]
     body_passable: bool,
+    /// 碎屑材质名（爆炸/碎片粒子取此材质），缺省自身；加载期解析成 id。
+    #[serde(default)]
+    debris_to: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -217,6 +220,13 @@ pub fn load_materials(path: &str) -> Result<(MaterialTable, u64), String> {
                     m.name, m.id
                 ))?,
             };
+            let debris_to = match &m.debris_to {
+                None => m.id,
+                Some(name) => *name_to_id.get(name.as_str()).ok_or(format!(
+                    "材料 '{}'（id={}）的 debris_to 引用不存在的材质 '{name}'（加载期显式报错）",
+                    m.name, m.id
+                ))?,
+            };
             let decay_to = match &m.decay_to {
                 None => sand_core::MAT_AIR,
                 Some(name) => *name_to_id.get(name.as_str()).ok_or(format!(
@@ -255,6 +265,7 @@ pub fn load_materials(path: &str) -> Result<(MaterialTable, u64), String> {
                     format!("材料 '{}'（id={}）的 rise_chance 非法：{e}", m.name, m.id)
                 })?,
                 body_passable: m.body_passable,
+                debris_to,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;

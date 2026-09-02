@@ -8,6 +8,12 @@
 ## 2026-09-02
 
 ### Added
+- **M3 目检修订（用户三问）**（`crates/sand-core/src/{body,physics,material,explode}.rs`、
+  `sand-harness/scenario.rs`、`data/materials.ron`、`data/scenarios/crate_yard.ron`）。
+  ① 倾倒：机制无恙（两级探针实证），场景加台沿高箱 + 测试钉死；② 碎屑粘连：落地 `debris_to`
+  （wood/stone → Powder 碎屑），爆炸与碎片脱格都走它；③ 浮箱顶水：浮力改像素分数淹没
+  （平滑）+ **施力不唤醒**（原 `wake_up=true` 让水里刚体永远睡不着）+ 睡眠阈值收回 1 格/s。
+  spec 决策记录第 11 条；tuning-knobs 同步。
 - **M3 Task 5 收口**：`data/scenarios/crate_yard.ron`（沙托箱 / 落台切割 / 木浮石沉满池漫出 /
   火场散架）golden 新录 + 六配置 2 万 tick SyncTest（`runner::synctest` 每 256 tick 另比对引擎
   serde 快照 checksum）；`Sim::physics_snapshot/restore_physics` + 行为测试"恢复后续跑与孪生

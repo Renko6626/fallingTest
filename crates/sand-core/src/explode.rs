@@ -243,8 +243,9 @@ fn fire_ray(
         let vy = clamp_speed(unit_dy.mul(speed_mag) + emit_jitter(ry, EXPLODE_JITTER));
 
         world.set_cell_stamped(table, gx, gy, MAT_AIR, stamp);
+        // 碎屑材质（M3 目检修订）：Static 材质指向 Powder 碎屑，落地不成悬空静态格。
         spawns.push(SpawnRequest {
-            material,
+            material: table.debris_to(material),
             x: Fx::from_int(gx) + HALF_CELL,
             y: Fx::from_int(gy) + HALF_CELL,
             vx,

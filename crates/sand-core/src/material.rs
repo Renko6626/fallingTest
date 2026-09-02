@@ -120,6 +120,10 @@ pub struct MaterialDef {
     /// 刚体可穿过（M3 spec §4，对应 Noita `liquid_sand_never_box2d`）：为真的材质
     /// 不进地形硬格掩码。缺省 false——沙默认托得住刚体（B′）。
     pub body_passable: bool,
+    /// 碎屑材质 id（M3 目检修订 2026-09-02，spec §8 原推迟项）：本材质的格被爆炸摧毁、
+    /// 或作为刚体碎片脱格成粒子时，粒子取此材质。缺省 = 自身；Static 材质应指向一种
+    /// Powder（否则碎屑落地成悬空静态格、还会变成卡住刚体的地形）。
+    pub debris_to: u8,
 }
 
 impl MaterialDef {
@@ -150,6 +154,7 @@ impl MaterialDef {
             flame_to: MAT_AIR,
             rise_chance: 255,
             body_passable: false,
+            debris_to: id,
         }
     }
 }
@@ -191,6 +196,12 @@ impl MaterialTable {
                 return Err(format!(
                     "材料 '{}'（id={}）的 decay_to={} 越界（材质数 {}）",
                     d.name, d.id, d.decay_to, defs.len()
+                ));
+            }
+            if (d.debris_to as usize) >= defs.len() {
+                return Err(format!(
+                    "材料 '{}'（id={}）的 debris_to={} 越界（材质数 {}）",
+                    d.name, d.id, d.debris_to, defs.len()
                 ));
             }
             if (d.flame_to as usize) >= defs.len() {
@@ -312,6 +323,11 @@ impl MaterialTable {
 
     pub fn body_passable(&self, id: u8) -> bool {
         self.defs[id as usize].body_passable
+    }
+
+    /// 碎屑材质（爆炸摧毁 / 刚体碎片脱格时的粒子材质）；缺省即自身。
+    pub fn debris_to(&self, id: u8) -> u8 {
+        self.defs[id as usize].debris_to
     }
 }
 

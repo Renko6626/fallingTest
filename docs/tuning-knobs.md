@@ -48,6 +48,7 @@ SyncTest 六配置 + golden 重录（预期先落后验）+ bench 对照。这�
 | `flame_to` | 材质名 | oil/wood → fire | 产火产物 | `fire_chance > 0` 必须声明 |
 | `rise_chance` | f64 → u8 ×255 | fire 0.5 / 缺省 1.0 | Gas 每 tick 尝试上浮的概率 | 越低火焰越"黏"燃料；smoke 恒升 |
 | `body_passable` | bool | 缺省 false | 为真的材质不进刚体地形硬格掩码（Noita `liquid_sand_never_box2d`） | 沙缺省托得住箱子（M3 B′） |
+| `debris_to` | 材质名 | wood → wood_debris / stone → stone_debris / 缺省自身 | 爆炸摧毁或刚体碎片脱格时粒子取此材质 | Static 材质务必指向 Powder，否则碎屑落地成悬空静态格、还会卡住刚体 |
 | `vaporize_threshold` | f64 `0.0..=1.0` → u8 ×255 | sand 0.95 / water 0.4 | 爆炸近心汽化比例：剩余能量比**严格超过**即删除、不溅射 | 缺省 1.0 = 永不汽化。sand 经三轮目检 0.7→0.9→0.95 |
 | `dispersion` | u8 `1..=8` | water 5，其余缺省 1 | 液体单 tick 横移格数（"最远可达空格"） | **B 类**：直接等于写入半径，越界破坏 P4。两道防线：加载期报错 + `rules::side` 用 `DISPERSION_MAX` clamp |
 | `splash_chance` | f64 `0.0..=1.0` → u8 ×255 | water 0.6 / sand 0.1 | 撞停时脱格成粒子的概率 | 缺省 0.0 = 永不溅射。粉末也吃这条 |
@@ -149,7 +150,7 @@ SyncTest 六配置 + golden 重录（预期先落后验）+ bench 对照。这�
 | 常量 | 现值 | 管什么 | 类别 |
 |---|---|---|---|
 | `K_DRAG` | 200.0 | 液体阻力 `F = −K_DRAG × 淹没像素数 × v`（16×12 木箱阻尼比 ≈ 0.8） | A（手感）：越大入水越快静止；太小会来回振荡 |
-| `SLEEP_LINEAR_THRESHOLD` / `SLEEP_ANGULAR_THRESHOLD` | 6 格/s / 0.3 rad/s | 刚体入睡阈值（rapier 缺省 0.05×length_unit 是米制口径） | A：太小浮体永远不睡、太大会在斜坡上"冻住" |
+| `SLEEP_LINEAR_THRESHOLD` / `SLEEP_ANGULAR_THRESHOLD` | 1 格/s / 0.3 rad/s | 刚体入睡阈值（带碰撞体的刚体角阈值由线阈值÷尺寸推导） | A：太大会把正在翻倒的箱子冻在半途；浮体靠分数淹没平滑 + 施力不唤醒才睡得着 |
 | `MIN_BODY_PIXELS` | 12 | 小于此面积的碎片脱格成粒子 | A |
 | `MAX_REEXTRACT_PER_TICK` | 2 | 每 tick 重提取限额（超限顺延） | A（性能）；队列入哈希 |
 | `TERRAIN_MARGIN` | 1 chunk | 刚体 AABB 外扩多少 chunk 生成地形碰撞 | A（性能） |

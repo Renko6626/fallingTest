@@ -354,7 +354,7 @@ impl Bodies {
                     for &i in &comp {
                         if let Some(&(x, y)) = by_idx.get(&(i as u32)) {
                             spawns.push(SpawnRequest {
-                                material: parent.material,
+                                material: table.debris_to(parent.material),
                                 x: Fx::from_int(x) + HALF_CELL,
                                 y: Fx::from_int(y) + HALF_CELL,
                                 vx: bvx,
