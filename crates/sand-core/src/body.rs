@@ -14,7 +14,7 @@
 
 use crate::cell::Cell;
 use crate::fixed::{Fx, HALF_CELL};
-use crate::geom::{rect_cover, Rect};
+use crate::geom::{components4, rect_cover, Rect};
 use crate::chunk::CHUNK;
 use crate::material::{Category, MaterialTable, MAT_AIR};
 use crate::physics::GRAVITY_CELLS_PER_S2;
@@ -62,8 +62,7 @@ impl Body {
         (self.w as f32 * 0.5, self.h as f32 * 0.5)
     }
 
-    /// 当前位图的矩形覆盖（Task 4 重提取重建碰撞形状用）。
-    #[allow(dead_code)]
+    /// 当前位图的矩形覆盖（重提取重建碰撞形状用）。
     pub(crate) fn rects(&self) -> Vec<Rect> {
         rect_cover(&self.mask, self.w as usize, self.h as usize)
     }
@@ -139,7 +138,7 @@ impl Bodies {
         let rects = rect_cover(&mask, w as usize, h as usize);
         let pivot = (w as f32 * 0.5, h as f32 * 0.5);
         let pos = (x as f32 + pivot.0, y as f32 + pivot.1);
-        let handle = phys.insert_body(&rects, pivot, table.density(material) as f32, pos, (0.0, 0.0), 0.0);
+        let handle = phys.insert_body(&rects, pivot, table.density(material) as f32, pos, 0.0, (0.0, 0.0), 0.0);
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
         self.list.push(Body {
@@ -259,6 +258,116 @@ impl Bodies {
 
             phys.apply_force_at(body.handle, (0.0, -f_up), centroid);
             phys.apply_drag(body.handle, K_DRAG * n as f32);
+        }
+    }
+
+    /// 第 7 步前半（spec §6 对账）：**含睡眠刚体**——凡清单上的格不再是
+    /// `material | BODY_FLAG`（被炸成 air、烧尽、被别的刚体抢占）即像素被毁：清位图、
+    /// 从清单剔除（否则反盖章会把别人的格写成 air）、标 dirty 入队（按 id 序保持）。
+    pub(crate) fn reconcile(&mut self, world: &World) {
+        for body in self.list.iter_mut() {
+            let before = body.stamped.len();
+            let (mask, counter, material) = (&mut body.mask, &mut body.counter, body.material);
+            body.stamped.retain(|&(x, y, idx)| {
+                let c = world.cell(x, y);
+                let alive = c.is_body() && c.material() == material;
+                if !alive {
+                    mask[idx as usize] = false;
+                    counter[idx as usize] = 0;
+                }
+                alive
+            });
+            if body.stamped.len() != before && !body.dirty {
+                body.dirty = true;
+            }
+            if body.dirty && !self.reextract_queue.contains(&body.id) {
+                self.reextract_queue.push(body.id);
+            }
+        }
+        self.reextract_queue.sort_unstable();
+    }
+
+    /// 第 7 步后半（spec §6 重提取，限额 `MAX_REEXTRACT_PER_TICK`）：位图 4 连通分量
+    /// 分解——单分量且 ≥ 阈值 ⇒ 就地换形（滞回，id 不变）；多分量 ⇒ ≥ 阈值者各成新
+    /// body（继承父变换与速度）、< 阈值者逐像素脱格成粒子；父 body 移除。
+    pub(crate) fn reextract(
+        &mut self,
+        world: &mut World,
+        table: &MaterialTable,
+        phys: &mut PhysicsWorld,
+        stamp: u8,
+        spawns: &mut Vec<SpawnRequest>,
+    ) {
+        let mut budget = MAX_REEXTRACT_PER_TICK;
+        while budget > 0 {
+            let Some(id) = self.reextract_queue.first().copied() else { break };
+            self.reextract_queue.remove(0);
+            budget -= 1;
+            let Some(pos) = self.list.iter().position(|b| b.id == id) else { continue };
+            let (w, h) = (self.list[pos].w as usize, self.list[pos].h as usize);
+            let comps = components4(&self.list[pos].mask, w, h);
+            let density = table.density(self.list[pos].material) as f32;
+            if comps.len() == 1 && comps[0].len() >= MIN_BODY_PIXELS {
+                let body = &mut self.list[pos];
+                body.dirty = false;
+                let rects = body.rects();
+                phys.replace_shape(body.handle, &rects, body.pivot(), density);
+                continue;
+            }
+            // 拆分：父 body 出列，按分量序分配新 id / 脱格
+            let parent = self.list.remove(pos);
+            let (px, py, angle) = phys.transform(parent.handle);
+            let ((vx, vy), angvel) = phys.velocity(parent.handle);
+            let (bvx, bvy) = (vel_to_fx(vx), vel_to_fx(vy));
+            let by_idx: std::collections::BTreeMap<u32, (i32, i32)> =
+                parent.stamped.iter().map(|&(x, y, idx)| (idx, (x, y))).collect();
+            let mut children: Vec<Body> = Vec::new();
+            for comp in comps {
+                if comp.len() >= MIN_BODY_PIXELS {
+                    let mut mask = vec![false; w * h];
+                    let mut counter = vec![0u8; w * h];
+                    for &i in &comp {
+                        mask[i] = true;
+                        counter[i] = parent.counter[i];
+                    }
+                    let rects = rect_cover(&mask, w, h);
+                    let handle = phys.insert_body(&rects, parent.pivot(), density, (px, py), angle, (vx, vy), angvel);
+                    let id = self.next_id;
+                    self.next_id = self.next_id.wrapping_add(1);
+                    let stamped = comp
+                        .iter()
+                        .filter_map(|&i| by_idx.get(&(i as u32)).map(|&(x, y)| (x, y, i as u32)))
+                        .collect();
+                    children.push(Body {
+                        id,
+                        material: parent.material,
+                        w: parent.w,
+                        h: parent.h,
+                        mask,
+                        counter,
+                        stamped,
+                        dirty: false,
+                        handle,
+                        last_xf: None, // 下一 tick 反盖章/盖章一次，接管格子
+                    });
+                } else {
+                    for &i in &comp {
+                        if let Some(&(x, y)) = by_idx.get(&(i as u32)) {
+                            spawns.push(SpawnRequest {
+                                material: parent.material,
+                                x: Fx::from_int(x) + HALF_CELL,
+                                y: Fx::from_int(y) + HALF_CELL,
+                                vx: bvx,
+                                vy: bvy,
+                            });
+                            world.set_cell_stamped(table, x, y, MAT_AIR, stamp);
+                        }
+                    }
+                }
+            }
+            phys.remove_body(parent.handle);
+            self.list.extend(children);
+            self.list.sort_by_key(|b| b.id);
         }
     }
 
@@ -429,6 +538,11 @@ fn stamp_body(
     let (w, h) = (body.w as i32, body.h as i32);
     let ((vx, vy), _) = phys.velocity(body.handle);
     let (bvx, bvy) = (vel_to_fx(vx), vel_to_fx(vy));
+    // 盖章格用**上一 tick 的戳**：`eval` 以 `stamp == 当前` 判"本 tick 已处理"，
+    // 若用当前戳，清醒刚体每 tick 重盖章 ⇒ 其燃烧格永远轮不到 CA 评估，燃烧只在
+    // 刚体睡着时推进（Task 4 实测：火场里的箱子烧到 103 像素后卡死）。盖章格是
+    // Static、无二次移动风险，与 setup 用 255 让 tick 0 可动是同一招。
+    let cell_stamp = stamp.wrapping_sub(1);
     let x0 = x0.max(0);
     let y0 = y0.max(0);
     let x1 = x1.min(world.width() - 1);
@@ -463,7 +577,7 @@ fn stamp_body(
                 }
                 _ => {}
             }
-            world.set_cell_stamped(table, x, y, body.material, stamp);
+            world.set_cell_stamped(table, x, y, body.material, cell_stamp);
             let c: Cell = world.cell(x, y).with_body(true).with_counter(body.counter[idx]);
             world.set_cell_raw(x, y, c);
             body.stamped.push((x, y, idx as u32));
@@ -699,6 +813,94 @@ mod tests {
         assert_eq!(rho, 16);
         let sub = bodies.list[0].stamped.iter().filter(|&&(_, y, _)| y >= 42).count();
         assert_eq!(sub, 8 * 2, "y ≥ 42 的像素 = 下半两行");
+    }
+
+    fn stamp_once(bodies: &mut Bodies, w: &mut World, t: &MaterialTable, phys: &mut PhysicsWorld) {
+        let mut spawns = Vec::new();
+        bodies.stamp_all(w, t, phys, 0, &mut spawns);
+    }
+
+    /// 炸掉中间一列 ⇒ 对账清位图、重提取拆成两个新 body（新 id、父移除、速度继承）。
+    #[test]
+    fn cut_line_splits_into_two_bodies() {
+        let (mut w, t, mut phys, mut bodies) = setup();
+        bodies.spawn_rect(&mut phys, &t, WOOD, 20, 30, 24, 16);
+        stamp_once(&mut bodies, &mut w, &t, &mut phys);
+        for y in 30..46 {
+            w.set_cell_stamped(&t, 32, y, 0, 1); // 中线被"炸"成 air
+        }
+        bodies.reconcile(&w);
+        assert!(bodies.list[0].dirty);
+        assert_eq!(bodies.reextract_queue, vec![0]);
+        let mut spawns = Vec::new();
+        bodies.reextract(&mut w, &t, &mut phys, 1, &mut spawns);
+        assert_eq!(bodies.list.len(), 2, "应拆成两块");
+        assert_eq!(bodies.list.iter().map(|b| b.id).collect::<Vec<_>>(), vec![1, 2], "新 id、父 id 0 移除");
+        let pix: Vec<usize> = bodies.list.iter().map(|b| b.mask.iter().filter(|&&m| m).count()).collect();
+        assert_eq!(pix, vec![12 * 16, 11 * 16]);
+        assert!(spawns.is_empty());
+        assert!(bodies.reextract_queue.is_empty());
+    }
+
+    /// 掉一个角（单分量仍 ≥ 阈值）⇒ 就地换形、id 不变（滞回）。
+    #[test]
+    fn corner_loss_reshapes_in_place() {
+        let (mut w, t, mut phys, mut bodies) = setup();
+        bodies.spawn_rect(&mut phys, &t, WOOD, 20, 30, 24, 16);
+        stamp_once(&mut bodies, &mut w, &t, &mut phys);
+        w.set_cell_stamped(&t, 20, 30, 0, 1);
+        w.set_cell_stamped(&t, 21, 30, 0, 1);
+        bodies.reconcile(&w);
+        let mut spawns = Vec::new();
+        bodies.reextract(&mut w, &t, &mut phys, 1, &mut spawns);
+        assert_eq!(bodies.list.len(), 1);
+        assert_eq!(bodies.list[0].id, 0, "单分量滞回：id 不变");
+        assert_eq!(bodies.list[0].mask.iter().filter(|&&m| m).count(), 384 - 2);
+        assert!(!bodies.list[0].dirty);
+    }
+
+    /// 小于阈值的碎片脱格成粒子、格置 air。
+    #[test]
+    fn small_fragment_is_ejected_as_particles() {
+        let (mut w, t, mut phys, mut bodies) = setup();
+        bodies.spawn_rect(&mut phys, &t, WOOD, 20, 30, 24, 16);
+        stamp_once(&mut bodies, &mut w, &t, &mut phys);
+        // 切下左边 2 列（2×16=32 ≥ 12 会成 body）；改切 1 列外加割断成 1×3 的小块：
+        // 把 x=21 整列炸掉，再把 x=20 列只留 y=30..32 三格
+        for y in 30..46 {
+            w.set_cell_stamped(&t, 21, y, 0, 1);
+        }
+        for y in 33..46 {
+            w.set_cell_stamped(&t, 20, y, 0, 1);
+        }
+        bodies.reconcile(&w);
+        let mut spawns = Vec::new();
+        bodies.reextract(&mut w, &t, &mut phys, 1, &mut spawns);
+        assert_eq!(spawns.len(), 3, "1×3 碎片三颗粒子");
+        assert!(spawns.iter().all(|s| s.material == WOOD));
+        assert_eq!(w.cell(20, 30).material(), 0);
+        assert_eq!(bodies.list.len(), 1, "大块留下");
+        assert_eq!(bodies.list[0].mask.iter().filter(|&&m| m).count(), 22 * 16);
+    }
+
+    /// 限额：3 个 dirty 同 tick 只处理 2 个，第 3 个顺延。
+    #[test]
+    fn reextract_respects_per_tick_budget() {
+        let (mut w, t, mut phys, mut bodies) = setup();
+        for i in 0..3 {
+            bodies.spawn_rect(&mut phys, &t, WOOD, 10 + i * 30, 30, 8, 4);
+        }
+        stamp_once(&mut bodies, &mut w, &t, &mut phys);
+        for i in 0..3 {
+            w.set_cell_stamped(&t, 10 + i * 30, 30, 0, 1);
+        }
+        bodies.reconcile(&w);
+        assert_eq!(bodies.reextract_queue, vec![0, 1, 2]);
+        let mut spawns = Vec::new();
+        bodies.reextract(&mut w, &t, &mut phys, 1, &mut spawns);
+        assert_eq!(bodies.reextract_queue, vec![2], "第 3 个顺延到下一 tick");
+        bodies.reextract(&mut w, &t, &mut phys, 2, &mut spawns);
+        assert!(bodies.reextract_queue.is_empty());
     }
 
     /// 哈希：同序操作同值；刚体动了值变。

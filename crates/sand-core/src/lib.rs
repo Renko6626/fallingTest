@@ -147,7 +147,7 @@ impl Sim {
         }
         // 3. 刚体相（M3 spec §2）：物理步进 → 变换变化者反盖章/盖章（被盖液体/粉末
         //    脱格进 spawn_queue，与 ops 的生成请求同队列、追加序即入队序）。
-        //    地形（B′ 按 chunk 缓存）与浮力（水面线阿基米德）在步进前施加；对账（Task 4）随后接线。
+        //    地形（B′ 按 chunk 缓存）与浮力（水面线阿基米德）在步进前施加。
         self.bodies.refresh_terrain(&self.world, &self.table, &mut self.physics);
         self.bodies.apply_buoyancy(&self.world, &self.table, &mut self.physics);
         self.physics.step();
@@ -165,6 +165,10 @@ impl Sim {
             self.particles.spawn(req.material, req.x, req.y, req.vx, req.vy);
         }
         particle::advance(&mut self.particles, &mut self.world, &self.table, &self.pool, stamp);
+        // 7. 刚体对账 + 限额重提取（M3 spec §6）：爆炸/燃烧毁掉的盖章格 → 位图更新 →
+        //    分量分解；碎片脱格进 spawn_queue（下一 tick 粒子相 drain）。
+        self.bodies.reconcile(&self.world);
+        self.bodies.reextract(&mut self.world, &self.table, &mut self.physics, stamp, &mut self.spawn_queue);
     }
 
     pub fn bodies(&self) -> &Bodies {

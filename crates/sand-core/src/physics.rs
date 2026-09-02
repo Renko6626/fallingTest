@@ -54,17 +54,20 @@ impl PhysicsWorld {
     /// 插入动态刚体：`rects` 是**局部**格坐标的闭区间矩形（`geom::rect_cover` 产物，
     /// 相对位图左上角），`pivot` 是局部坐标里的旋转中心（位图中心），`pos` 是
     /// pivot 的世界坐标。每个矩形 → 一个 cuboid 子形状，compound 的局部原点 = pivot。
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn insert_body(
         &mut self,
         rects: &[Rect],
         pivot: (f32, f32),
         density: f32,
         pos: (f32, f32),
+        angle: f32,
         vel: (f32, f32),
         angvel: f32,
     ) -> BodyHandle {
         let mut rb = RigidBodyBuilder::dynamic()
             .translation(Vector::new(pos.0, pos.1))
+            .rotation(angle)
             .linvel(Vector::new(vel.0, vel.1))
             .angvel(angvel)
             .build();
@@ -73,18 +76,33 @@ impl PhysicsWorld {
         rb.activation_mut().normalized_linear_threshold = SLEEP_LINEAR_THRESHOLD;
         rb.activation_mut().angular_threshold = SLEEP_ANGULAR_THRESHOLD;
         let h = self.inner.bodies.insert(rb);
-        let shapes = rects
+        let coll = ColliderBuilder::compound(Self::compound_shapes(rects, pivot)).density(density).friction(0.5).build();
+        self.inner.colliders.insert_with_parent(coll, h, &mut self.inner.bodies);
+        BodyHandle(h)
+    }
+
+    fn compound_shapes(rects: &[Rect], pivot: (f32, f32)) -> Vec<(Pose, SharedShape)> {
+        rects
             .iter()
             .map(|r| {
                 let (hx, hy) = (((r.x1 - r.x0 + 1) as f32) * 0.5, ((r.y1 - r.y0 + 1) as f32) * 0.5);
-                let cx = r.x0 as f32 + hx - pivot.0;
-                let cy = r.y0 as f32 + hy - pivot.1;
-                (Pose::translation(cx, cy), SharedShape::cuboid(hx, hy))
+                (Pose::translation(r.x0 as f32 + hx - pivot.0, r.y0 as f32 + hy - pivot.1), SharedShape::cuboid(hx, hy))
             })
-            .collect();
-        let coll = ColliderBuilder::compound(shapes).density(density).friction(0.5).build();
-        self.inner.colliders.insert_with_parent(coll, h, &mut self.inner.bodies);
-        BodyHandle(h)
+            .collect()
+    }
+
+    /// 就地换形状（重提取的单分量滞回路径，spec §6）：删旧碰撞体、装新 compound；
+    /// 变换与速度不动，质量按新面积重算。
+    pub(crate) fn replace_shape(&mut self, h: BodyHandle, rects: &[Rect], pivot: (f32, f32), density: f32) {
+        let old: Vec<ColliderHandle> = match self.inner.bodies.get(h.0) {
+            Some(rb) => rb.colliders().to_vec(),
+            None => return,
+        };
+        for ch in old {
+            self.inner.colliders.remove(ch, &mut self.inner.islands, &mut self.inner.bodies, true);
+        }
+        let coll = ColliderBuilder::compound(Self::compound_shapes(rects, pivot)).density(density).friction(0.5).build();
+        self.inner.colliders.insert_with_parent(coll, h.0, &mut self.inner.bodies);
     }
 
     pub(crate) fn remove_body(&mut self, h: BodyHandle) {
@@ -226,7 +244,7 @@ mod tests {
         let mut w = PhysicsWorld::new();
         w.set_terrain((0, 1), &floor());
         let hs = (0..3)
-            .map(|i| w.insert_body(&crate_rects(), (12.0, 8.0), 12.0, (40.0 + 30.0 * i as f32, 20.0), (0.0, 0.0), 0.0))
+            .map(|i| w.insert_body(&crate_rects(), (12.0, 8.0), 12.0, (40.0 + 30.0 * i as f32, 20.0), 0.0, (0.0, 0.0), 0.0))
             .collect();
         (w, hs)
     }

@@ -60,8 +60,6 @@ pub(crate) fn rect_cover(mask: &[bool], w: usize, h: usize) -> Vec<Rect> {
 
 /// 4 连通分量分解：返回各分量的像素索引列表（行主序 `y*w+x`），分量按其
 /// **最小索引**升序，分量内索引升序。纯整数 BFS，遍历序固定。
-/// （消费者 = Task 4 重提取，接线前定向 allow。）
-#[allow(dead_code)]
 pub(crate) fn components4(mask: &[bool], w: usize, h: usize) -> Vec<Vec<usize>> {
     debug_assert_eq!(mask.len(), w * h);
     let mut seen = vec![false; w * h];

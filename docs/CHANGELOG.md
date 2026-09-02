@@ -8,6 +8,14 @@
 ## 2026-09-02
 
 ### Added
+- **M3 Task 4：破坏对账 + 限额重提取 + 碎片脱格 + 燃烧散架**（`crates/sand-core/src/
+  {body,physics,lib}.rs`）。`reconcile`（含睡眠刚体：清单格不再是 `material|BODY_FLAG`
+  ⇒ 清位图、剔清单、入队按 id 序）、`reextract`（每 tick ≤ 2：单分量滞回就地换形
+  `replace_shape`；多分量 ≥ 12 各成新 body 继承父变换/速度、< 12 逐像素脱格粒子）。
+  两条实测教训入 spec 决策记录第 10 条：**盖章格改用上一 tick 世代戳**（否则清醒刚体的
+  燃烧格永远轮不到 CA）；实心大块燃烧前锋会断火属 M2 燃烧参数范畴，散架测试改为持续
+  火场。单测：切线拆二、掉角滞回、碎片脱格、限额顺延；行为测试：爆炸切割 1→≥2、盖章格
+  可点燃、火场里木箱 384→0 完全散架。
 - **M3 Task 3：B′ 地形缓存 + 水面线阿基米德浮沉**（`crates/sand-core/src/{body,physics,lib}.rs`、
   `docs/tuning-knobs.md` 补齐 M2 全部字段 + M3 常量）。地形：刚体 AABB 外扩 1 chunk 内按
   chunk 缓存硬格矩形（非 air/Gas/Liquid/刚体格且非 `body_passable`），dirty 才重算、
