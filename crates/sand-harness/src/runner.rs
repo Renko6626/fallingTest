@@ -138,7 +138,17 @@ pub fn synctest(
             sim.step(&ops);
         }
         let h0 = sims[0].state_hash();
+        // M3 spec §7：每 256 tick 另比对引擎 serde 快照 checksum——刚体层哈希只折
+        // 变换/速度/位图，引擎内部（接触缓存等）的分叉靠这条巡检兜底。
+        let physics_check = (tick + 1) % 256 == 0;
+        let p0 = if physics_check { sims[0].physics_checksum() } else { 0 };
         for (i, sim) in sims.iter().enumerate().skip(1) {
+            if physics_check && sim.physics_checksum() != p0 {
+                return Err(format!(
+                    "tick {tick}: 配置 {:?} 与 {:?} 引擎快照 checksum 分叉（状态哈希未分叉）",
+                    configs[i], configs[0]
+                ));
+            }
             if sim.state_hash() != h0 {
                 let (cx, cy) = hash::first_diverging_chunk(sims[0].world(), sim.world())
                     .unwrap_or((usize::MAX, usize::MAX));

@@ -66,13 +66,19 @@
    `superpowers/specs/2026-09-01-map-editor-design.md`（Status: Implemented）。场景 RON
    新增 `grid` 字段（行级 RLE + 材质名图例，加载期编译成 Fill 前缀，core 零改动）；
    `sand-harness materials --json` / `rasterize`；`tools/map-editor/`（单文件画布 +
-   Python 改完即渲服务，见其 README）。**M3 刚体：2026-09-02 用户改判——回到 M4 之前**（先把世界层
-   做完整）；`fire_oil_chain` 等场景不翻新（用户裁决）。**下一步 = M3 brainstorm。**
+   Python 改完即渲服务，见其 README）。
+3c. **M3 刚体：已完成（2026-09-02，GIF 目检待用户）**——spec
+   `superpowers/specs/2026-09-02-m3-rigid-body-design.md`（Status: Implemented）。Rapier2D
+   适配层（位级确定 + serde 快照）、body 本体（实心盖章、counter 往返、`SpawnBody`）、B′ 地形
+   缓存、水面线阿基米德浮沉、对账/限额重提取/碎片脱格/燃烧散架。`crate_yard` golden + 六配置
+   SyncTest（含引擎 checksum 巡检）；总纲 §11 第 8 条；bench 见 `perf/2026-09-02-m3-rigid-body.md`。
+   目检 GIF：`crate_yard.gif`（沙托箱 / 落台切割 / 木浮石沉满池漫出 / 火场散架）。
+   **下一步 = M4 玩家与法术（brainstorm）。**
 4. **M1 粒子层：已完成并经用户验收（2026-08-31）**（spec → Implemented，会话总账 `sessions/2026-08-30-m1-particle-layer.md`）：
    脱格/落格闭环、DDA、`Op::Emit`/`Op::Explode`（Noita 射线模型 + 近心汽化 + 密度冲量 + 方向涨落）、容量限流；验收 §0
    五项全过（GIF 目检经用户四轮迭代后确认）。后续爆炸手感收口 + `world.rs` 拆分 `explode.rs`/`emit.rs` 见 CHANGELOG
    2026-08-30 块（commits `66cea0a`..`33ab3da`）。
-5. M3 刚体 → M5 时启用 O4 运行时周期哈希（详见总纲 §11 与相关提案）。
+5. M4 玩家与法术 → M5 联机（届时启用 O4 运行时周期哈希）→ M6 rollback 决策门（物理快照-重模拟 SyncTest）。
 
 ## 目录分工
 

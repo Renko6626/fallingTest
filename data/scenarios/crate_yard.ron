@@ -1,0 +1,34 @@
+// M3 主验收场景（spec §0/§9）：256×192、2 万 tick。
+// 木箱×3（沙堆上 / 空中落墙 / 落进满池）、石箱×1（落池沉底）、定时爆炸切箱、定时点火烧箱。
+// 看点：落地堆叠、沙托箱（B′）、木浮石沉、满池漫出、切割、燃烧散架。
+Scenario(
+    name: "crate_yard",
+    world: (4, 3),
+    seed: 20260902,
+    ticks: 20000,
+    setup: [
+        // 地板与侧壁
+        Fill(material: "wall", x0: 0, y0: 180, x1: 255, y1: 191),
+        Fill(material: "wall", x0: 0, y0: 60, x1: 1, y1: 179),
+        Fill(material: "wall", x0: 254, y0: 60, x1: 255, y1: 179),
+        // 左：沙堆（B′ 托箱）
+        Fill(material: "sand", x0: 8, y0: 150, x1: 70, y1: 179),
+        // 中：石台，木箱从空中落上去
+        Fill(material: "wall", x0: 100, y0: 160, x1: 140, y1: 179),
+        // 右：满池水塘（壁到 y=120，水灌到壁顶），木箱浮、石箱沉、入箱即漫
+        Fill(material: "wall", x0: 170, y0: 120, x1: 173, y1: 179),
+        Fill(material: "wall", x0: 246, y0: 120, x1: 249, y1: 179),
+        Fill(material: "water", x0: 174, y0: 120, x1: 245, y1: 179),
+        // 刚体
+        SpawnBody(material: "wood",  x: 30,  y: 90,  w: 24, h: 16),  // → 沙堆
+        SpawnBody(material: "wood",  x: 108, y: 40,  w: 24, h: 16),  // → 石台（后被爆炸切割）
+        SpawnBody(material: "wood",  x: 185, y: 40,  w: 20, h: 14),  // → 水塘，浮
+        SpawnBody(material: "stone", x: 218, y: 40,  w: 16, h: 12),  // → 水塘，沉
+    ],
+    script: [
+        // 石台上的木箱落定后被爆炸切成两块
+        At(tick: 400, op: Explode(x: 120, y: 152, r: 10, power: 400)),
+        // 沙堆上的木箱被点燃：箱顶上方一排火，之后每 90 tick 补火（火场）
+        Every(from: 900, until: 3600, step: 90, op: Fill(material: "fire", x0: 32, y0: 133, x1: 52, y1: 133)),
+    ],
+)

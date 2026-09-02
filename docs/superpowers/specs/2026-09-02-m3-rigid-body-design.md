@@ -3,7 +3,7 @@
 > 文档路径：`docs/superpowers/specs/2026-09-02-m3-rigid-body-design.md`
 > 运行时版本：Rust（内核）+ Rapier2D（引擎，关在 `sand-core::physics` 内）
 > 最近更新：2026-09-02 (UTC+8)
-> **Status**: Proposed（brainstorm 经用户逐项裁决，待实施）
+> **Status**: Implemented（2026-09-02 五 Task 落地；GIF 目检待用户——`crate_yard.gif`）
 > 上游：`docs/overview/kernel-charter.md` §5（刚体住核心内、同步态、全 lockstep）、§11 翻案 1、里程碑 M3；`docs/overview/program-architecture.md` §3 `stamp` / `physics-adapter`、§4 tick 管线第 3/7 步
 > 调研：`docs/reference/noita-deep-dive.md` §1.5/§4.2（FSS 管线、逐像素浮力涌现）、`docs/reference/noita-material-schema.md` §3.3；wiki 一手核查见 §1.2
 
@@ -17,7 +17,7 @@
 | 2 | `body` 本体：位图、盖章/反盖章（含 counter 往返）、`Op::SpawnBody`、哈希入 `state_hash` | ✅ 2026-09-02 |
 | 3 | 地形碰撞（B′：刚体附近 chunk 缓存的硬格矩形）+ 浮沉（水面线采样阿基米德） | ✅ 2026-09-02 |
 | 4 | 破坏对账 + 限额重提取 + 碎片脱格；燃烧散架端到端 | ✅ 2026-09-02 |
-| 5 | 收口：`crate_yard` golden/SyncTest、快照往返、bench、总纲 §11、GIF 目检 | ⬜ |
+| 5 | 收口：`crate_yard` golden/SyncTest、快照往返、bench、总纲 §11、GIF 目检 | ✅ 2026-09-02（目检待用户） |
 
 ---
 

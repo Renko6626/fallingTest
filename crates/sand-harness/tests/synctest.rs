@@ -44,3 +44,14 @@ fn fire_oil_chain_six_configs_zero_divergence() {
     runner::synctest(&sc, &table, &reactions, 4, sc.ticks)
         .unwrap_or_else(|e| panic!("fire_oil_chain 六配置 SyncTest 分叉：{e}"));
 }
+
+/// M3 刚体版本（Task 5）：Rapier 步进 + 盖章/对账在六配置下的确定性；`runner::synctest`
+/// 同时每 256 tick 比对引擎 serde 快照 checksum（spec §7，M6 决策门预演）。
+#[test]
+fn crate_yard_six_configs_zero_divergence() {
+    let (table, _materials_fp) = load_materials(&repo_path("data/materials.ron")).unwrap();
+    let (reactions, _fp) = load_reactions(&repo_path("data/reactions.ron"), &table).unwrap();
+    let sc = load_scenario(&repo_path("data/scenarios/crate_yard.ron"), &table).unwrap();
+    runner::synctest(&sc, &table, &reactions, 4, sc.ticks)
+        .unwrap_or_else(|e| panic!("crate_yard 六配置 SyncTest 分叉：{e}"));
+}

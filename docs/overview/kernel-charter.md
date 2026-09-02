@@ -81,8 +81,8 @@
 
 - 归属：刚体是同步态的一部分，且与 CA 每 tick 双向耦合，**必须住在核心内**。
 - Godot 内建物理**禁止参与逻辑**（不承诺确定性、不可快照、不可手动步进）；纯表现层的碎屑、尸块可用 Godot RigidBody2D，由 Channel B 事件驱动，两端各玩各的。
-- 管线：像素体 → marching squares 提轮廓 → 折线简化 → 三角化 → 物理 body；每 tick 按 body id 序把像素**盖章回网格**，CA 对其一视同仁（液体绕流、浮力 = 淹没像素计数、爆炸直接删像素）；位图变化经滞回后重提取 collider，不逐帧重建。
-- 引擎选型为待决项（判据见 §11）：lockstep 阶段 Box2D v3 与 Rapier（enhanced-determinism）皆可；进 rollback 前以"快照-恢复-重模拟逐 bit 一致"的 SyncTest 判生死——回滚要求恢复后重算与对端直跑收敛到同一状态，因此快照必须覆盖求解器内部缓存。判负则切 Rapier 的 serde 全状态快照，或自研迷你定点求解器（场景 body 为数十量级，自研可行）。
+- 管线：像素体 → 位图行程矩形覆盖 → compound 碰撞体（marching squares/三角化留待 bench 证明必要，§11 第 8 条 ②）；每 tick 按 body id 序把像素**实心盖章回网格**，CA 对其一视同仁（液体绕流、可燃、浮力 = 水面线采样的淹没像素计数、爆炸直接删像素）；位图变化经滞回后重提取 collider，不逐帧重建。
+- 引擎选型**已定 Rapier2D**（2026-09-02，§11 实施期决策第 8 条；`enhanced-determinism` + `serde-serialize`，Box2D v3 因无快照恢复出局）。进 rollback 前仍以"快照-恢复-重模拟逐 bit 一致"的 SyncTest 判生死（M3 已验引擎侧往返恒等，M6 扩到全状态）；判负备胎 = 自研迷你定点求解器（场景 body 为数十量级，自研可行）。
 
 ## 6. 确定性纪律法典（全项目禁令）
 
@@ -104,7 +104,7 @@
 - **Rust**：AOT 同二进制消除 JIT 按 CPU 生成不同机器码的分歧源；借用检查把"相内读写集不相交"编码进类型系统；确定性生态齐全。
 - **Godot 4 + gdext**：表现层宿主，复用 STG 引擎已验证的桥模式与三通道边界。
 - **GGRS**：lockstep/rollback 会话管理，SyncTestSession 是确定性执法的核心工具。
-- **Box2D v3 / Rapier**：二选一，判据见 §5、§11。
+- **Rapier2D**（已定，2026-09-02）：纯 Rust、位级确定、serde 全状态快照；判据见 §5、§11 第 8 条。
 - **fixed / libm / FxHash / rayon（有界并行）/ xxHash**：数值、哈希与并行基建。
 - **matchbox 或自建 VPS relay**：开发期联机；Steam GNS + SDR 为发行期期权。
 
@@ -241,9 +241,40 @@
    （堵 `pub u32` 缺口），`cell-u64` feature 仅供对照测量、绝不进产品构建（体例同
    `zero-gravity`）；成本数字入 `docs/perf/2026-08-31-m2-reactions-and-fire.md`。
 
+**实施期决策（2026-09-02，M3 刚体）**：
+
+8. **M3 刚体落地：tick 管线第 3/7 步从占位变生效，引擎选型 Rapier2D**（2026-09-02，
+   `docs/superpowers/specs/2026-09-02-m3-rigid-body-design.md`）。外部可观测阶段顺序仍是架构 §4
+   原文（ops → 刚体 → 网格四相 → 粒子 → 对账 → 封帧），按 M1 粒子相入管线的先例（第 1 条）
+   记为协议版本变更；`state_hash` 由两层 `combine` 变三层 `combine3`（网格 / 粒子 / 刚体），
+   既有 golden 在 `--grid-only` 网格哈希流逐位一致取证后全部重录。要点：
+
+   ① **引擎 = Rapier2D 0.35**（`enhanced-determinism` + `serde-serialize`，不开 parallel/simd）——
+   IEEE-754 平台位级确定、整体 serde 快照；Box2D v3 无快照恢复且拖 C 工具链，自研定点刚体留作
+   备胎。`physics` 适配层红线：单线程、dt 1/60、建/删/施力/查询按 body id 序、浮点只在模块内。
+   SyncTest 每 256 tick 另比对引擎快照 checksum（M6 rollback 决策门预演）；快照恢复续跑逐位相同已验。
+
+   ② **地形 B′（用户裁决，wiki 查证）**：沙托得住刚体——非 air/Gas/Liquid、非刚体自身格且
+   非 `body_passable` 的格都是硬地形；碰撞体只在刚体 AABB 外扩 1 chunk 内按 chunk 缓存，
+   dirty 才重算、**矩形没变不碰引擎**（删重建静态碰撞体会重置接触、唤醒刚体，与盖章标脏
+   形成死循环）。几何走位图行程矩形覆盖，未上 marching squares/DP/耳切（bench 未证必要）。
+
+   ③ **刚体像素照常参与 CA**（Noita：`[box2d]` 木材全部可燃，像素毁即重算形状）：bit 23
+   `BODY_FLAG` 只做所有权标记；燃烧进度随刚体位图（per-pixel counter）在反盖章/盖章间往返；
+   盖章格用**上一 tick 世代戳**，否则清醒刚体的燃烧格永远轮不到 CA。爆炸/燃烧毁掉的像素
+   → 第 7 步对账 → 限额（2/tick）重提取：单分量滞回、多分量拆分继承速度、< 12 像素脱格粒子。
+
+   ④ **浮沉 = 采样式阿基米德**（用户二次裁决，撤回同日"Noita 逐像素反作用"之议）：`density`
+   单字段复用为 Static 材质的刚体密度（Noita 的 `density` 只定义给液体/沙，CA 里 Static 从不
+   比密度、此前无消费者），水面线只采箱子两侧邻列（箱顶溅水会污染采样），`F = n_sub × ρ_liq × g`
+   施于淹没质心；排开的液体脱格成粒子 ⇒ 满池入箱即漫出、水量守恒。木箱平衡淹没 ≈ 75% = 12/16。
+
+   ⑤ **已知限制**：实心大块的燃烧前锋会断火（M2 燃烧参数范畴，薄木构自持烧净）；漂浮刚体的
+   睡眠靠放宽后的阈值（6 格/s）；刚体 ↔ 粒子不碰撞（粒子按 DDA 查网格，盖章格即 Static）。
+
 **待决（附判据与时点）**：
 
-- 刚体引擎：M6 前，以快照-重模拟 SyncTest 判定。
+- 刚体引擎：**已定 Rapier2D**（2026-09-02，实施期决策第 8 条）；M6 前以快照-重模拟 SyncTest 复核。
 - rollback 是否启用：M6，按实测手感需求 vs 工程成本。
 - NAT / 发行通道：随发行决策定，不阻塞内核。
 - 模拟分辨率终值：M4 后按美术风格与性能实测定。

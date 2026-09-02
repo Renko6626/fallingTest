@@ -8,6 +8,13 @@
 ## 2026-09-02
 
 ### Added
+- **M3 Task 5 收口**：`data/scenarios/crate_yard.ron`（沙托箱 / 落台切割 / 木浮石沉满池漫出 /
+  火场散架）golden 新录 + 六配置 2 万 tick SyncTest（`runner::synctest` 每 256 tick 另比对引擎
+  serde 快照 checksum）；`Sim::physics_snapshot/restore_physics` + 行为测试"恢复后续跑与孪生
+  实例逐位相同"（验收 4）；总纲 §5/§8/§11（实施期决策第 8 条：管线第 3/7 步生效、Rapier2D
+  选型、B′、刚体可燃、阿基米德、已知限制）、架构 §3 两行、README 优先队列翻页 M4、spec →
+  Implemented；bench 见 `docs/perf/2026-09-02-m3-rigid-body.md`；会话总账
+  `docs/sessions/2026-09-02-m3-rigid-body.md`。目检 GIF `crate_yard.gif`（未入库）。
 - **M3 Task 4：破坏对账 + 限额重提取 + 碎片脱格 + 燃烧散架**（`crates/sand-core/src/
   {body,physics,lib}.rs`）。`reconcile`（含睡眠刚体：清单格不再是 `material|BODY_FLAG`
   ⇒ 清位图、剔清单、入队按 id 序）、`reextract`（每 tick ≤ 2：单分量滞回就地换形

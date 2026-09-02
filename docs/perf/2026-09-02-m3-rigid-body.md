@@ -1,0 +1,45 @@
+# M3（刚体）性能对照
+
+> 文档路径：`docs/perf/2026-09-02-m3-rigid-body.md`
+> 运行时版本：Rust（sand-core + sand-harness，rapier2d 0.35.3 enhanced-determinism）
+> 最近更新：2026-09-02 (UTC+8)
+> **Status**: Implemented
+
+对照 M3 spec §0 验收第 6 项。before 侧 = `c2ba933`（M3 动工前收口点）。
+
+## 结论先说
+
+1. **无刚体场景无回退**：第 3 步（空引擎步进 + 空刚体表）与第 7 步（空对账）在刚体层为空时
+   近零成本——`acceptance` 1T/8T 反而 −16%/−14%、`mixed` 8T −15%，`sparse` ±3%，方向不一致
+   即本机噪声形状（判读纪律同 Layer G Task 3）。没有任何格子显示一致的正向回退。
+2. **`crate_yard`（M3 主验收场景，256×192，4 刚体 + 爆炸切割 + 火场散架）：≈ 1.05 ms/tick**
+   （前 5000 tick 均值，含 tick 400 爆炸与 900–3600 持续火场），1T 与 8T 几乎相同——刚体相是
+   串行阶段，成本主要在盖章/对账/地形重建与 CA 燃烧，不在并行网格。
+3. `enhanced-determinism` 关掉 SIMD 后引擎本身的成本在数十刚体量级下不可见（总纲 §7 "物理
+   数十 body < 0.2ms" 预算内）。
+
+## 环境与口径
+
+照 `docs/perf/2026-08-31-m2-reactions-and-fire.md`：Xeon Gold 6330 共享服务器、release、
+`hashrun` stderr `avg`、3 次冷启动中位、两侧逐次交替、`--scan live`。场景 tick：
+`mixed` 1500、`sparse` 2000、`acceptance` 5000、`crate_yard` 5000。
+
+## 数据（ms/tick，3 次中位）
+
+| 场景 | 线程 | before | after | Δ |
+|---|---|---|---|---|
+| acceptance | 1 | 1.231 | 1.033 | −16.1% |
+| acceptance | 8 | 0.801 | 0.689 | −14.0% |
+| mixed | 1 | 0.423 | 0.447 | +5.7% |
+| mixed | 8 | 0.534 | 0.453 | −15.2% |
+| sparse | 1 | 0.291 | 0.299 | +2.7% |
+| sparse | 8 | 0.198 | 0.195 | −1.5% |
+| crate_yard | 1 | — | 1.066 | — |
+| crate_yard | 8 | — | 1.050 | — |
+
+## 未量的项（留待需要时）
+
+- 刚体数上探（`MAX_BODIES = 256` 全活跃）：对账是 O(总盖章格) / tick，256 × 384 ≈ 10 万格读；
+  若成为瓶颈，第一杠杆是只对账所在 chunk 本 tick 有写入的刚体。
+- 地形矩形数：`rect_cover` 对粗糙沙面每 chunk 产出数十矩形，仅刚体附近 chunk 才生成；
+  marching squares/DP 的必要性等这里出数字再议（spec 决策记录第 7 条）。

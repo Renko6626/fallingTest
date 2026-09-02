@@ -211,8 +211,6 @@ impl PhysicsWorld {
         bincode::serialize(&self.inner).expect("rapier PhysicsWorld 序列化不应失败")
     }
 
-    /// （消费者 = Task 5 快照往返，接线前定向 allow。）
-    #[allow(dead_code)]
     pub(crate) fn restore(&mut self, bytes: &[u8]) -> Result<(), String> {
         let mut w: rapier2d::pipeline::PhysicsWorld =
             bincode::deserialize(bytes).map_err(|e| format!("物理快照反序列化失败：{e}"))?;

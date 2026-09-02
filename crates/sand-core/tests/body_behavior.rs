@@ -338,3 +338,32 @@ fn burning_crate_shrinks_and_collapses() {
     assert_eq!(last, 0, "持续火场里的木箱应完全散架：{initial} → {last}");
     assert!(s.bodies().is_empty());
 }
+
+// ==================== Task 5：快照往返（验收 4）====================
+
+/// `snapshot → restore → 继续 N tick` 与不恢复的孪生实例逐 tick `state_hash` 与引擎
+/// checksum 逐位相同——恢复是无损的（M6 rollback 决策门的引擎侧前提）。
+#[test]
+fn physics_snapshot_restore_is_lossless() {
+    let mut a = body_sim(37, 1);
+    let mut b = body_sim(37, 1);
+    let setup = [
+        floor(128, 128),
+        Op::SpawnBody { material: WOOD, x: 20, y: 40, w: 24, h: 16 },
+        Op::SpawnBody { material: STONE, x: 70, y: 20, w: 12, h: 12 },
+    ];
+    a.apply_setup(&setup);
+    b.apply_setup(&setup);
+    for _ in 0..150 {
+        a.step(&[]);
+        b.step(&[]);
+    }
+    let snap = a.physics_snapshot();
+    a.restore_physics(&snap).unwrap();
+    for t in 0..300 {
+        a.step(&[]);
+        b.step(&[]);
+        assert_eq!(a.state_hash(), b.state_hash(), "tick {t}：恢复后状态哈希分叉");
+        assert_eq!(a.physics_checksum(), b.physics_checksum(), "tick {t}：恢复后引擎快照分叉");
+    }
+}

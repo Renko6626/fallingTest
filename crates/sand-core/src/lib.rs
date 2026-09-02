@@ -180,6 +180,17 @@ impl Sim {
         self.physics.checksum()
     }
 
+    /// 引擎整体快照（serde/bincode，M3 spec §7；M6 rollback 决策门的依据）。
+    pub fn physics_snapshot(&self) -> Vec<u8> {
+        self.physics.snapshot()
+    }
+
+    /// 从快照恢复引擎。M3 只验"恢复后续跑与不恢复逐位相同"（验收 4）；网格/粒子/
+    /// 刚体位图的快照是 M6 的事。
+    pub fn restore_physics(&mut self, bytes: &[u8]) -> Result<(), String> {
+        self.physics.restore(bytes)
+    }
+
     pub fn tick(&self) -> u64 {
         self.world.tick
     }

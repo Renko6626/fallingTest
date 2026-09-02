@@ -59,3 +59,9 @@ fn golden_fire_oil_chain() {
     // M2 主验收场景（spec §0）：反应 + 燃烧 + 气体全链条的 golden 回归。
     check("data/scenarios/fire_oil_chain.ron", "crates/sand-harness/tests/golden/fire_oil_chain.golden");
 }
+
+#[test]
+fn golden_crate_yard() {
+    // M3 主验收场景（spec §0）：刚体落地/沙托/浮沉/切割/燃烧散架的 golden 回归。
+    check("data/scenarios/crate_yard.ron", "crates/sand-harness/tests/golden/crate_yard.golden");
+}

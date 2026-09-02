@@ -76,8 +76,8 @@ workspace/
 | scheduler | `step(state, inputs)`：按 §4 规范管线驱动各模块，管理 rayon 有界线程池 | 确认输入 | 调用序即时序契约 |
 | grid（Layer G） | 四相棋盘 push、材料规则（含气体上浮/扩散）、反应表结算、燃烧与破坏 | cells、材料/反应表、hash-RNG | cells、脏矩形、粒子生成队列、Channel B 事件 |
 | particles（Layer P） | 弹道积分（并行）+ 落格提交（串行按 id）、法术弹体 payload | cells（DDA 碰撞查询）、生成队列、hash-RNG | cells（落格/爆炸写入）、物理冲量队列、Channel B 事件 |
-| stamp | 像素刚体管线：位图↔网格盖章、浮力采样、破坏对账、marching squares → 简化 → 三角化重提取（滞回+每 tick 限额） | cells、body 变换、body 位图 | cells（盖章/反盖章）、物理力队列、collider 重建请求 |
-| physics-adapter | 物理引擎适配层（trait 隔离 Box2D v3 / Rapier 待决项）：固定 dt 步进、按调用序建删 body、只读查询、（rollback 期）快照/恢复 | 冲量与力队列 | body 变换、接触事件（定序） |
+| stamp | 像素刚体管线（`sand-core::body`，2026-09-02 落地）：位图↔网格实心光栅化盖章/反盖章（counter 往返）、水面线浮力采样、破坏对账、4 连通分量重提取（滞回 + 每 tick 限额 2）；几何走行程矩形覆盖 | cells、body 变换、body 位图 | cells（盖章/反盖章、碎片脱格粒子）、物理力、collider 重建 |
+| physics-adapter | 物理引擎适配层（`sand-core::physics`，**已定 Rapier2D 0.35**，2026-09-02）：固定 dt 步进、按 body id 序建删/施力/查询、serde 快照/恢复；rapier 类型不出模块 | 浮力/阻力（整数计数 × 常量）、地形矩形 | body 变换（f32，边界唯一出口） |
 | entities & spells | 玩家运动学控制器（自研定点，采样网格碰撞，不用物理引擎 body）、法术实例与状态效果、loadout 实例化 | 确认输入、cells、法术表 | 玩家状态、粒子生成队列、物理冲量队列、Channel B 事件 |
 | rng | `hash(tick, x, y, salt, stream)` 纯函数族 | — | —（无状态，人人可读） |
 | events | Channel B 缓冲：事件带 (tick, 序号) 唯一 id，供桥侧去重（为 rollback 重放预留） | 各模块投递 | 每 tick 封帧，只出不回 |
