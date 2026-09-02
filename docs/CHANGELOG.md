@@ -7,6 +7,15 @@
 
 ## 2026-09-02
 
+### Added
+- **M3 刚体 spec**（`docs/superpowers/specs/2026-09-02-m3-rigid-body-design.md`，Status: Proposed）。
+  brainstorm 六项用户裁决：刚体来源 C（矩形起步、管线通用）、地形 B′（沙托得住刚体，
+  碰撞几何只在刚体附近按 chunk 缓存）、小碎片脱格成粒子、**Rapier2D**（enhanced-determinism
+  + serde 快照；Box2D v3 无快照恢复且拖 C 工具链）、**刚体可燃**（像素照常参与 CA、烧掉即
+  对账重算，燃烧进度随刚体位图走）、**浮沉走 Noita 逐像素反作用**（`density` 单字段复用为
+  刚体密度，不写阿基米德）。wiki 一手核查：`liquid_sand_never_box2d` 是关闭开关（沙默认托
+  刚体）、`density` 只定义给液体/沙、`[box2d]` 木材全部可燃。
+
 ### Changed
 - **用户签收**：M2 反应表与燃烧（spec §0 第 6 项 GIF 目检 ✅）、地图编辑器支线（端到端 ✅）。
   两份 spec Status 行与 README 优先队列同步。
