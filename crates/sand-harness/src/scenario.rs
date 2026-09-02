@@ -9,7 +9,7 @@ use xxhash_rust::xxh3::{xxh3_64, Xxh3};
 
 use sand_core::{
     Category, Fx, MaterialDef, MaterialTable, Op, ReactionRule, ReactionTable, DISPERSION_MAX,
-    MAX_EMIT_JITTER_RAW,
+    MAX_EMIT_JITTER_RAW, MIN_BODY_PIXELS,
 };
 
 /// `MatSpec::hp` 的 serde 缺省值（原 `blast_cost`，M2 spec §2.2："RON 缺省 1"）。
@@ -129,6 +129,9 @@ struct MatSpec {
     /// 缺省 1.0 = 恒上浮 = 改动前行为。仅 Gas 消费。
     #[serde(default = "default_rise_chance")]
     rise_chance: f64,
+    /// 刚体可穿过（M3 spec §4，Noita `liquid_sand_never_box2d`）：缺省 false。
+    #[serde(default)]
+    body_passable: bool,
 }
 
 #[derive(Deserialize)]
@@ -251,6 +254,7 @@ pub fn load_materials(path: &str) -> Result<(MaterialTable, u64), String> {
                 rise_chance: quantize_rise_chance(m.rise_chance).map_err(|e| {
                     format!("材料 '{}'（id={}）的 rise_chance 非法：{e}", m.name, m.id)
                 })?,
+                body_passable: m.body_passable,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -646,6 +650,9 @@ pub enum OpSpec {
         #[serde(default = "default_max_durability")]
         max_durability: u8,
     },
+    /// `Op::SpawnBody` 的 RON 表面形式（M3 spec §8）：左上角格坐标 + 尺寸。
+    /// 加载期契约：材质 Static、面积 ≥ `MIN_BODY_PIXELS`。
+    SpawnBody { material: String, x: i32, y: i32, w: u16, h: u16 },
 }
 
 /// 场景 RON 里的十进制小数 → Q16.16 定点（`Fx`），**round**（非截断）语义：
@@ -768,6 +775,19 @@ fn resolve_op(spec: &OpSpec, table: &MaterialTable) -> Result<Op, String> {
                 ));
             }
             Op::Explode { x: *x, y: *y, r: *r, power: *power, max_durability: *max_durability }
+        }
+        OpSpec::SpawnBody { material, x, y, w, h } => {
+            let mid = id(material)?;
+            if table.category(mid) != Category::Static {
+                return Err(format!("SpawnBody 材质 '{material}' 必须是 Static 类别（M3 spec §3 契约）"));
+            }
+            if (*w as usize) * (*h as usize) < MIN_BODY_PIXELS {
+                return Err(format!(
+                    "SpawnBody 面积 {}×{} < MIN_BODY_PIXELS={MIN_BODY_PIXELS}",
+                    w, h
+                ));
+            }
+            Op::SpawnBody { material: mid, x: *x, y: *y, w: *w, h: *h }
         }
     })
 }
@@ -1388,6 +1408,23 @@ mod tests {
             ref other => panic!("期望 Op::Emit，实际 {other:?}"),
         };
         assert_ne!(vx_of(&sc_a), vx_of(&sc_b));
+    }
+
+    // ==================== SpawnBody（M3 spec §8）====================
+
+    #[test]
+    fn resolve_op_spawn_body_requires_static_and_min_area() {
+        let t = table_with_water();
+        let ok = resolve_op(&OpSpec::SpawnBody { material: "wall".into(), x: 10, y: 20, w: 8, h: 4 }, &t).unwrap();
+        assert!(matches!(ok, Op::SpawnBody { material: 1, x: 10, y: 20, w: 8, h: 4 }));
+        assert!(
+            resolve_op(&OpSpec::SpawnBody { material: "water".into(), x: 0, y: 0, w: 8, h: 4 }, &t).is_err(),
+            "液体不能当刚体材质"
+        );
+        assert!(
+            resolve_op(&OpSpec::SpawnBody { material: "wall".into(), x: 0, y: 0, w: 3, h: 3 }, &t).is_err(),
+            "面积 9 < MIN_BODY_PIXELS 必须拒绝"
+        );
     }
 
     // ==================== grid：RLE + 图例（地图编辑器 spec §3/§7）====================

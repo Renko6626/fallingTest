@@ -11,6 +11,7 @@
 //!   一部分（architecture §4），改顺序必须过 charter §11 决策日志。
 //! - 网格逻辑纯整数；一切逻辑随机 = hash(tick, x, y, salt, stream) 纯函数族。
 
+pub mod body;
 pub mod cell;
 pub mod chunk;
 mod dda;
@@ -29,6 +30,7 @@ pub mod scheduler;
 mod window;
 pub mod world;
 
+pub use body::{Bodies, Body, MAX_BODIES, MAX_REEXTRACT_PER_TICK, MIN_BODY_PIXELS};
 pub use cell::{Cell, G_ACCEL, VEL_ONE, V_MAX_CELL};
 pub use emit::MAX_EMIT_JITTER_RAW;
 pub use fixed::Fx;
@@ -72,6 +74,9 @@ pub struct Sim {
     scan: ScanMode,
     particles: Particles,
     spawn_queue: Vec<world::SpawnRequest>,
+    /// M3 刚体层：同步态本体 + 引擎世界（spec §2）。
+    bodies: Bodies,
+    physics: physics::PhysicsWorld,
 }
 
 /// setup 期世代戳：≠ tick 0 的戳（0），保证 setup 内容从 tick 0 起可动（spec §4.4）。
@@ -93,7 +98,19 @@ impl Sim {
             scan: cfg.scan,
             particles: Particles::new(),
             spawn_queue: Vec::new(),
+            bodies: Bodies::new(),
+            physics: physics::PhysicsWorld::new(),
         })
+    }
+
+    /// 应用一个输入 op（第 1 步）：`Op::SpawnBody` 路由到刚体层，其余交给 `World`。
+    fn apply_one(&mut self, op: &Op, stamp: u8, fseed: u32, op_idx: usize) {
+        match *op {
+            Op::SpawnBody { material, x, y, w, h } => {
+                self.bodies.spawn_rect(&mut self.physics, &self.table, material, x, y, w, h);
+            }
+            _ => self.world.apply_op(&self.table, op, stamp, fseed, op_idx, &mut self.spawn_queue),
+        }
     }
 
     /// 压入一个粒子生成请求，本 tick `step()` 开头按入队序 drain（M1 spec §4）。
@@ -115,13 +132,26 @@ impl Sim {
         assert_eq!(self.world.tick, 0, "setup 只允许在首个 step 之前");
         let fseed = rng::frame_seed(self.world.seed, self.world.tick);
         for (op_idx, op) in ops.iter().enumerate() {
-            self.world.apply_op(&self.table, op, SETUP_STAMP, fseed, op_idx, &mut self.spawn_queue);
+            self.apply_one(op, SETUP_STAMP, fseed, op_idx);
         }
     }
 
     pub fn step(&mut self, ops: &[Op]) {
         let tick = self.world.tick;
-        scheduler::step(&mut self.world, &self.table, &self.reactions, &self.pool, self.scan, ops, &mut self.spawn_queue);
+        let stamp = (tick % 256) as u8;
+        let fseed = rng::frame_seed(self.world.seed, tick);
+        // 1. 输入应用（M3 起从 scheduler::step 纯搬移到此；enumerate 下标 = op 序号，
+        //    折进 Op::Emit/Explode 的抖动 salt，区分同 tick 内多个同类 op）。
+        for (op_idx, op) in ops.iter().enumerate() {
+            self.apply_one(op, stamp, fseed, op_idx);
+        }
+        // 3. 刚体相（M3 spec §2）：物理步进 → 变换变化者反盖章/盖章（被盖液体/粉末
+        //    脱格进 spawn_queue，与 ops 的生成请求同队列、追加序即入队序）。
+        //    浮力/地形（Task 3）与对账（Task 4）随后接线。
+        self.physics.step();
+        self.bodies.stamp_all(&mut self.world, &self.table, &mut self.physics, stamp, &mut self.spawn_queue);
+        // 2. 网格四相 + 封帧
+        scheduler::step(&mut self.world, &self.table, &self.reactions, &self.pool, self.scan, &mut self.spawn_queue);
 
         // 粒子相（M1 spec §4 第 3 步）：a. 生成（drain 入队序 + 容量拒绝，
         // Particles::spawn 内置）——队列此刻已包含测试代码经 queue_spawn
@@ -132,8 +162,16 @@ impl Sim {
         for req in self.spawn_queue.drain(..) {
             self.particles.spawn(req.material, req.x, req.y, req.vx, req.vy);
         }
-        let stamp = (tick % 256) as u8;
         particle::advance(&mut self.particles, &mut self.world, &self.table, &self.pool, stamp);
+    }
+
+    pub fn bodies(&self) -> &Bodies {
+        &self.bodies
+    }
+
+    /// 引擎快照 checksum（SyncTest 巡检，M3 spec §7）。
+    pub fn physics_checksum(&self) -> u64 {
+        self.physics.checksum()
     }
 
     pub fn tick(&self) -> u64 {
@@ -146,9 +184,9 @@ impl Sim {
         hash::state_hash(&self.world)
     }
 
-    /// 总哈希 = `combine(网格哈希树根, 粒子层哈希)`（spec §9）。
+    /// 总哈希 = `combine3(网格哈希树根, 粒子层, 刚体层)`（M1 spec §9 + M3 spec §7）。
     pub fn state_hash(&self) -> u64 {
-        hash::combine(self.grid_hash(), self.particles.hash_into())
+        hash::combine3(self.grid_hash(), self.particles.hash_into(), self.bodies.hash_into(&self.physics))
     }
 
     pub fn world(&self) -> &World {

@@ -8,6 +8,15 @@
 ## 2026-09-02
 
 ### Added
+- **M3 Task 2：body 本体、盖章/反盖章、`Op::SpawnBody`、刚体层入哈希**（新增
+  `crates/sand-core/src/body.rs`；改 `cell.rs`[bit 23 `BODY_FLAG`]、`world.rs`[`SpawnBody`、
+  `set_cell_raw`]、`hash.rs`[`combine3`]、`lib.rs`[Sim 持 `Bodies`+`PhysicsWorld`，ops 循环
+  自 `scheduler::step` 纯搬移]、`material.rs`/`scenario.rs`[`body_passable`]、
+  `data/materials.ron`[wood density 12、新增 stone]）。实心光栅化逆映射盖章（45° 无洞单测）、
+  反盖章读回 counter / 盖章写回、变换未变零写入、被盖液体脱格粒子、地形格跳过、出界移除；
+  行为测试：下落盖章守恒、1/8 线程哈希与引擎 checksum 逐位相同、出界移除、上限拒绝。
+  `state_hash` 结构变更（三层 combine3）⇒ 五个 golden 在 `--grid-only` 网格哈希流逐位
+  一致取证后全部重录。
 - **M3 Task 1：physics 适配层 + geom 几何工具**（`crates/sand-core/src/{physics,geom}.rs`、
   `Cargo.toml` 加 `rapier2d 0.35.3`[`enhanced-determinism`,`serde-serialize`] + serde/bincode）。
   `physics.rs` 包 rapier 自带 `PhysicsWorld`，rapier 类型不出模块；红线（单线程、dt 1/60、

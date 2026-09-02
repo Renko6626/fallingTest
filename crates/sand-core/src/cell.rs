@@ -7,7 +7,7 @@
 //! | 16 | 1 | 横向方向记忆 `dir` |
 //! | 17–21 | 5 | `vy` 竖直速度，Q3.2 无符号，单位 ¼ 格/tick（Layer G Task 2） |
 //! | 22 | 1 | `free_falling`（O3 粉末惯性）——预留，恒 0，不读不写 |
-//! | 23 | 1 | 留白，未分配 |
+//! | 23 | 1 | `body` 刚体所有权标志（M3 spec §3）：只做地形掩码排除与对账识别，不豁免任何 CA 规则 |
 //! | 24–31 | 8 | `counter` 通用倒计时器（M2 spec §2.3）：燃料格存剩余燃料、fire/smoke 存剩余寿命 |
 //!
 //! 布局由 `docs/superpowers/specs/2026-08-31-layer-g-velocity-design.md` §2
@@ -38,6 +38,11 @@ pub const VEL_SHIFT: u32 = 17;
 /// 速度位段宽度。5 位是 `V_MAX_CELL = 16` 的硬下限。
 pub const VEL_BITS: u32 = 5;
 const VEL_MASK: CellRepr = ((1 << VEL_BITS) - 1) << VEL_SHIFT;
+
+/// 刚体所有权标志位（M3 spec §3）。`with_stamp/with_vel/with_dir/with_counter`
+/// 均不动它；`pack` 产物为 0；材质转换（反应/衰变经 `pack`）自然清掉它——
+/// 这正是"烧尽即对账视作像素被毁"的依据。
+pub const BODY_FLAG: CellRepr = 1 << 23;
 
 /// counter 位段起始位（M2 spec §2.3，见头部布局表）。
 pub const COUNTER_SHIFT: u32 = 24;
@@ -148,6 +153,15 @@ impl Cell {
     pub fn with_counter(self, v: u8) -> Cell {
         Cell((self.0 & !COUNTER_MASK) | ((v as CellRepr) << COUNTER_SHIFT))
     }
+
+    /// 是否为刚体盖章格（M3 spec §3）。
+    pub fn is_body(self) -> bool {
+        self.0 & BODY_FLAG != 0
+    }
+
+    pub fn with_body(self, on: bool) -> Cell {
+        if on { Cell(self.0 | BODY_FLAG) } else { Cell(self.0 & !BODY_FLAG) }
+    }
 }
 
 #[cfg(test)]
@@ -228,6 +242,20 @@ mod tests {
         assert_eq!(Cell::pack(5, 1).counter(), 0, "pack 产物 counter 必须为 0");
         // 位段执法：counter 恰在 24–31，不越入 23 留白位
         assert_eq!(Cell(0).with_counter(0xFF).0, (0xFF as CellRepr) << COUNTER_SHIFT);
+    }
+
+    /// M3 spec §3：body 标志独立于其他位段，且 `pack` 产物不带它。
+    #[test]
+    fn body_flag_survives_other_with_ops_and_pack_clears_it() {
+        let c = Cell::pack(5, 3).with_body(true);
+        assert!(c.is_body());
+        let c = c.with_stamp(9).with_vel(4).with_dir(true).with_counter(77);
+        assert!(c.is_body(), "with_* 不得清 body 标志");
+        assert_eq!(c.counter(), 77);
+        assert_eq!(c.material(), 5);
+        assert!(!c.with_body(false).is_body());
+        assert!(!Cell::pack(5, 3).is_body(), "pack 产物不带 body 标志");
+        assert_eq!(Cell(0).with_body(true).0, BODY_FLAG);
     }
 
     #[test]

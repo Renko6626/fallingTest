@@ -9,7 +9,7 @@ use crate::reaction::ReactionTable;
 use crate::rng;
 use crate::rules;
 use crate::window::{ChunksPtr, WriteWindow};
-use crate::world::{Op, SpawnRequest, World};
+use crate::world::{SpawnRequest, World};
 use crate::ScanMode;
 
 const PHASES: [(usize, usize); 4] = [(0, 0), (1, 0), (1, 1), (0, 1)];
@@ -19,41 +19,29 @@ fn phase_order(tick: u64) -> [(usize, usize); 4] {
     std::array::from_fn(|i| PHASES[(i + r) % 4])
 }
 
-/// 规范 tick 管线的 M0 子集（architecture §4，顺序即协议）：
-/// 1. 输入应用（脚本化 brush / `Op::Emit` 发射器，产物盖戳同帧不动；
-///    Emit 产出的生成请求追加进 `spawns`，供调用方并入粒子相入队序）
+/// 规范 tick 管线的网格部分（architecture §4，顺序即协议）：
 /// 2. 网格四相 pass
-/// 3. 封帧：脏矩形交换、tick 递增
+/// 3'. 封帧：脏矩形交换、tick 递增
 ///
-/// `fseed` 的计算被挪到 ops 循环之前（原先在其后）——它是 `(world.seed,
-/// tick)` 的纯函数，与循环内任何状态无关，提前算不改变任何观测结果，只是
-/// 让 `Op::Emit` 的抖动掷骰能在本函数内就近拿到同一份 `fseed`（与网格四相
-/// 用的是同一个值）。**这不是 tick 管线阶段顺序变更**（外部可观测的三步
-/// 顺序不变），无需过 charter §11。
+/// **输入应用（第 1 步）自 M3 起由 `Sim::step` 执行**（纯搬移，2026-09-02）：
+/// 刚体相（第 3 步）必须插在输入之后、四相之前，而 `World` 不持有刚体；把 ops
+/// 循环提到 `Sim::step` 里是唯一不引入反向依赖的接法。外部可观测顺序
+/// （ops → 刚体 → 四相 → 粒子 → 封帧）与架构 §4 一致。
 ///
 /// `pub(crate)`：`spawns: &mut Vec<SpawnRequest>` 的 `SpawnRequest` 是
 /// `pub(crate)` 类型，本函数保持 `pub` 只会造成"签名公开但外部拿不到实参
 /// 类型"的私有类型泄漏警告，收紧到 `pub(crate)` 与实际可达性一致
 /// （唯一调用方是同 crate 的 `Sim::step`）。
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn step(
     world: &mut World,
     table: &MaterialTable,
     reactions: &ReactionTable,
     pool: &rayon::ThreadPool,
     scan: ScanMode,
-    ops: &[Op],
     spawns: &mut Vec<SpawnRequest>,
 ) {
     let tick = world.tick;
-    let stamp = (tick % 256) as u8;
     let fseed = rng::frame_seed(world.seed, tick);
-    // enumerate 下标 = 本 tick 内的 op 序号，折进 Op::Emit 的抖动 salt
-    // （world.rs::emit_salt），区分同 tick 内多个 Emit 命中同一发射格
-    // （Task 5 修复轮 1 I1）。
-    for (op_idx, op) in ops.iter().enumerate() {
-        world.apply_op(table, op, stamp, fseed, op_idx, spawns);
-    }
 
     let (wc, hc) = (world.width_chunks, world.height_chunks);
     let ptr = ChunksPtr(world.chunks.as_mut_ptr());

@@ -32,6 +32,17 @@ pub fn state_hash(world: &World) -> u64 {
     h.digest()
 }
 
+/// 总哈希折叠（M3 起三层）：网格哈希树根 + 粒子层 + 刚体层 → 单个 u64。
+/// 纯函数，xxh3 折叠三个输入的原始位。**结构变更**（M1 的两层 `combine` 退役）
+/// ⇒ 既有 golden 全部重录一次，取证程序见 M3 spec §0 第 5 项。
+pub fn combine3(grid_root: u64, particle_hash: u64, body_hash: u64) -> u64 {
+    let mut h = Xxh3::new();
+    h.update(&grid_root.to_le_bytes());
+    h.update(&particle_hash.to_le_bytes());
+    h.update(&body_hash.to_le_bytes());
+    h.digest()
+}
+
 /// 总哈希折叠：网格哈希树根 + 粒子层哈希 → 单个 u64（M1 spec §9）。
 /// 纯函数，xxh3 折叠两个输入的原始位，无隐藏状态。
 pub fn combine(grid_root: u64, particle_hash: u64) -> u64 {

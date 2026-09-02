@@ -31,6 +31,9 @@ pub enum Op {
     /// `ConfigExplosion.max_durability_to_destroy` 默认值）。
     /// 整数签名——圆心/半径是格坐标，不经过 `Fx` 量化。
     Explode { x: i32, y: i32, r: i32, power: u32, max_durability: u8 },
+    /// 生成矩形刚体（M3 spec §8）：材质须 Static（加载期契约），`(x, y)` 为左上角
+    /// 格坐标，`w×h` 格。由 `Sim` 路由到 `Bodies::spawn_rect`（World 不持有刚体）。
+    SpawnBody { material: u8, x: i32, y: i32, w: u16, h: u16 },
 }
 
 /// 生成队列条目（M1 spec §4 第 3 步 a）：由 `Op::Emit`/`Op::Explode`
@@ -223,7 +226,19 @@ impl World {
             Op::Explode { x, y, r, power, max_durability } => {
                 explode::apply_explode(self, table, x, y, r, power, max_durability, stamp, fseed, op_idx, spawns);
             }
+            // 由 Sim 在调用本函数之前截走（刚体不住在 World 里）；到这里即调用方漏路由。
+            Op::SpawnBody { .. } => unreachable!("Op::SpawnBody 必须由 Sim 路由到 Bodies"),
         }
+    }
+
+    /// 整字覆写一个已存在的 cell（M3 盖章路径：先 `set_cell_stamped` 铺材质并标脏，
+    /// 再用本函数补 body 标志与 counter）。不重复标脏，与 `set_cell_vel` 同一体例。
+    pub(crate) fn set_cell_raw(&mut self, x: i32, y: i32, cell: Cell) {
+        if !self.in_bounds(x, y) {
+            return;
+        }
+        let (ci, li) = self.locate(x, y);
+        self.chunks[ci].cells[li] = cell;
     }
 
     /// 按材料统计 cell 数（守恒测试用）。

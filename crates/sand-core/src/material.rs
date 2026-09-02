@@ -117,6 +117,9 @@ pub struct MaterialDef {
     /// 永远没有它刚离开的表面，点燃引导环节断裂（2026-08-31 实测 0 命中）。
     /// 只对 Category::Gas 有意义；非 Gas 不读。
     pub rise_chance: u8,
+    /// 刚体可穿过（M3 spec §4，对应 Noita `liquid_sand_never_box2d`）：为真的材质
+    /// 不进地形硬格掩码。缺省 false——沙默认托得住刚体（B′）。
+    pub body_passable: bool,
 }
 
 impl MaterialDef {
@@ -146,6 +149,7 @@ impl MaterialDef {
             fire_chance: 0,
             flame_to: MAT_AIR,
             rise_chance: 255,
+            body_passable: false,
         }
     }
 }
@@ -304,6 +308,10 @@ impl MaterialTable {
 
     pub fn rise_chance(&self, id: u8) -> u8 {
         self.defs[id as usize].rise_chance
+    }
+
+    pub fn body_passable(&self, id: u8) -> bool {
+        self.defs[id as usize].body_passable
     }
 }
 

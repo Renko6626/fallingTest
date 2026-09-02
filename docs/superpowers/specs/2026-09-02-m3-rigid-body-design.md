@@ -14,7 +14,7 @@
 | Task | 内容 | 状态 |
 |---|---|---|
 | 1 | `physics` 适配层（Rapier2D 封装、确定性红线、快照）+ 几何工具（矩形覆盖 / 4 连通分量） | ✅ 2026-09-02 |
-| 2 | `body` 本体：位图、盖章/反盖章（含 counter 往返）、`Op::SpawnBody`、哈希入 `state_hash` | ⬜ |
+| 2 | `body` 本体：位图、盖章/反盖章（含 counter 往返）、`Op::SpawnBody`、哈希入 `state_hash` | ✅ 2026-09-02 |
 | 3 | 地形碰撞（B′：刚体附近 chunk 缓存的硬格 polyline）+ 浮沉（水面线采样阿基米德） | ⬜ |
 | 4 | 破坏对账 + 限额重提取 + 碎片脱格；燃烧散架端到端 | ⬜ |
 | 5 | 收口：`crate_yard` golden/SyncTest、快照往返、bench、总纲 §11、GIF 目检 | ⬜ |
@@ -143,6 +143,10 @@ pub struct Bodies { list: Vec<Body> /* 按 id 升序 */, next_id: u16, reextract
 4. 淹没体积用水面线采样而非脚印回填计数——后者只数到一层、力正比于周长（§5）。
 5. 静态地形用 polyline、刚体用自写耳切，不用引擎凸分解（§4）。
 6. 哈希不折引擎内部状态，另以 serde checksum 巡检（§7）。
+8. **实施期决定（Task 2）：第 3 步顺序改为"步进 → 变换未变则跳过 → 反盖章旧脚印（读回 counter）→ 盖章新脚印"**——
+   反盖章与盖章本就在同一串行阶段背靠背，不必在步进前清旧脚印；防抖判定（`to_bits` 相等）
+   由此天然成立。ops 循环从 `scheduler::step` 纯搬移到 `Sim::step`（World 不持刚体，
+   `Op::SpawnBody` 在 Sim 路由），外部可观测顺序不变。整体出界 > 64 格的刚体确定性移除。
 7. **实施期决定（Task 1，2026-09-02）：几何走"位图行程矩形覆盖"，不上 marching squares / DP / 耳切。**
    刚体与地形都编译成轴对齐矩形的 compound collider（`geom::rect_cover`，行主序贪心 +
    竖向合并，纯整数、天然定序）。理由：零多边形/含洞三角化的坑；矩形碰撞体比 polyline

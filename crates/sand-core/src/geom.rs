@@ -1,5 +1,3 @@
-// M3 Task 1 落地、Task 2 接线前的过渡：消费者尚未存在，避免 dead_code 淹没 clippy。
-#![allow(dead_code)]
 //! 位图几何工具（M3 spec §4，实施期决定：矩形覆盖替代 marching squares + 耳切）。
 //!
 //! 全部是**纯整数、纯函数**：布尔掩码进、整数矩形/索引集出。刚体形状与地形
@@ -62,6 +60,8 @@ pub(crate) fn rect_cover(mask: &[bool], w: usize, h: usize) -> Vec<Rect> {
 
 /// 4 连通分量分解：返回各分量的像素索引列表（行主序 `y*w+x`），分量按其
 /// **最小索引**升序，分量内索引升序。纯整数 BFS，遍历序固定。
+/// （消费者 = Task 4 重提取，接线前定向 allow。）
+#[allow(dead_code)]
 pub(crate) fn components4(mask: &[bool], w: usize, h: usize) -> Vec<Vec<usize>> {
     debug_assert_eq!(mask.len(), w * h);
     let mut seen = vec![false; w * h];

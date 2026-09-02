@@ -1,5 +1,3 @@
-// M3 Task 1 落地、Task 2 接线前的过渡：消费者尚未存在，避免 dead_code 淹没 clippy。
-#![allow(dead_code)]
 //! 物理引擎适配层（M3 spec §2 `physics-adapter`、§7 确定性红线）。
 //!
 //! Rapier2D 的薄封装。**rapier 类型不出本模块**——`body.rs` 只见 [`BodyHandle`]、
@@ -41,6 +39,9 @@ pub(crate) struct PhysicsWorld {
     terrain: std::collections::BTreeMap<(u32, u32), Vec<ColliderHandle>>,
 }
 
+// 地形 / 施力 / 恢复的消费者是 Task 3（浮沉与地形）与 Task 5（快照往返），接线前
+// 定向 allow；Task 5 收口时删除本属性。
+#[allow(dead_code)]
 impl PhysicsWorld {
     pub(crate) fn new() -> Self {
         let mut inner = rapier2d::pipeline::PhysicsWorld::new();
@@ -155,10 +156,31 @@ impl PhysicsWorld {
         (p.translation.x, p.translation.y, p.rotation.angle())
     }
 
+    /// 世界点 → 刚体局部坐标（盖章逆映射用，spec §3）。
+    pub(crate) fn world_to_local(&self, h: BodyHandle, p: (f32, f32)) -> (f32, f32) {
+        let q = self.inner.bodies[h.0].position().inverse_transform_point(Vector::new(p.0, p.1));
+        (q.x, q.y)
+    }
+
+    /// 刚体局部点 → 世界坐标（AABB 估算用）。
+    pub(crate) fn local_to_world(&self, h: BodyHandle, p: (f32, f32)) -> (f32, f32) {
+        let q = self.inner.bodies[h.0].position().transform_point(Vector::new(p.0, p.1));
+        (q.x, q.y)
+    }
+
     pub(crate) fn velocity(&self, h: BodyHandle) -> ((f32, f32), f32) {
         let rb = &self.inner.bodies[h.0];
         let v = rb.linvel();
         ((v.x, v.y), rb.angvel())
+    }
+
+    /// 测试专用：直接设速度（生产路径只经 `spawn_rect` 的初速与外力）。
+    #[cfg(test)]
+    pub(crate) fn set_velocity_for_test(&mut self, h: BodyHandle, v: (f32, f32), angvel: f32) {
+        if let Some(rb) = self.inner.bodies.get_mut(h.0) {
+            rb.set_linvel(Vector::new(v.0, v.1), true);
+            rb.set_angvel(angvel, true);
+        }
     }
 
     pub(crate) fn is_sleeping(&self, h: BodyHandle) -> bool {

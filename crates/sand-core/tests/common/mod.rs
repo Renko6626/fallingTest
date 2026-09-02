@@ -72,6 +72,7 @@ pub fn test_table_with_splash(water_chance: u8, sand_chance: u8) -> MaterialTabl
     .unwrap()
 }
 
+#[allow(dead_code)]
 pub fn test_table() -> MaterialTable {
     // hp 取 spec §6 的口径值（air 0 / water 1 / sand 2），wall 走门槛免疫。
     // 爆炸行为测试并未独立成 `explode_behavior.rs` 文件，而是内联在
@@ -110,6 +111,7 @@ pub fn test_table_with_gas() -> MaterialTable {
     .unwrap()
 }
 
+#[allow(dead_code)]
 pub fn sim(width_chunks: usize, height_chunks: usize, seed: u64, threads: usize, scan: ScanMode) -> Sim {
     let cfg = InitConfig { width_chunks, height_chunks, seed, threads, scan };
     let table = test_table();
