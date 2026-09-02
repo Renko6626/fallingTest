@@ -21,6 +21,12 @@ cell-u64 = []
 [dependencies]
 rayon = "1"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
+# M3 刚体（spec §7 引擎红线）：Rapier2D 纯计算库，属 Ring 0 允许清单（同 rayon/xxhash）。
+# `enhanced-determinism` = IEEE-754 平台位级确定（关掉 SIMD/并行，不可关）；
+# `serde-serialize` = 整体快照/恢复（M6 rollback 决策门的依据）。绝不开 `parallel`/`simd*`。
+rapier2d = { version = "0.35.3", default-features = false, features = ["dim2", "f32", "std", "block-solver", "enhanced-determinism", "serde-serialize"] }
+serde = { version = "1", features = ["derive"] }
+bincode = "1"
 
 [lints]
 workspace = true

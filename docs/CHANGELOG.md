@@ -8,6 +8,13 @@
 ## 2026-09-02
 
 ### Added
+- **M3 Task 1：physics 适配层 + geom 几何工具**（`crates/sand-core/src/{physics,geom}.rs`、
+  `Cargo.toml` 加 `rapier2d 0.35.3`[`enhanced-determinism`,`serde-serialize`] + serde/bincode）。
+  `physics.rs` 包 rapier 自带 `PhysicsWorld`，rapier 类型不出模块；红线（单线程、dt 1/60、
+  按 id 序、不开 parallel/simd）写进模块文档；快照走 bincode。单测：两世界同序 600 步快照
+  字节逐位相同、快照恢复续跑 300 步与连续 900 步 transform bits 相同、箱子落地入睡、地形
+  覆盖式重建。`geom.rs`：**实施期决定用行程矩形覆盖替代 marching squares/DP/耳切**（spec
+  决策记录第 7 条），`rect_cover` + `components4` 六条单测。
 - **M3 刚体实施计划**（`docs/superpowers/plans/2026-09-02-m3-rigid-body-plan.md`，五 Task）：
   ① physics 适配层（rapier2d 0.35.3，`enhanced-determinism`+`serde-serialize`）+ geom 几何工具
   ② body 本体/盖章/`SpawnBody`/哈希 ③ B′ 地形缓存 + 水面线阿基米德 ④ 对账/限额重提取/燃烧散架

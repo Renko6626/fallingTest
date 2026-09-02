@@ -13,7 +13,7 @@
 
 | Task | 内容 | 状态 |
 |---|---|---|
-| 1 | `physics` 适配层（Rapier2D 封装、确定性红线、快照）+ 几何工具（marching squares / DP / 耳切） | ⬜ |
+| 1 | `physics` 适配层（Rapier2D 封装、确定性红线、快照）+ 几何工具（矩形覆盖 / 4 连通分量） | ✅ 2026-09-02 |
 | 2 | `body` 本体：位图、盖章/反盖章（含 counter 往返）、`Op::SpawnBody`、哈希入 `state_hash` | ⬜ |
 | 3 | 地形碰撞（B′：刚体附近 chunk 缓存的硬格 polyline）+ 浮沉（水面线采样阿基米德） | ⬜ |
 | 4 | 破坏对账 + 限额重提取 + 碎片脱格；燃烧散架端到端 | ⬜ |
@@ -143,3 +143,9 @@ pub struct Bodies { list: Vec<Body> /* 按 id 升序 */, next_id: u16, reextract
 4. 淹没体积用水面线采样而非脚印回填计数——后者只数到一层、力正比于周长（§5）。
 5. 静态地形用 polyline、刚体用自写耳切，不用引擎凸分解（§4）。
 6. 哈希不折引擎内部状态，另以 serde checksum 巡检（§7）。
+7. **实施期决定（Task 1，2026-09-02）：几何走"位图行程矩形覆盖"，不上 marching squares / DP / 耳切。**
+   刚体与地形都编译成轴对齐矩形的 compound collider（`geom::rect_cover`，行主序贪心 +
+   竖向合并，纯整数、天然定序）。理由：零多边形/含洞三角化的坑；矩形碰撞体比 polyline
+   更不易穿隧、箱子落地更稳；只在刚体附近几个 chunk 生成，数量可控。§4 的 marching
+   squares / DP 留待 bench 证明矩形数成为瓶颈时再上。`rapier2d 0.35` 自带 `PhysicsWorld`
+   聚合体且整体 serde 可序列化，适配层直接包它。
