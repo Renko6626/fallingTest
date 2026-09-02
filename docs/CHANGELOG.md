@@ -8,6 +8,11 @@
 ## 2026-09-02
 
 ### Added
+- **M3 刚体实施计划**（`docs/superpowers/plans/2026-09-02-m3-rigid-body-plan.md`，五 Task）：
+  ① physics 适配层（rapier2d 0.35.3，`enhanced-determinism`+`serde-serialize`）+ geom 几何工具
+  ② body 本体/盖章/`SpawnBody`/哈希 ③ B′ 地形缓存 + 水面线阿基米德 ④ 对账/限额重提取/燃烧散架
+  ⑤ 收口（crate_yard、快照往返、bench、总纲 §11）。`scheduler::step` 的 ops 循环纯搬移到
+  `Sim::step`，为第 3 步插入四相之前腾位。
 - **M3 刚体 spec**（`docs/superpowers/specs/2026-09-02-m3-rigid-body-design.md`，Status: Proposed）。
   brainstorm 六项用户裁决：刚体来源 C（矩形起步、管线通用）、地形 B′（沙托得住刚体，
   碰撞几何只在刚体附近按 chunk 缓存）、小碎片脱格成粒子、**Rapier2D**（enhanced-determinism
