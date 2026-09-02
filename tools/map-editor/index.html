@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>fallingTest map-editor</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #16161c; color: #ddd; font: 13px/1.4 system-ui, sans-serif; display: flex; height: 100vh; }
+  #side { width: 300px; padding: 10px; box-sizing: border-box; overflow-y: auto; border-right: 1px solid #333; display: flex; flex-direction: column; gap: 8px; }
+  #main { flex: 1; overflow: auto; padding: 10px; }
+  #wrap { position: relative; display: inline-block; }
+  canvas { image-rendering: pixelated; display: block; }
+  #overlay { position: absolute; left: 0; top: 0; pointer-events: none; }
+  fieldset { border: 1px solid #333; padding: 6px 8px; margin: 0; }
+  legend { color: #9ab; padding: 0 4px; }
+  label { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+  input[type=number], input[type=text], select { width: 120px; background: #222; color: #eee; border: 1px solid #444; padding: 2px 4px; }
+  textarea { width: 100%; box-sizing: border-box; background: #222; color: #eee; border: 1px solid #444; font: 12px monospace; min-height: 70px; }
+  button { background: #2c3e50; color: #fff; border: 0; padding: 5px 8px; cursor: pointer; border-radius: 3px; }
+  button.on { background: #e67e22; }
+  button.big { background: #27ae60; font-weight: bold; }
+  .row { display: flex; flex-wrap: wrap; gap: 4px; }
+  .mat { width: 22px; height: 22px; border: 2px solid #333; cursor: pointer; box-sizing: border-box; }
+  .mat.on { border-color: #fff; }
+  #status { font: 11px monospace; white-space: pre-wrap; color: #9ab; max-height: 120px; overflow: auto; }
+  #gif { margin-top: 10px; max-width: 100%; image-rendering: pixelated; }
+  #coord { font: 12px monospace; color: #9ab; }
+</style>
+</head>
+<body>
+<div id="side">
+  <fieldset><legend>场景</legend>
+    <label>名字 <input id="name" type="text" value="drawn_01" pattern="[a-z0-9_]{1,40}"></label>
+    <label>宽 chunk <input id="wc" type="number" value="4" min="1" max="20"></label>
+    <label>高 chunk <input id="hc" type="number" value="3" min="1" max="20"></label>
+    <label>seed <input id="seed" type="number" value="1"></label>
+    <label>ticks <input id="ticks" type="number" value="1200"></label>
+    <div class="row"><button id="new">新建（清空）</button>
+      <select id="scenarios"></select><button id="load">加载</button></div>
+  </fieldset>
+  <fieldset><legend>工具</legend>
+    <div class="row" id="tools">
+      <button data-tool="brush" class="on">笔刷</button><button data-tool="rect">矩形</button>
+      <button data-tool="bucket">油漆桶</button><button data-tool="eraser">橡皮</button><button data-tool="pick">吸管</button>
+    </div>
+    <label>笔刷 <select id="bsize"><option>1</option><option>2</option><option selected>4</option><option>8</option></select></label>
+    <div class="row"><button id="undo">撤销 (Ctrl+Z)</button><button id="redo">重做 (Ctrl+Y)</button></div>
+    <div id="coord">x=- y=-</div>
+  </fieldset>
+  <fieldset><legend>材质</legend><div class="row" id="mats"></div><div id="matname"></div></fieldset>
+  <fieldset><legend>渲染参数</legend>
+    <label>every <input id="every" type="number" value="4"></label>
+    <label>scale <input id="scale" type="number" value="3"></label>
+    <label>from <input id="from" type="number" value="0"></label>
+  </fieldset>
+  <fieldset><legend>script（原样透传，RON 列表项）</legend>
+    <textarea id="script">At(tick: 60, op: Brush(material: "fire", x: 64, y: 100, r: 2)),</textarea>
+  </fieldset>
+  <div class="row"><button id="save" class="big">保存并渲染</button><button id="export">仅导出 .ron</button></div>
+  <div id="status">就绪。</div>
+</div>
+<div id="main">
+  <div id="wrap"><canvas id="cv"></canvas><canvas id="overlay"></canvas></div>
+  <div><img id="gif" alt=""></div>
+</div>
+<script>
+'use strict';
+// ---------- 状态 ----------
+let mats = [];            // [{id,name,color:[r,g,b]}]
+let W = 0, H = 0;         // 格数
+let grid = new Uint8Array(0);
+let symbols = [];         // 自动图例：symbols[id] = char（与 harness default_legend 同规则）
+let cur = 1, tool = 'brush', bsize = 4;
+let undoStack = [], redoStack = [];
+let SCALE = 3;
+const $ = id => document.getElementById(id);
+const cv = $('cv'), ov = $('overlay');
+const ctx = cv.getContext('2d'), octx = ov.getContext('2d');
+let off = document.createElement('canvas'), offctx;
+
+// 与 crates/sand-harness/src/scenario.rs::LEGEND_POOL / default_legend 保持一致
+const LEGEND_POOL = "#WSOFAwsofa~@%&*+=-BCDEGHIJKLMNPQRTUVXYZbcdeghijklmnpqrtuvxyz";
+function buildLegend() {
+  const used = new Set(['.']);
+  symbols = mats.map(m => {
+    if (m.id === 0) return '.';
+    const c0 = m.name[0] || '';
+    const cands = /[A-Za-z]/.test(c0) ? [c0.toUpperCase(), c0.toLowerCase(), ...LEGEND_POOL] : [...LEGEND_POOL];
+    const pick = cands.find(c => !used.has(c));
+    used.add(pick);
+    return pick;
+  });
+}
+
+// ---------- RLE（与 harness 同规则：<count><char>，count 省略即 1，空白分隔） ----------
+function rleEncodeRow(ids, y) {
+  const toks = [];
+  const base = y * W;
+  let x = 0;
+  while (x < W) {
+    const id = ids[base + x];
+    let n = 1;
+    while (x + n < W && ids[base + x + n] === id) n++;
+    toks.push(n === 1 ? symbols[id] : n + symbols[id]);
+    x += n;
+  }
+  return toks.join(' ');
+}
+function rleDecodeRow(row, legendToId, width) {
+  const out = [];
+  let count = null;
+  for (const ch of row) {
+    if (ch >= '0' && ch <= '9') count = (count ?? 0) * 10 + (+ch);
+    else if (/\s/.test(ch)) { if (count !== null) throw new Error(`行 "${row}"：数字后空白`); }
+    else {
+      if (!(ch in legendToId)) throw new Error(`行 "${row}"：图例无 '${ch}'`);
+      const n = count ?? 1; count = null;
+      for (let i = 0; i < n; i++) out.push(legendToId[ch]);
+    }
+  }
+  if (out.length !== width) throw new Error(`行 "${row}"：长度 ${out.length} ≠ ${width}`);
+  return out;
+}
+
+// ---------- 画布 ----------
+function resizeWorld(wc, hc) {
+  W = wc * 64; H = hc * 64;
+  grid = new Uint8Array(W * H);
+  undoStack = []; redoStack = [];
+  SCALE = Math.max(1, Math.min(4, Math.floor(1100 / W)));
+  cv.width = W * SCALE; cv.height = H * SCALE; ov.width = cv.width; ov.height = cv.height;
+  off.width = W; off.height = H; offctx = off.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
+  drawAll(); drawOverlay();
+}
+function drawAll() {
+  const img = offctx.createImageData(W, H);
+  const d = img.data;
+  for (let i = 0; i < W * H; i++) {
+    const c = mats[grid[i]] ? mats[grid[i]].color : [255, 0, 255];
+    d[i * 4] = c[0]; d[i * 4 + 1] = c[1]; d[i * 4 + 2] = c[2]; d[i * 4 + 3] = 255;
+  }
+  offctx.putImageData(img, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  ctx.drawImage(off, 0, 0, cv.width, cv.height);
+}
+function drawOverlay(rect) {
+  octx.clearRect(0, 0, ov.width, ov.height);
+  octx.strokeStyle = 'rgba(255,255,255,0.18)';
+  octx.lineWidth = 1;
+  for (let x = 64; x < W; x += 64) { octx.beginPath(); octx.moveTo(x * SCALE + .5, 0); octx.lineTo(x * SCALE + .5, ov.height); octx.stroke(); }
+  for (let y = 64; y < H; y += 64) { octx.beginPath(); octx.moveTo(0, y * SCALE + .5); octx.lineTo(ov.width, y * SCALE + .5); octx.stroke(); }
+  if (rect) {
+    octx.strokeStyle = '#fff'; octx.setLineDash([4, 3]);
+    octx.strokeRect(rect.x0 * SCALE + .5, rect.y0 * SCALE + .5, (rect.x1 - rect.x0 + 1) * SCALE - 1, (rect.y1 - rect.y0 + 1) * SCALE - 1);
+    octx.setLineDash([]);
+  }
+}
+
+// ---------- 编辑操作 ----------
+function snapshot() { undoStack.push(grid.slice()); if (undoStack.length > 50) undoStack.shift(); redoStack = []; }
+function paintBlock(x, y, id, size) {
+  const x0 = Math.max(0, x - (size >> 1)), y0 = Math.max(0, y - (size >> 1));
+  const x1 = Math.min(W - 1, x0 + size - 1), y1 = Math.min(H - 1, y0 + size - 1);
+  for (let yy = y0; yy <= y1; yy++) grid.fill(id, yy * W + x0, yy * W + x1 + 1);
+}
+function fillRect(r, id) {
+  for (let y = r.y0; y <= r.y1; y++) grid.fill(id, y * W + r.x0, y * W + r.x1 + 1);
+}
+function bucket(x, y, id) {
+  const src = grid[y * W + x];
+  if (src === id) return;
+  const stack = [y * W + x];
+  while (stack.length) {
+    const i = stack.pop();
+    if (grid[i] !== src) continue;
+    grid[i] = id;
+    const cx = i % W, cy = (i / W) | 0;
+    if (cx > 0) stack.push(i - 1);
+    if (cx < W - 1) stack.push(i + 1);
+    if (cy > 0) stack.push(i - W);
+    if (cy < H - 1) stack.push(i + W);
+  }
+}
+function cellOf(ev) {
+  const r = cv.getBoundingClientRect();
+  const x = Math.floor((ev.clientX - r.left) / SCALE), y = Math.floor((ev.clientY - r.top) / SCALE);
+  return { x: Math.max(0, Math.min(W - 1, x)), y: Math.max(0, Math.min(H - 1, y)) };
+}
+let dragging = false, dragStart = null;
+cv.addEventListener('pointerdown', ev => {
+  if (!W) return;
+  const p = cellOf(ev);
+  if (tool === 'pick') { cur = grid[p.y * W + p.x]; renderMats(); return; }
+  snapshot();
+  dragging = true; dragStart = p;
+  const id = tool === 'eraser' ? 0 : cur;
+  if (tool === 'brush' || tool === 'eraser') { paintBlock(p.x, p.y, id, tool === 'eraser' ? Math.max(bsize, 2) : bsize); drawAll(); }
+  else if (tool === 'bucket') { bucket(p.x, p.y, id); drawAll(); dragging = false; }
+  cv.setPointerCapture(ev.pointerId);
+});
+cv.addEventListener('pointermove', ev => {
+  if (!W) return;
+  const p = cellOf(ev);
+  $('coord').textContent = `x=${p.x} y=${p.y} mat=${mats[grid[p.y * W + p.x]]?.name ?? '?'}`;
+  if (!dragging) return;
+  if (tool === 'brush' || tool === 'eraser') { paintBlock(p.x, p.y, tool === 'eraser' ? 0 : cur, tool === 'eraser' ? Math.max(bsize, 2) : bsize); drawAll(); }
+  else if (tool === 'rect') drawOverlay(normRect(dragStart, p));
+});
+cv.addEventListener('pointerup', ev => {
+  if (!dragging) return;
+  dragging = false;
+  if (tool === 'rect') { fillRect(normRect(dragStart, cellOf(ev)), cur); drawAll(); drawOverlay(); }
+});
+function normRect(a, b) { return { x0: Math.min(a.x, b.x), y0: Math.min(a.y, b.y), x1: Math.max(a.x, b.x), y1: Math.max(a.y, b.y) }; }
+document.addEventListener('keydown', ev => {
+  if (ev.ctrlKey && ev.key.toLowerCase() === 'z') { ev.preventDefault(); undo(); }
+  if (ev.ctrlKey && ev.key.toLowerCase() === 'y') { ev.preventDefault(); redo(); }
+});
+function undo() { if (!undoStack.length) return; redoStack.push(grid); grid = undoStack.pop(); drawAll(); }
+function redo() { if (!redoStack.length) return; undoStack.push(grid); grid = redoStack.pop(); drawAll(); }
+$('undo').onclick = undo; $('redo').onclick = redo;
+for (const b of $('tools').querySelectorAll('button')) b.onclick = () => {
+  tool = b.dataset.tool;
+  for (const o of $('tools').querySelectorAll('button')) o.classList.toggle('on', o === b);
+};
+$('bsize').onchange = () => bsize = +$('bsize').value;
+
+// ---------- 材质调色板 ----------
+function renderMats() {
+  const box = $('mats'); box.innerHTML = '';
+  for (const m of mats) {
+    const d = document.createElement('div');
+    d.className = 'mat' + (m.id === cur ? ' on' : '');
+    d.style.background = `rgb(${m.color.join(',')})`;
+    d.title = `${m.id} ${m.name}`;
+    d.onclick = () => { cur = m.id; renderMats(); };
+    box.appendChild(d);
+  }
+  $('matname').textContent = `当前：${mats[cur]?.name ?? '?'}（图例 '${symbols[cur]}'）`;
+}
+
+// ---------- 导出 / 保存 / 加载 ----------
+function exportRon() {
+  const used = new Set(grid); used.add(0);
+  const legend = [...used].sort((a, b) => a - b).map(id => `'${symbols[id]}': "${mats[id].name}"`).join(', ');
+  const rows = [];
+  for (let y = 0; y < H; y++) rows.push(`        "${rleEncodeRow(grid, y)}",`);
+  const script = $('script').value.trim();
+  return `// generated by tools/map-editor
+Scenario(
+    name: "${$('name').value}",
+    world: (${W / 64}, ${H / 64}),
+    seed: ${+$('seed').value},
+    ticks: ${+$('ticks').value},
+    grid: (
+        legend: { ${legend} },
+        rows: [
+${rows.join('\n')}
+        ],
+    ),
+    setup: [],
+    script: [
+        ${script}
+    ],
+)
+`;
+}
+function status(msg) { $('status').textContent = msg; }
+$('export').onclick = () => {
+  const blob = new Blob([exportRon()], { type: 'text/plain' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `${$('name').value}.ron`; a.click();
+};
+$('save').onclick = async () => {
+  const name = $('name').value;
+  if (!/^[a-z0-9_]{1,40}$/.test(name)) return status('场景名只许 [a-z0-9_]{1,40}');
+  status('保存并渲染中…（大图 / 长 ticks 会等几十秒）');
+  const body = { name, ron: exportRon(), render: { ticks: +$('ticks').value, every: +$('every').value, scale: +$('scale').value, from: +$('from').value } };
+  try {
+    const r = await fetch('/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const j = await r.json();
+    if (!r.ok) return status(`失败：${j.error}\n${j.log ?? ''}`);
+    status(`已写 ${j.saved}\n${j.log}`);
+    $('gif').src = `${j.gif}?t=${Date.now()}`;
+    await refreshScenarios();
+  } catch (e) { status(`请求失败：${e}`); }
+};
+async function refreshScenarios() {
+  const names = await (await fetch('/scenarios')).json();
+  const sel = $('scenarios'); const keep = sel.value; sel.innerHTML = '';
+  for (const n of names) { const o = document.createElement('option'); o.textContent = n; sel.appendChild(o); }
+  if (names.includes(keep)) sel.value = keep;
+}
+$('load').onclick = async () => {
+  const name = $('scenarios').value;
+  status(`加载 ${name}…`);
+  const r = await fetch(`/load?name=${encodeURIComponent(name)}`);
+  const j = await r.json();
+  if (!r.ok) return status(`加载失败：${j.error}`);
+  const nameToId = Object.fromEntries(mats.map(m => [m.name, m.id]));
+  const legendToId = {};
+  for (const [ch, mname] of Object.entries(j.legend)) legendToId[ch] = nameToId[mname];
+  $('wc').value = j.width / 64; $('hc').value = j.height / 64;
+  resizeWorld(j.width / 64, j.height / 64);
+  try {
+    for (let y = 0; y < H; y++) grid.set(rleDecodeRow(j.rows[y], legendToId, W), y * W);
+  } catch (e) { return status(`网格解码失败：${e.message}`); }
+  // 轻量提取 seed / ticks / script（页面不解析 RON 网格，只预填侧栏）
+  const ron = j.ron || '';
+  const seed = ron.match(/\bseed:\s*(\d+)/), ticks = ron.match(/\bticks:\s*(\d+)/);
+  if (seed) $('seed').value = seed[1];
+  if (ticks) $('ticks').value = ticks[1];
+  const si = ron.indexOf('script:');
+  if (si >= 0) {
+    const lb = ron.indexOf('[', si);
+    let depth = 0, i = lb;
+    for (; i < ron.length; i++) { if (ron[i] === '[') depth++; else if (ron[i] === ']' && --depth === 0) break; }
+    $('script').value = ron.slice(lb + 1, i).trim();
+  } else $('script').value = '';
+  $('name').value = name;
+  drawAll();
+  status(`已加载 ${name}（${j.width}×${j.height}）`);
+};
+$('new').onclick = () => { resizeWorld(+$('wc').value, +$('hc').value); status('新画布。'); };
+
+// ---------- 启动 ----------
+(async () => {
+  try {
+    mats = await (await fetch('/materials')).json();
+  } catch (e) { return status(`拿不到材质表：${e}`); }
+  buildLegend();
+  cur = mats.find(m => m.name === 'wall')?.id ?? 1;
+  renderMats();
+  await refreshScenarios();
+  resizeWorld(+$('wc').value, +$('hc').value);
+})();
+</script>
+</body>
+</html>

@@ -13,7 +13,7 @@
 | Task | 内容 | 状态 |
 |---|---|---|
 | 1 | harness：`grid` 字段解析/校验 + `materials --json` + `rasterize` 子命令 | ✅ 2026-09-01 |
-| 2 | `tools/map-editor/`：`index.html` + `serve.py` + README | ⬜ |
+| 2 | `tools/map-editor/`：`index.html` + `serve.py` + README | ✅ 2026-09-01（curl 端到端 + 无头 Firefox 加载验证） |
 | 3 | 端到端目检（用户）+ 收口（CHANGELOG / 架构文档工程布局表加 `tools/`） | ⬜ |
 
 ---

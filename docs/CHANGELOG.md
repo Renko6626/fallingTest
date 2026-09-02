@@ -8,6 +8,12 @@
 ## 2026-09-01
 
 ### Added
+- **地图编辑器 Task 2：页面 + 服务**（`tools/map-editor/{index.html,serve.py,README.md}`，
+  `.gitignore` 加 `tools/map-editor/out/`）。单文件 Canvas 编辑器（笔刷/矩形/油漆桶/橡皮/
+  吸管、撤销重做、chunk 缝线、材质调色板来自 `materials --json`、RLE 编解码与 harness
+  同规则）；Python 标准库服务（`/materials` `/scenarios` `/load` `/save` `/out/*.gif`，
+  只绑 127.0.0.1、场景名白名单）。冒烟：POST 保存→渲染→回读往返逐字一致；JS 经
+  node --check；无头 Firefox 加载页面并成功拉取材质表。
 - **地图编辑器 Task 1：harness 契约**（`crates/sand-harness/src/{scenario,main}.rs`、
   `sand-core/material.rs` 加只读 `name_of`）。场景 RON 新增 `grid` 字段（行级 RLE +
   材质名图例；图例经自定义 MapAccess 反序列化以捕获重复键——ron 0.8 对重复键静默

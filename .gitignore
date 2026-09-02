@@ -9,3 +9,4 @@ venv/
 /target
 /out
 target-u64/
+tools/map-editor/out/
