@@ -8,6 +8,13 @@
 ## 2026-09-02
 
 ### Added
+- **M3 Task 3：B′ 地形缓存 + 水面线阿基米德浮沉**（`crates/sand-core/src/{body,physics,lib}.rs`、
+  `docs/tuning-knobs.md` 补齐 M2 全部字段 + M3 常量）。地形：刚体 AABB 外扩 1 chunk 内按
+  chunk 缓存硬格矩形（非 air/Gas/Liquid/刚体格且非 `body_passable`），dirty 才重算、
+  **矩形没变不碰引擎**；浮沉：两侧邻列水面线取中位、淹没像素计数、`F = n×ρ_liq×g` 施于
+  淹没质心 + `K_DRAG=200` 阻力。三条实测教训入 spec 决策记录第 9 条（地形重建唤醒死循环、
+  箱顶溅水污染水面采样、睡眠阈值单位口径）。行为测试：静止箱子全图入睡、沙堆托箱、
+  木浮（平衡淹没 ≈ 75% = 12/16）石沉、满池入箱漫出且水量守恒。
 - **M3 Task 2：body 本体、盖章/反盖章、`Op::SpawnBody`、刚体层入哈希**（新增
   `crates/sand-core/src/body.rs`；改 `cell.rs`[bit 23 `BODY_FLAG`]、`world.rs`[`SpawnBody`、
   `set_cell_raw`]、`hash.rs`[`combine3`]、`lib.rs`[Sim 持 `Bodies`+`PhysicsWorld`，ops 循环

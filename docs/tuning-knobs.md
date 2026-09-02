@@ -2,7 +2,7 @@
 
 > 文档路径：`docs/tuning-knobs.md`
 > 运行时版本：Rust（内核）+ Godot 4 + gdext（表现层）
-> 最近更新：2026-08-31 (UTC+8)
+> 最近更新：2026-09-02 (UTC+8)
 > **Status**: Implemented（随内核同步维护）
 
 **这份文档的用途**：把散在 `sand-core` 各模块与 `data/materials.ron` 里的**可调参数**
@@ -33,8 +33,21 @@ SyncTest 六配置 + golden 重录（预期先落后验）+ bench 对照。这�
 
 | 字段 | 类型 / 域 | 现值 | 管什么 | 注意 |
 |---|---|---|---|---|
-| `density` | u16 | air 0 / wall 100 / sand 40 / water 16 | 密度置换判定（重的沉、轻的浮）；爆炸冲量按 `REF_BLAST_DENSITY/density` 缩放 | 改沙的密度会同时改爆炸手感（见 `REF_BLAST_DENSITY`） |
-| `blast_cost` | u32 | air 0 / water 1 / sand 2 / wall `u32::MAX` | 爆炸射线逐格能量消耗 | `BLAST_COST_INFINITE` = 免疫。M2 反应表引入 durability/hardness 后替换 |
+| `density` | u16 | air 0 / wall 100 / sand 40 / water 16 / oil 12 / wood 12 / stone 40 / fire 1 / smoke 2 | 密度置换判定（重的沉、轻的浮；气体反向：上浮要目标更重）；爆炸冲量按 `REF_BLAST_DENSITY/density` 缩放；**Static 材质的 density 自 M3 起 = 作为刚体的密度**（浮沉：< 水 16 浮） | 改沙的密度会同时改爆炸手感；改 wood/stone 会改箱子浮沉 |
+| `hp` | u32 | air 0 / water 1 / sand 2 / wood 3 / stone 6 / wall 100 | 爆炸射线逐格能量消耗（原 `blast_cost`，M2 改名） | 能量池一侧；wall 靠 `durability` 免疫而非无限 hp |
+| `durability` | u8 | wall 15 / stone 8 / 其余 0 | 破坏门槛：`> Op::Explode.max_durability`（RON 缺省 10）即完全免疫 | Noita 双层破坏；哨兵 `BLAST_COST_INFINITE` 已退役 |
+| `tags` | `[String]` | oil/wood `["burnable"]` | 反应表 tag 匹配（加载期展开） | 只在 `reactions.ron` 里被引用 |
+| `ignition_temp` | u8 | oil 40 / wood 80 / 缺省 100 | 着火点：`源.fire_temp ≥ 目标.ignition_temp` 才点得着 | 缺省 100 = 缺省火温 10 点不着 |
+| `fire_temp` | u8 | fire 100 / oil 100 / wood 100 / 缺省 10 | 作为燃烧源的火温 | **燃料也要声明**，否则油面横向过火靠不了升离表面的火（M2 §5.3.1） |
+| `fire_hp` | u8 | oil 90 / wood 250 | 燃料池（点燃时装填 counter，每 tick −1） | 8 位上限 255 tick ≈ 4.25 s/格；慢烧走分频不扩位 |
+| `lifetime` | u8 | fire 40 / smoke 200 | 寿命（出生装填） | 与 `fire_hp` 互斥（加载期报错） |
+| `decay_to` | 材质名 | fire→smoke，其余→air | counter 归零的转化目标 | 引用不存在材质加载期报错 |
+| `requires_oxygen` | bool | 缺省 true | 只有邻接 air **或 Gas** 的格才推进燃烧（由外向内） | 火是气相，贴燃料的火不算闷熄 |
+| `extinguisher` | bool | water true | 燃烧格邻接即清零 counter | 走数据字段不走反应表（燃烧是 cell 状态） |
+| `fire_chance` | f64 → u8 ×255 | oil 0.6 / wood 0.3 | 燃烧格每 tick 向邻接 air 产火的概率 | 需同时声明 `flame_to` |
+| `flame_to` | 材质名 | oil/wood → fire | 产火产物 | `fire_chance > 0` 必须声明 |
+| `rise_chance` | f64 → u8 ×255 | fire 0.5 / 缺省 1.0 | Gas 每 tick 尝试上浮的概率 | 越低火焰越"黏"燃料；smoke 恒升 |
+| `body_passable` | bool | 缺省 false | 为真的材质不进刚体地形硬格掩码（Noita `liquid_sand_never_box2d`） | 沙缺省托得住箱子（M3 B′） |
 | `vaporize_threshold` | f64 `0.0..=1.0` → u8 ×255 | sand 0.95 / water 0.4 | 爆炸近心汽化比例：剩余能量比**严格超过**即删除、不溅射 | 缺省 1.0 = 永不汽化。sand 经三轮目检 0.7→0.9→0.95 |
 | `dispersion` | u8 `1..=8` | water 5，其余缺省 1 | 液体单 tick 横移格数（"最远可达空格"） | **B 类**：直接等于写入半径，越界破坏 P4。两道防线：加载期报错 + `rules::side` 用 `DISPERSION_MAX` clamp |
 | `splash_chance` | f64 `0.0..=1.0` → u8 ×255 | water 0.6 / sand 0.1 | 撞停时脱格成粒子的概率 | 缺省 0.0 = 永不溅射。粉末也吃这条 |
@@ -130,3 +143,18 @@ SyncTest 六配置 + golden 重录（预期先落后验）+ bench 对照。这�
 | `superpowers/specs/2026-08-31-layer-g-velocity-design.md` | 色散 / 速度积分 / 溅射三 Task 的完整论证与决策表 |
 | `perf/2026-08-31-layer-g-task{1,2,3}-*.md` | 每次调参的性能对照口径与实测 |
 | `proposals/2026-08-31-powder-scan-direction-bias.md` | 行扫描定向为什么不能是周期 2 |
+
+## 6. M3 刚体常量（`crates/sand-core/src/body.rs`、`physics.rs`）
+
+| 常量 | 现值 | 管什么 | 类别 |
+|---|---|---|---|
+| `K_DRAG` | 200.0 | 液体阻力 `F = −K_DRAG × 淹没像素数 × v`（16×12 木箱阻尼比 ≈ 0.8） | A（手感）：越大入水越快静止；太小会来回振荡 |
+| `SLEEP_LINEAR_THRESHOLD` / `SLEEP_ANGULAR_THRESHOLD` | 6 格/s / 0.3 rad/s | 刚体入睡阈值（rapier 缺省 0.05×length_unit 是米制口径） | A：太小浮体永远不睡、太大会在斜坡上"冻住" |
+| `MIN_BODY_PIXELS` | 12 | 小于此面积的碎片脱格成粒子 | A |
+| `MAX_REEXTRACT_PER_TICK` | 2 | 每 tick 重提取限额（超限顺延） | A（性能）；队列入哈希 |
+| `TERRAIN_MARGIN` | 1 chunk | 刚体 AABB 外扩多少 chunk 生成地形碰撞 | A（性能） |
+| `OUT_OF_WORLD_MARGIN` | 64 格 | 整体出界超过即移除刚体 | A |
+| `MAX_BODIES` | 256 | 刚体上限（超限 SpawnBody 确定性拒绝） | A |
+| `GRAVITY_CELLS_PER_S2` | 900 | 引擎重力（= 网格 0.25 格/tick²） | **C**：与网格重力对齐，改它两套物理脱节 |
+| `DT` | 1/60 | 引擎步长 | **C**：与 tick 同步，不可改 |
+

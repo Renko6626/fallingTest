@@ -32,6 +32,10 @@ pub(crate) struct BodyHandle(RigidBodyHandle);
 pub(crate) const GRAVITY_CELLS_PER_S2: f32 = 900.0;
 /// 固定步长（60 Hz tick 同步，无子步）。
 pub(crate) const DT: f32 = 1.0 / 60.0;
+/// 入睡的线速度阈值（格/s；rapier 的 normalized 口径 = 速度 / 长度尺度，本项目长度尺度 = 1 格）。
+pub(crate) const SLEEP_LINEAR_THRESHOLD: f32 = 6.0;
+/// 入睡的角速度阈值（rad/s）。
+pub(crate) const SLEEP_ANGULAR_THRESHOLD: f32 = 0.3;
 
 pub(crate) struct PhysicsWorld {
     inner: rapier2d::pipeline::PhysicsWorld,
@@ -39,9 +43,6 @@ pub(crate) struct PhysicsWorld {
     terrain: std::collections::BTreeMap<(u32, u32), Vec<ColliderHandle>>,
 }
 
-// 地形 / 施力 / 恢复的消费者是 Task 3（浮沉与地形）与 Task 5（快照往返），接线前
-// 定向 allow；Task 5 收口时删除本属性。
-#[allow(dead_code)]
 impl PhysicsWorld {
     pub(crate) fn new() -> Self {
         let mut inner = rapier2d::pipeline::PhysicsWorld::new();
@@ -62,11 +63,15 @@ impl PhysicsWorld {
         vel: (f32, f32),
         angvel: f32,
     ) -> BodyHandle {
-        let rb = RigidBodyBuilder::dynamic()
+        let mut rb = RigidBodyBuilder::dynamic()
             .translation(Vector::new(pos.0, pos.1))
             .linvel(Vector::new(vel.0, vel.1))
             .angvel(angvel)
             .build();
+        // 睡眠阈值按本项目单位（格/s）放宽：rapier 缺省 0.05 × length_unit 是米制
+        // 口径，在 g = 900 格/s² 下漂浮箱子的力量化极限环（1–5 格/s）永远睡不着。
+        rb.activation_mut().normalized_linear_threshold = SLEEP_LINEAR_THRESHOLD;
+        rb.activation_mut().angular_threshold = SLEEP_ANGULAR_THRESHOLD;
         let h = self.inner.bodies.insert(rb);
         let shapes = rects
             .iter()
@@ -117,10 +122,6 @@ impl PhysicsWorld {
                 self.inner.colliders.remove(h, &mut self.inner.islands, &mut self.inner.bodies, false);
             }
         }
-    }
-
-    pub(crate) fn terrain_keys(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
-        self.terrain.keys().copied()
     }
 
     /// 在世界点 `at` 施加力（本 tick 生效，`step` 后由本模块清零——rapier 的
@@ -192,6 +193,8 @@ impl PhysicsWorld {
         bincode::serialize(&self.inner).expect("rapier PhysicsWorld 序列化不应失败")
     }
 
+    /// （消费者 = Task 5 快照往返，接线前定向 allow。）
+    #[allow(dead_code)]
     pub(crate) fn restore(&mut self, bytes: &[u8]) -> Result<(), String> {
         let mut w: rapier2d::pipeline::PhysicsWorld =
             bincode::deserialize(bytes).map_err(|e| format!("物理快照反序列化失败：{e}"))?;

@@ -105,3 +105,104 @@ fn spawn_beyond_max_bodies_is_rejected() {
     assert_eq!(s.bodies().len(), sand_core::MAX_BODIES);
     assert_eq!(s.bodies().rejected_total, 1);
 }
+
+// ==================== Task 3：地形（B′）与浮沉 ====================
+
+fn floor(w: i32, h: i32) -> Op {
+    Op::Fill { material: 1, x0: 0, y0: h - 4, x1: w - 1, y1: h - 4 }
+}
+
+fn all_chunks_asleep(s: &Sim) -> bool {
+    s.world().chunks.iter().all(|c| c.dirty.is_empty() && c.next_dirty.snapshot().is_empty())
+}
+
+/// 木箱落到墙上静止、入睡，且**全图入睡**（spec §3 零写入执法 `resting_body_lets_chunk_sleep`）。
+#[test]
+fn resting_body_lets_chunk_sleep() {
+    let mut s = body_sim(11, 1);
+    s.apply_setup(&[floor(128, 128), Op::SpawnBody { material: WOOD, x: 40, y: 60, w: 24, h: 16 }]);
+    for _ in 0..400 {
+        s.step(&[]);
+    }
+    let cells = body_cells(&s);
+    assert_eq!(cells.len(), 24 * 16, "箱子完整");
+    let bottom = cells.iter().map(|c| c.1).max().unwrap();
+    assert!((121..=123).contains(&bottom), "箱子应停在地板（y=124）之上：底边 {bottom}");
+    assert!(all_chunks_asleep(&s), "静止刚体必须零写入、全图入睡");
+}
+
+/// B′：沙堆托得住木箱（不陷进去）。
+#[test]
+fn crate_rests_on_sand_pile() {
+    let mut s = body_sim(13, 1);
+    s.apply_setup(&[
+        floor(128, 128),
+        Op::Fill { material: 2, x0: 30, y0: 100, x1: 90, y1: 123 }, // 沙层 24 深
+        Op::SpawnBody { material: WOOD, x: 50, y: 40, w: 24, h: 16 },
+    ]);
+    for _ in 0..500 {
+        s.step(&[]);
+    }
+    let cells = body_cells(&s);
+    assert_eq!(cells.len(), 24 * 16);
+    let bottom = cells.iter().map(|c| c.1).max().unwrap();
+    assert!(bottom < 100, "箱子应停在沙面（y=100）之上、不陷入：底边 {bottom}");
+}
+
+/// 木箱（密度 12）落水上浮、石箱（密度 40）下沉——采样式阿基米德。
+#[test]
+fn wood_crate_floats_stone_crate_sinks() {
+    let mut s = body_sim(17, 1);
+    // 盆：底 y=120..123，壁 x=10..11 与 x=116..117，水面 y=80
+    s.apply_setup(&[
+        Op::Fill { material: 1, x0: 0, y0: 120, x1: 127, y1: 123 },
+        Op::Fill { material: 1, x0: 10, y0: 60, x1: 11, y1: 119 },
+        Op::Fill { material: 1, x0: 116, y0: 60, x1: 117, y1: 119 },
+        Op::Fill { material: 3, x0: 12, y0: 80, x1: 115, y1: 119 },
+        Op::SpawnBody { material: WOOD, x: 30, y: 40, w: 16, h: 12 },
+        Op::SpawnBody { material: STONE, x: 80, y: 40, w: 16, h: 12 },
+    ]);
+    for _ in 0..900 {
+        s.step(&[]);
+    }
+    let cells = body_cells(&s);
+    let wood: Vec<_> = cells.iter().filter(|&&(x, _)| x < 64).collect();
+    let stone: Vec<_> = cells.iter().filter(|&&(x, _)| x >= 64).collect();
+    assert_eq!(wood.len(), 16 * 12, "木箱完整");
+    assert_eq!(stone.len(), 16 * 12, "石箱完整");
+    let wood_bottom = wood.iter().map(|c| c.1).max().unwrap();
+    let wood_top = wood.iter().map(|c| c.1).min().unwrap();
+    let stone_bottom = stone.iter().map(|c| c.1).max().unwrap();
+    assert!(wood_top < 84 && wood_bottom > 78, "木箱应浮在水面附近：top {wood_top} bottom {wood_bottom}");
+    assert!(stone_bottom >= 117, "石箱应沉到盆底：bottom {stone_bottom}");
+}
+
+/// 满池入箱水漫出：池外出现液体，且水总量（格 + 粒子）守恒。
+#[test]
+fn full_pool_overflows_when_crate_drops() {
+    let mut s = body_sim(19, 1);
+    // 盆壁只到 y=90，水灌满到壁顶；箱子从上方落入
+    s.apply_setup(&[
+        Op::Fill { material: 1, x0: 0, y0: 120, x1: 127, y1: 123 },
+        Op::Fill { material: 1, x0: 40, y0: 90, x1: 41, y1: 119 },
+        Op::Fill { material: 1, x0: 86, y0: 90, x1: 87, y1: 119 },
+        Op::Fill { material: 3, x0: 42, y0: 90, x1: 85, y1: 119 },
+        Op::SpawnBody { material: STONE, x: 56, y: 30, w: 16, h: 12 },
+    ]);
+    let water_cells0 = s.world().count_material(3);
+    for _ in 0..600 {
+        s.step(&[]);
+    }
+    let mut outside = 0;
+    for y in 0..128 {
+        for x in 0..128 {
+            if s.world().cell(x, y).material() == 3 && !(42..=85).contains(&x) {
+                outside += 1;
+            }
+        }
+    }
+    assert!(outside > 0, "满池入箱必须有水漫到盆外");
+    let particles = (0..s.particles().len()).filter(|&i| s.particles().material(i) == 3).count();
+    let water_now = s.world().count_material(3) + particles;
+    assert_eq!(water_now, water_cells0, "水总量守恒（格 + 粒子）");
+}

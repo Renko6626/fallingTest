@@ -15,7 +15,9 @@
 use crate::cell::Cell;
 use crate::fixed::{Fx, HALF_CELL};
 use crate::geom::{rect_cover, Rect};
+use crate::chunk::CHUNK;
 use crate::material::{Category, MaterialTable, MAT_AIR};
+use crate::physics::GRAVITY_CELLS_PER_S2;
 use crate::particle::clamp_speed;
 use crate::physics::{BodyHandle, PhysicsWorld};
 use crate::world::{SpawnRequest, World};
@@ -28,6 +30,11 @@ pub const MAX_REEXTRACT_PER_TICK: usize = 2;
 pub const MAX_BODIES: usize = 256;
 /// 刚体 AABB 整体出界超过此格数即确定性移除——掉出世界的箱子不永久占用引擎。
 pub const OUT_OF_WORLD_MARGIN: i32 = 64;
+/// 地形碰撞只为刚体 AABB 外扩这么多 chunk 的范围生成（spec §4）。
+pub const TERRAIN_MARGIN: i32 = 1;
+/// 线阻力系数（spec §5）：`F = −K_DRAG × n_sub × v`。取 200：对 16×12 木箱
+/// （浮力"弹簧"ω ≈ 10 rad/s）阻尼比 ≈ 0.8，近临界——入水后一两个来回即静止。目检可调。
+pub const K_DRAG: f32 = 200.0;
 
 pub struct Body {
     /// 单调分配，入哈希。
@@ -71,6 +78,12 @@ pub struct Bodies {
     pub reextract_queue: Vec<u16>,
     /// `SpawnBody` 被上限/契约拒绝的次数（诊断，不入哈希）。
     pub rejected_total: u64,
+    /// 地形碰撞体重建次数（诊断，不入哈希；缓存命中执法测试用）。
+    pub terrain_rebuilds: u64,
+    /// 已缓存的地形 chunk → 上次交给引擎的矩形（含空）。**矩形没变就不碰引擎**：
+    /// 删/重建静态碰撞体会重置接触、唤醒压在上面的刚体，形成"盖章标脏 → 重建 →
+    /// 唤醒 → 再盖章"的死循环（Task 3 实测：静止箱子永远睡不着）。
+    terrain_cached: std::collections::BTreeMap<(u32, u32), Vec<Rect>>,
 }
 
 fn xf_bits(t: (f32, f32, f32)) -> (u32, u32, u32) {
@@ -178,6 +191,77 @@ impl Bodies {
         }
     }
 
+    /// 第 3 步前半之一（spec §4，B′）：只为刚体 AABB 外扩 `TERRAIN_MARGIN` chunk 范围
+    /// 内的 chunk 生成硬格碰撞体，按 chunk 缓存；失效 = 该 chunk 上一 tick `dirty` 非空
+    /// （封帧时交换的现成位）。离开范围的 chunk 从引擎移除。键按 `BTreeSet` 序遍历。
+    pub(crate) fn refresh_terrain(&mut self, world: &World, table: &MaterialTable, phys: &mut PhysicsWorld) {
+        let mut needed = std::collections::BTreeSet::new();
+        for body in &self.list {
+            let (x0, y0, x1, y1) = aabb_cells(body, phys);
+            let c = CHUNK as i32;
+            let (cx0, cy0) = ((x0.div_euclid(c) - TERRAIN_MARGIN).max(0), (y0.div_euclid(c) - TERRAIN_MARGIN).max(0));
+            let (cx1, cy1) = (
+                (x1.div_euclid(c) + TERRAIN_MARGIN).min(world.width_chunks as i32 - 1),
+                (y1.div_euclid(c) + TERRAIN_MARGIN).min(world.height_chunks as i32 - 1),
+            );
+            for cy in cy0..=cy1 {
+                for cx in cx0..=cx1 {
+                    needed.insert((cx as u32, cy as u32));
+                }
+            }
+        }
+        let stale: Vec<(u32, u32)> = self.terrain_cached.keys().copied().filter(|k| !needed.contains(k)).collect();
+        for key in stale {
+            phys.clear_terrain(key);
+            self.terrain_cached.remove(&key);
+        }
+        for &(cx, cy) in &needed {
+            let ci = world.chunk_index(cx as usize, cy as usize);
+            let cached = self.terrain_cached.get(&(cx, cy));
+            if cached.is_some() && world.chunks[ci].dirty.is_empty() {
+                continue;
+            }
+            let rects = terrain_rects(world, table, cx, cy);
+            if cached.is_some_and(|c| *c == rects) {
+                continue; // 硬格没变（脏的是液体/气体/刚体自身格）：不碰引擎
+            }
+            phys.set_terrain((cx, cy), &rects);
+            self.terrain_cached.insert((cx, cy), rects);
+            self.terrain_rebuilds += 1;
+        }
+    }
+
+    /// 第 3 步前半之二（spec §5，采样式阿基米德）：对每个清醒刚体，水面线采样得
+    /// `h`，淹没像素 = 上次盖章脚印中 `y ≥ h` 者；`F_浮 = n_sub × ρ_liq × g` 逆重力施于
+    /// 淹没质心，阻力 `−K_DRAG × n_sub × v`。全整数计数，进引擎前才转 f32。
+    pub(crate) fn apply_buoyancy(&mut self, world: &World, table: &MaterialTable, phys: &mut PhysicsWorld) {
+        for body in &self.list {
+            if body.stamped.is_empty() || phys.is_sleeping(body.handle) {
+                continue;
+            }
+            let (x0, y0, x1, y1) = aabb_cells(body, phys);
+            let Some((h, rho)) = surface_line(world, table, (x0, y0, x1, y1)) else {
+                continue;
+            };
+            let (mut n, mut sx, mut sy) = (0i64, 0i64, 0i64);
+            for &(x, y, _) in &body.stamped {
+                if y >= h {
+                    n += 1;
+                    sx += x as i64;
+                    sy += y as i64;
+                }
+            }
+            if n == 0 {
+                continue;
+            }
+            let centroid = ((sx as f32 + 0.5 * n as f32) / n as f32, (sy as f32 + 0.5 * n as f32) / n as f32);
+            let f_up = n as f32 * rho as f32 * GRAVITY_CELLS_PER_S2;
+
+            phys.apply_force_at(body.handle, (0.0, -f_up), centroid);
+            phys.apply_drag(body.handle, K_DRAG * n as f32);
+        }
+    }
+
     pub(crate) fn remove(&mut self, id: u16, phys: &mut PhysicsWorld) {
         if let Some(pos) = self.list.iter().position(|b| b.id == id) {
             let b = self.list.remove(pos);
@@ -213,6 +297,86 @@ impl Bodies {
         }
         h.digest()
     }
+}
+
+/// 硬格判定（spec §4，B′）：非 air、非 Gas、非 Liquid、非刚体格、材质非 `body_passable`。
+fn is_hard(cell: Cell, table: &MaterialTable) -> bool {
+    let m = cell.material();
+    m != MAT_AIR
+        && !cell.is_body()
+        && !matches!(table.category(m), Category::Gas | Category::Liquid)
+        && !table.body_passable(m)
+}
+
+/// 某 chunk 的硬格 → 世界坐标矩形覆盖。
+fn terrain_rects(world: &World, table: &MaterialTable, cx: u32, cy: u32) -> Vec<Rect> {
+    let n = CHUNK;
+    let (ox, oy) = ((cx as usize * n) as i32, (cy as usize * n) as i32);
+    let mut mask = vec![false; n * n];
+    for ly in 0..n {
+        for lx in 0..n {
+            mask[ly * n + lx] = is_hard(world.cell(ox + lx as i32, oy + ly as i32), table);
+        }
+    }
+    rect_cover(&mask, n, n)
+        .into_iter()
+        .map(|r| Rect { x0: r.x0 + ox, y0: r.y0 + oy, x1: r.x1 + ox, y1: r.y1 + oy })
+        .collect()
+}
+
+/// 有序样本的"偶数个取较高者"中位数（y 向下为正 ⇒ 较高 = 较小）。
+fn median_high(sorted: &[i32]) -> i32 {
+    debug_assert!(!sorted.is_empty());
+    sorted[(sorted.len() - 1) / 2]
+}
+
+/// 水面线采样（spec §5）：只采箱子**两侧各紧邻 2 列**（脚印之外），在 AABB 行范围
+/// 内自上而下找首个 Liquid 格；各列水面 y 取中位数（偶数个取较高者），`ρ_liq` 取样本
+/// 里出现最多的液体材质（并列取 id 小者）的 `density`。一列都没有 ⇒ `None`。
+///
+/// 不采 AABB 内部的列：被排开、溅到**箱子顶上**的水会被误认成水面，产生"越浮越高"
+/// 的正反馈（Task 3 实测把箱子弹出水面）。
+fn surface_line(world: &World, table: &MaterialTable, (x0, y0, x1, y1): (i32, i32, i32, i32)) -> Option<(i32, u16)> {
+    let mut ys: Vec<i32> = Vec::new();
+    let mut mats: Vec<u8> = Vec::new();
+    let (ya, yb) = ((y0 - 1).max(0), (y1 + 1).min(world.height() - 1));
+    // `aabb_cells` 已各向外扩 1 格：x0/x1 本身就是紧邻箱子的第一列，再各取一列。
+    let cols = [x0 - 1, x0, x1, x1 + 1];
+    for x in cols {
+        if x < 0 || x >= world.width() {
+            continue;
+        }
+        for y in ya..=yb {
+            let c = world.cell(x, y);
+            if c.is_body() {
+                continue;
+            }
+            if table.category(c.material()) == Category::Liquid {
+                ys.push(y);
+                mats.push(c.material());
+                break;
+            }
+        }
+    }
+    if ys.is_empty() {
+        return None;
+    }
+    ys.sort_unstable();
+    let h = median_high(&ys);
+    mats.sort_unstable();
+    let mut best = (mats[0], 0usize);
+    let mut i = 0;
+    while i < mats.len() {
+        let mut j = i;
+        while j < mats.len() && mats[j] == mats[i] {
+            j += 1;
+        }
+        if j - i > best.1 {
+            best = (mats[i], j - i);
+        }
+        i = j;
+    }
+    Some((h, table.density(best.0)))
 }
 
 /// 变换后位图的格 AABB（闭区间，未裁剪到世界）。
@@ -466,6 +630,75 @@ mod tests {
         assert_eq!(w.cell(25, 35).material(), WALL);
         assert!(!w.cell(25, 35).is_body());
         assert_eq!(bodies.list[0].stamped.len(), 383);
+    }
+
+    #[test]
+    fn median_high_takes_higher_of_even_pair() {
+        assert_eq!(median_high(&[10, 20]), 10, "偶数个取较高者（y 小）");
+        assert_eq!(median_high(&[10, 20, 30]), 20);
+        assert_eq!(median_high(&[5]), 5);
+    }
+
+    /// 硬格掩码排除刚体自身格与 body_passable 材质；液体/气体不算硬格。
+    #[test]
+    fn terrain_mask_excludes_body_and_passable() {
+        let (mut w, t, mut phys, mut bodies) = setup();
+        w.set_cell_stamped(&t, 5, 5, WALL, 0);
+        w.set_cell_stamped(&t, 6, 5, WATER, 0);
+        bodies.spawn_rect(&mut phys, &t, WOOD, 20, 20, 8, 4);
+        let mut spawns = Vec::new();
+        bodies.stamp_all(&mut w, &t, &mut phys, 0, &mut spawns);
+        let rects = terrain_rects(&w, &t, 0, 0);
+        assert_eq!(rects, vec![Rect { x0: 5, y0: 5, x1: 5, y1: 5 }], "只有 wall 是硬格：{rects:?}");
+    }
+
+    /// 缓存：干净 chunk 不重建；dirty 非空才重建；离开范围即清除。
+    #[test]
+    fn terrain_cache_rebuilds_only_dirty_chunks() {
+        let (mut w, t, mut phys, mut bodies) = setup();
+        w.set_cell_stamped(&t, 30, 60, WALL, 0);
+        bodies.spawn_rect(&mut phys, &t, WOOD, 20, 20, 8, 4);
+        for c in w.chunks.iter_mut() {
+            c.dirty = c.next_dirty.take();
+        }
+        bodies.refresh_terrain(&w, &t, &mut phys);
+        let first = bodies.terrain_rebuilds;
+        assert!(first >= 1);
+        // 封帧后 dirty 清空 ⇒ 第二次不重建
+        for c in w.chunks.iter_mut() {
+            c.dirty = c.next_dirty.take();
+        }
+        bodies.refresh_terrain(&w, &t, &mut phys);
+        assert_eq!(bodies.terrain_rebuilds, first, "干净 chunk 不得重建");
+        // 该 chunk 有写入 ⇒ 重建
+        w.set_cell_stamped(&t, 31, 60, WALL, 1);
+        for c in w.chunks.iter_mut() {
+            c.dirty = c.next_dirty.take();
+        }
+        bodies.refresh_terrain(&w, &t, &mut phys);
+        assert_eq!(bodies.terrain_rebuilds, first + 1);
+    }
+
+    /// 水面线：三列水面 y = 40/42/44 ⇒ h = 42；半浸箱子的淹没数 = 位图下半。
+    #[test]
+    fn surface_line_and_submerged_count() {
+        let (mut w, t, mut phys, mut bodies) = setup();
+        // 箱子 8×4 放在 (20,40)..(27,43)，两侧列各填水到不同高度
+        for y in 40..60 {
+            w.set_cell_stamped(&t, 19, y, WATER, 0);
+        }
+        for y in 42..60 {
+            w.set_cell_stamped(&t, 28, y, WATER, 0);
+        }
+        bodies.spawn_rect(&mut phys, &t, WOOD, 20, 40, 8, 4);
+        let mut spawns = Vec::new();
+        bodies.stamp_all(&mut w, &t, &mut phys, 0, &mut spawns);
+        let (x0, y0, x1, y1) = aabb_cells(&bodies.list[0], &phys);
+        let (h, rho) = surface_line(&w, &t, (x0, y0, x1, y1)).unwrap();
+        assert_eq!(h, 40, "两列 40/42 ⇒ 取较高者 40");
+        assert_eq!(rho, 16);
+        let sub = bodies.list[0].stamped.iter().filter(|&&(_, y, _)| y >= 42).count();
+        assert_eq!(sub, 8 * 2, "y ≥ 42 的像素 = 下半两行");
     }
 
     /// 哈希：同序操作同值；刚体动了值变。

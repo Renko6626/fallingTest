@@ -147,7 +147,9 @@ impl Sim {
         }
         // 3. 刚体相（M3 spec §2）：物理步进 → 变换变化者反盖章/盖章（被盖液体/粉末
         //    脱格进 spawn_queue，与 ops 的生成请求同队列、追加序即入队序）。
-        //    浮力/地形（Task 3）与对账（Task 4）随后接线。
+        //    地形（B′ 按 chunk 缓存）与浮力（水面线阿基米德）在步进前施加；对账（Task 4）随后接线。
+        self.bodies.refresh_terrain(&self.world, &self.table, &mut self.physics);
+        self.bodies.apply_buoyancy(&self.world, &self.table, &mut self.physics);
         self.physics.step();
         self.bodies.stamp_all(&mut self.world, &self.table, &mut self.physics, stamp, &mut self.spawn_queue);
         // 2. 网格四相 + 封帧
