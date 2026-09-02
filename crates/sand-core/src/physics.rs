@@ -297,6 +297,6 @@ mod tests {
         assert_eq!(w.inner.colliders.len(), 1);
         w.clear_terrain((0, 0));
         assert_eq!(w.inner.colliders.len(), 0);
-        assert_eq!(w.terrain_keys().count(), 0);
+        assert!(w.terrain.is_empty());
     }
 }
