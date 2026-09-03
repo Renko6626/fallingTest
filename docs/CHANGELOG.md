@@ -27,6 +27,10 @@
   读数自上而下（气泡免疫）、被刚体挡住的列作废、各列取最低。候选方案 0–5 对照与方案 5 的已知
   缺陷入 spec 决策记录第 14 条。行为测试两条（玻璃水槽 / 架高水槽），单测三条。golden 重录，
   六配置 SyncTest 绿；bench crate_yard 0.72 → 0.64 ms/tick。
+- **`crate_yard` 加"炸穿池壁漏水"段**（`data/scenarios/crate_yard.ron`）：tick 1200 木箱停稳后，左侧
+  池壁被 `Explode(power 1200, max_durability 15)` 炸穿（wall durability 15 > 缺省门槛 10），水漏进石台与
+  池壁之间的沟，浮体随水位下降、约 tick 1600 两侧齐平后全部静止——接触门控水面线在水位变化下的
+  目检。golden 重录、六配置 SyncTest 绿；`out/crate_yard.gif`（未入库）。
 
 ## 2026-09-02
 
