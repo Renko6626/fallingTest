@@ -21,6 +21,12 @@
   回归测试 `plank_in_deep_pool_does_not_spin_up`（|ω| 有界、稳定后不转、最终入睡）；`Sim::body_state`
   诊断视图；`crate_yard` golden 重录，六配置 SyncTest 绿；bench 0.72 ms/tick（修前 1.07）。
   spec 决策记录第 13 条；会话账本 `docs/sessions/2026-09-03-m3-buoyancy-spin-fix.md`。
+- **方案 1：接触门控水面线**（`crates/sand-core/src/body.rs` `surface_line`）：修上一条留下的结构性
+  错误——远场采样隔墙照采，地上的箱子挨着玻璃水槽/架高水槽会悬浮到水槽水面高度入睡（实测）。
+  采样列改由脚印像素左右邻格的液体接触决定、沿接触行向外连通、边外第 2 格起 `SURFACE_REACH = 5`；
+  读数自上而下（气泡免疫）、被刚体挡住的列作废、各列取最低。候选方案 0–5 对照与方案 5 的已知
+  缺陷入 spec 决策记录第 14 条。行为测试两条（玻璃水槽 / 架高水槽），单测三条。golden 重录，
+  六配置 SyncTest 绿；bench crate_yard 0.72 → 0.64 ms/tick。
 
 ## 2026-09-02
 

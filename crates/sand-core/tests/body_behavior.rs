@@ -526,3 +526,44 @@ fn plank_in_deep_pool_does_not_spin_up() {
     assert!(sleeping, "木条最终应入睡");
     assert!((110.0..=124.0).contains(&y), "木条应漂在水面附近：y = {y:.1}");
 }
+
+// ==================== 方案 1：接触门控水面线（2026-09-03，spec 决策记录第 14 条）====================
+
+/// 水面线只能来自与刚体边界相接触的液体：地上的箱子旁边隔着玻璃壁的水槽不得给它浮力。
+#[test]
+fn crate_beside_glass_tank_stays_on_ground() {
+    let mut s = body_sim(53, 1);
+    s.apply_setup(&[
+        floor(128, 128),
+        Op::Fill { material: 1, x0: 58, y0: 60, x1: 59, y1: 123 }, // 玻璃壁，与箱子隔 2 格空气
+        Op::Fill { material: 1, x0: 90, y0: 60, x1: 91, y1: 123 },
+        Op::Fill { material: 3, x0: 60, y0: 80, x1: 89, y1: 123 }, // 水面 y=80
+        Op::SpawnBody { material: WOOD, x: 40, y: 112, w: 16, h: 12, angle_deg: 0 },
+    ]);
+    for _ in 0..300 {
+        s.step(&[]);
+    }
+    let ((_, y, _), _, sleeping) = s.body_state(0).unwrap();
+    assert!((117.0..=119.0).contains(&y), "箱子应留在地上（箱心 y = {y:.1}，地上静止 = 118）");
+    assert!(sleeping, "地上的箱子应入睡");
+}
+
+/// 架高水槽的底板与箱子等高、水在箱子旁边但隔着底板与壁：同样不得给浮力。
+#[test]
+fn crate_beside_shelf_tank_stays_on_ground() {
+    let mut s = body_sim(59, 1);
+    s.apply_setup(&[
+        floor(128, 128),
+        Op::Fill { material: 1, x0: 58, y0: 118, x1: 91, y1: 119 }, // 底板
+        Op::Fill { material: 1, x0: 58, y0: 90, x1: 59, y1: 117 },
+        Op::Fill { material: 1, x0: 90, y0: 90, x1: 91, y1: 117 },
+        Op::Fill { material: 3, x0: 60, y0: 100, x1: 89, y1: 117 },
+        Op::SpawnBody { material: WOOD, x: 40, y: 112, w: 16, h: 12, angle_deg: 0 },
+    ]);
+    for _ in 0..300 {
+        s.step(&[]);
+    }
+    let ((_, y, _), _, sleeping) = s.body_state(0).unwrap();
+    assert!((117.0..=119.0).contains(&y), "箱子应留在地上（箱心 y = {y:.1}）");
+    assert!(sleeping, "地上的箱子应入睡");
+}

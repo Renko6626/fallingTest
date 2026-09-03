@@ -32,6 +32,9 @@ pub const MAX_BODIES: usize = 256;
 pub const OUT_OF_WORLD_MARGIN: i32 = 64;
 /// 地形碰撞只为刚体 AABB 外扩这么多 chunk 的范围生成（spec §4）。
 pub const TERRAIN_MARGIN: i32 = 1;
+/// 水面线采样从接触格沿接触行向外最多再走这么多格（spec §5）：紧邻列被自身溅水污染，
+/// 远列读数才稳；连通性由接触行保证。
+pub const SURFACE_REACH: i32 = 5;
 /// 逐淹没像素的阻力系数（spec §5）：线 `F = −K_DRAG × n_sub × v`，角
 /// `τ = −K_DRAG × Σ|r_i|² × ω`（同一系数，是"每个淹没像素受 −K·v_i"的合力与合力矩）。
 /// 取 200：对 16×12 木箱（浮力"弹簧"ω ≈ 10 rad/s）阻尼比 ≈ 0.8，近临界——入水后
@@ -252,8 +255,8 @@ impl Bodies {
             if body.stamped.is_empty() || phys.is_sleeping(body.handle) {
                 continue;
             }
-            let (x0, y0, x1, y1) = aabb_cells(body, phys);
-            let Some((h, rho)) = surface_line(world, table, (x0, y0, x1, y1)) else {
+            let aabb = aabb_cells(body, phys);
+            let Some((h, rho)) = surface_line(world, table, body, aabb) else {
                 continue;
             };
             let (px, py, _) = phys.transform(body.handle);
@@ -460,48 +463,90 @@ fn terrain_rects(world: &World, table: &MaterialTable, cx: u32, cy: u32) -> Vec<
         .collect()
 }
 
-/// 水面线采样（spec §5）：只采箱子**两侧各紧邻 2 列**（脚印之外），在 AABB 行范围
-/// 内自上而下找首个 Liquid 格；各列水面 y 取**最低者**（y 最大），`ρ_liq` 取样本里
-/// 出现最多的液体材质（并列取 id 小者）的 `density`。一列都没有 ⇒ `None`。
+/// 水面线采样（spec §5，方案 1"接触门控"，2026-09-03 决策记录第 14 条）。两步：
 ///
-/// 为什么取最低而不是中位数（2026-09-03 目检修订）：刚体自己推起来的水堆只会把读数
-/// **抬高**，从不压低——运动中的刚体把排开的水以自身线速度弹出，粒子立刻落回迎水面、
-/// 随刚体一起被抬着走，形成贴着刚体的水丘；斜木条出水时水丘比真实水面高十几格，
-/// 中位数被水丘俘获 ⇒ 判成全淹没 ⇒ 以 g/3 猛推出水 ⇒ 横拍回来的大力臂把假势能全部
-/// 转成自旋（实测 |ω| 爬到 22 rad/s）。取最低者：至少一侧没被水丘盖住就读到真水面；
-/// 尾流空腔只会让读数偏低，偏低是自限的（多沉一点就读回来了），偏高才是正反馈。
+/// **选列（接触门控）**：遍历脚印像素，左右邻格是非本体 Liquid 即一个接触；每个接触列
+/// 沿接触行向外穿过连续液体，取边外第 2 格起最多 `SURFACE_REACH` 格的列为采样列（紧邻列
+/// 只在一根远列都没有时兜底）。连通性由接触行保证——隔着玻璃壁的水槽、架高水槽里的水
+/// 走不过来（方案 0 的远场采样会把它们当水面，地上的箱子悬浮到水槽水面高度，实测）。
 ///
-/// 列里先碰到**别的刚体格**就整列作废：不然扫过邻体后读到的是邻体吃水线以下的水。
-/// 不采 AABB 内部的列：溅到**箱子顶上**的水会被误认成水面（Task 3 实测弹出水面）。
-fn surface_line(world: &World, table: &MaterialTable, (x0, y0, x1, y1): (i32, i32, i32, i32)) -> Option<(i32, u16)> {
-    let mut ys: Vec<i32> = Vec::new();
+/// **读数**：每根采样列在刚体 AABB 行带内**自上而下找第一个 Liquid 格**为该列水面；中途
+/// 先碰到刚体格（本体或他体）的列作废（自由面在刚体另一侧、这列看不见）；各列取**最低者**
+/// （y 最大）为 `h`；全部作废时退到接触格里最高的一格（至少那么高，偏低、自限）。
+/// `ρ_liq` 取接触格里出现最多的液体材质（并列取 id 小者）。一个接触都没有 ⇒ `None`。
+///
+/// 为什么自上而下而不是从接触向上扫连续液体：刚体旁边的水里满是瞬时气泡（空腔回填、
+/// 粒子落格），向上扫会塌到气泡处，"取最低"恰好选中它 ⇒ 力掉档 ⇒ 下沉 ⇒ 循环（实测
+/// crate_yard 里木箱/木条前 1500 tick 每 tick 重盖章、弹水 5000 粒、睡不着）。自上而下
+/// 对气泡免疫；溅到高处的水只会抬高单列读数，"取最低"把它排除。
+/// 为什么不采紧邻列：那是自身溅水与空腔回填首先扰动的地方。
+///
+/// 已知限制：刚体两侧都贴着墙（正好卡在同宽的槽里）时无接触 ⇒ 无浮力。
+fn surface_line(world: &World, table: &MaterialTable, body: &Body, (_, y0, _, _): (i32, i32, i32, i32)) -> Option<(i32, u16)> {
+    let is_liquid = |x: i32, y: i32| {
+        let c = world.cell(x, y);
+        !c.is_body() && table.category(c.material()) == Category::Liquid
+    };
+    // 接触列 x → (最高接触 y, 最低接触 y, 向外方向 ±1)（BTreeMap 定序）。
+    let mut contact: std::collections::BTreeMap<i32, (i32, i32, i32)> = std::collections::BTreeMap::new();
     let mut mats: Vec<u8> = Vec::new();
-    let (ya, yb) = ((y0 - 1).max(0), (y1 + 1).min(world.height() - 1));
-    // `aabb_cells` 已各向外扩 1 格：x0/x1 本身就是紧邻箱子的第一列，再各取一列；
-    // 另加每侧隔 3 格的一对远列——刚体排开的水粒子首先落在紧邻列上（下压一次就抬
-    // 一行，32 宽木条 = 200 格/s² 的踢，周期 19 tick 的浮沉极限环），远列不受这一
-    // 两 tick 的堆积影响。取最低者，多采只会更稳。
-    let cols = [x0 - 4, x0 - 3, x0 - 1, x0, x1, x1 + 1, x1 + 3, x1 + 4];
-    for x in cols {
-        if x < 0 || x >= world.width() {
-            continue;
-        }
-        for y in ya..=yb {
-            let c = world.cell(x, y);
-            if c.is_body() {
-                break; // 邻体挡住这一列：不采
+    for &(x, y, _) in &body.stamped {
+        for dir in [-1, 1] {
+            let nx = x + dir;
+            if !is_liquid(nx, y) {
+                continue;
             }
-            if table.category(c.material()) == Category::Liquid {
-                ys.push(y);
-                mats.push(c.material());
-                break;
-            }
+            mats.push(world.cell(nx, y).material());
+            contact
+                .entry(nx)
+                .and_modify(|e| {
+                    e.0 = e.0.min(y);
+                    if y > e.1 {
+                        e.1 = y;
+                        e.2 = dir;
+                    }
+                })
+                .or_insert((y, y, dir));
         }
     }
-    if ys.is_empty() {
+    if contact.is_empty() {
         return None;
     }
-    let h = *ys.iter().max().expect("非空");
+    let mut cols: std::collections::BTreeSet<i32> = std::collections::BTreeSet::new();
+    for (&x, &(_, y_low, dir)) in &contact {
+        for k in 1..=SURFACE_REACH {
+            let cx = x + dir * k;
+            if !is_liquid(cx, y_low) {
+                break;
+            }
+            cols.insert(cx);
+        }
+    }
+    if cols.is_empty() {
+        cols = contact.keys().copied().collect();
+    }
+    let ya = (y0 - 1).max(0);
+    let mut h: Option<i32> = None;
+    for &x in &cols {
+        let mut y = ya;
+        let found = loop {
+            let c = world.cell(x, y);
+            if c.is_body() {
+                break None;
+            }
+            if table.category(c.material()) == Category::Liquid {
+                break Some(y);
+            }
+            if y >= world.height() - 1 {
+                break None;
+            }
+            y += 1;
+        };
+        if let Some(yf) = found {
+            h = Some(h.map_or(yf, |old: i32| old.max(yf)));
+        }
+    }
+    let h = h.unwrap_or_else(|| contact.values().map(|e| e.0).min().expect("非空"));
     mats.sort_unstable();
     let mut best = (mats[0], 0usize);
     let mut i = 0;
@@ -816,47 +861,92 @@ mod tests {
         assert_eq!(bodies.terrain_rebuilds, first + 1);
     }
 
-    /// 水面线：两侧水面 y = 40/42 ⇒ 取最低者 h = 42（水丘只抬高读数）；半浸箱子的
-    /// 淹没数 = 位图下半。
+    /// 水面线：左邻列水面 40、右邻列 42 ⇒ 取最低者 h = 42；半浸箱子的淹没数 = 位图下半。
     #[test]
     fn surface_line_and_submerged_count() {
         let (mut w, t, mut phys, mut bodies) = setup();
-        // 箱子 8×4 放在 (20,40)..(27,43)；采样列 = AABB 外扩后的 18/19 与 29/30，
-        // 左列 19 填水到 40、右列 29 填水到 42
+        // 箱子 8×4 放在 (20,40)..(27,43)；紧贴的左列 19 填水到 40、右列 28 填水到 42
         for y in 40..60 {
             w.set_cell_stamped(&t, 19, y, WATER, 0);
         }
         for y in 42..60 {
-            w.set_cell_stamped(&t, 29, y, WATER, 0);
+            w.set_cell_stamped(&t, 28, y, WATER, 0);
         }
         bodies.spawn_rect(&mut phys, &t, WOOD, 20, 40, 8, 4, 0);
         let mut spawns = Vec::new();
         bodies.stamp_all(&mut w, &t, &mut phys, 0, &mut spawns);
-        let (x0, y0, x1, y1) = aabb_cells(&bodies.list[0], &phys);
-        let (h, rho) = surface_line(&w, &t, (x0, y0, x1, y1)).unwrap();
+        let (h, rho) = surface_line(&w, &t, &bodies.list[0], aabb_cells(&bodies.list[0], &phys)).unwrap();
         assert_eq!(h, 42, "两列 40/42 ⇒ 取最低者 42");
         assert_eq!(rho, 16);
         let sub = bodies.list[0].stamped.iter().filter(|&&(_, y, _)| y >= 42).count();
         assert_eq!(sub, 8 * 2, "y ≥ 42 的像素 = 下半两行");
     }
 
-    /// 采样列先碰到别的刚体格 ⇒ 该列作废；另一侧照常读到水面。
+    /// 接触门控：隔着一格墙的水不算（方案 0 会穿墙采到）；只堆在箱顶/垫在箱底的水也不算。
     #[test]
-    fn surface_line_skips_columns_blocked_by_other_bodies() {
+    fn surface_line_requires_side_contact() {
         let (mut w, t, mut phys, mut bodies) = setup();
+        bodies.spawn_rect(&mut phys, &t, WOOD, 20, 40, 8, 4, 0);
+        let mut spawns = Vec::new();
+        bodies.stamp_all(&mut w, &t, &mut phys, 0, &mut spawns);
+        // 右侧 x=28 是墙，x=29.. 是水
+        for y in 30..60 {
+            w.set_cell_stamped(&t, 28, y, WALL, 0);
+            w.set_cell_stamped(&t, 29, y, WATER, 0);
+        }
+        assert!(surface_line(&w, &t, &bodies.list[0], aabb_cells(&bodies.list[0], &phys)).is_none(), "隔墙的水不得当水面");
+        // 箱顶堆水、箱底垫水：都不是侧面接触
+        for x in 20..28 {
+            w.set_cell_stamped(&t, x, 39, WATER, 0);
+            w.set_cell_stamped(&t, x, 44, WATER, 0);
+        }
+        assert!(surface_line(&w, &t, &bodies.list[0], aabb_cells(&bodies.list[0], &phys)).is_none(), "顶/底邻格的水不得当水面");
+        // 左侧贴着一列水（40..59）⇒ 接触成立，h = 40
         for y in 40..60 {
             w.set_cell_stamped(&t, 19, y, WATER, 0);
         }
-        for y in 45..60 {
-            w.set_cell_stamped(&t, 29, y, WATER, 0);
-        }
+        assert_eq!(surface_line(&w, &t, &bodies.list[0], aabb_cells(&bodies.list[0], &phys)).unwrap().0, 40);
+    }
+
+    /// 向上扫被刚体格挡住的列不算读到水面：左列上方压着另一刚体（挡在 42 之上）、右列通到
+    /// 自由面 40 ⇒ 取 40，而不是把被挡的 42 当最低水面。
+    #[test]
+    fn surface_line_ignores_columns_blocked_by_bodies() {
+        let (mut w, t, mut phys, mut bodies) = setup();
         bodies.spawn_rect(&mut phys, &t, WOOD, 20, 40, 8, 4, 0);
-        bodies.spawn_rect(&mut phys, &t, WOOD, 28, 38, 8, 4, 0); // 紧贴右侧、盖住采样列 29/30 的上方
+        bodies.spawn_rect(&mut phys, &t, WOOD, 12, 36, 8, 6, 0); // 覆盖 x 12..19、y 36..41
         let mut spawns = Vec::new();
         bodies.stamp_all(&mut w, &t, &mut phys, 0, &mut spawns);
-        let (x0, y0, x1, y1) = aabb_cells(&bodies.list[0], &phys);
-        let (h, _) = surface_line(&w, &t, (x0, y0, x1, y1)).unwrap();
-        assert_eq!(h, 40, "右列被邻体挡住作废，只剩左列 40");
+        for y in 42..60 {
+            w.set_cell_stamped(&t, 19, y, WATER, 0);
+        }
+        for y in 40..60 {
+            w.set_cell_stamped(&t, 28, y, WATER, 0);
+        }
+        assert_eq!(surface_line(&w, &t, &bodies.list[0], aabb_cells(&bodies.list[0], &phys)).unwrap().0, 40);
+        // 右列的水撤掉 ⇒ 只剩被挡住的左列，退到下界 42
+        for y in 40..60 {
+            w.set_cell_stamped(&t, 28, y, 0, 0);
+        }
+        assert_eq!(surface_line(&w, &t, &bodies.list[0], aabb_cells(&bodies.list[0], &phys)).unwrap().0, 42);
+    }
+
+    /// 自上而下读数对水里的气泡免疫：列 19 水 36..59、41 是气泡 ⇒ 读到 AABB 行带顶 38。
+    #[test]
+    fn surface_line_ignores_bubbles_below_surface() {
+        let (mut w, t, mut phys, mut bodies) = setup();
+        bodies.spawn_rect(&mut phys, &t, WOOD, 20, 40, 8, 4, 0);
+        let mut spawns = Vec::new();
+        bodies.stamp_all(&mut w, &t, &mut phys, 0, &mut spawns);
+        for y in 36..60 {
+            if y != 41 {
+                w.set_cell_stamped(&t, 19, y, WATER, 0);
+                w.set_cell_stamped(&t, 18, y, WATER, 0);
+            }
+        }
+        let aabb = aabb_cells(&bodies.list[0], &phys);
+        assert_eq!(aabb.1, 39, "AABB 顶 = 39，行带从 38 起");
+        assert_eq!(surface_line(&w, &t, &bodies.list[0], aabb).unwrap().0, 38);
     }
 
     fn stamp_once(bodies: &mut Bodies, w: &mut World, t: &MaterialTable, phys: &mut PhysicsWorld) {
