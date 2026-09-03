@@ -5,6 +5,23 @@
 
 ## [Unreleased]
 
+## 2026-09-03
+
+### Added
+- **`SpawnBody.angle_deg`**（`crates/sand-core/src/{world,body,lib}.rs`、`sand-harness/scenario.rs`）：
+  刚体初始旋转（整数度，缺省 0，边界一次转 f32 弧度）。行为测试 `tilted_plank_rights_itself_in_water`
+  ——32×6 木条 35° 斜入水，浮力施于淹没质心的扶正力矩把它扳平漂浮；`crate_yard` 加入该长条，
+  golden 重录。spec 决策记录第 12 条。
+
+### Fixed
+- **水里的刚体越转越快**（`crates/sand-core/src/{body,physics,lib}.rs`）：根因是刚体自己推起的水丘
+  被 `surface_line` 采成水面（`h` 高出真水面 18 格 ⇒ 全淹没 ⇒ 弹出水面 ⇒ 横拍回来的大力臂把假势能
+  转成自旋），且阻力只阻线速度、自旋零耗散。修：水面线取各列最低者 + 远列；淹没量按像素连续中心
+  分数计权（2026-09-02 ③ 声称的"像素分数"当时未落地，此次真正落地）；角阻力 `−K·Σw|r|²·ω`。
+  回归测试 `plank_in_deep_pool_does_not_spin_up`（|ω| 有界、稳定后不转、最终入睡）；`Sim::body_state`
+  诊断视图；`crate_yard` golden 重录，六配置 SyncTest 绿；bench 0.72 ms/tick（修前 1.07）。
+  spec 决策记录第 13 条；会话账本 `docs/sessions/2026-09-03-m3-buoyancy-spin-fix.md`。
+
 ## 2026-09-02
 
 ### Added

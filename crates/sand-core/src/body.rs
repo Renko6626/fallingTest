@@ -32,8 +32,10 @@ pub const MAX_BODIES: usize = 256;
 pub const OUT_OF_WORLD_MARGIN: i32 = 64;
 /// 地形碰撞只为刚体 AABB 外扩这么多 chunk 的范围生成（spec §4）。
 pub const TERRAIN_MARGIN: i32 = 1;
-/// 线阻力系数（spec §5）：`F = −K_DRAG × n_sub × v`。取 200：对 16×12 木箱
-/// （浮力"弹簧"ω ≈ 10 rad/s）阻尼比 ≈ 0.8，近临界——入水后一两个来回即静止。目检可调。
+/// 逐淹没像素的阻力系数（spec §5）：线 `F = −K_DRAG × n_sub × v`，角
+/// `τ = −K_DRAG × Σ|r_i|² × ω`（同一系数，是"每个淹没像素受 −K·v_i"的合力与合力矩）。
+/// 取 200：对 16×12 木箱（浮力"弹簧"ω ≈ 10 rad/s）阻尼比 ≈ 0.8，近临界——入水后
+/// 一两个来回即静止；全淹没时角阻尼率与线阻尼率相同（≈ K/ρ_body）。目检可调。
 pub const K_DRAG: f32 = 200.0;
 
 pub struct Body {
@@ -112,8 +114,9 @@ impl Bodies {
         self.list.iter().find(|b| b.id == id)
     }
 
-    /// 生成矩形刚体（spec §8）：`(x, y)` 左上角格坐标，`w×h` 格。契约：材质 Static、
-    /// 面积 ≥ `MIN_BODY_PIXELS`、数量 < `MAX_BODIES`；违反即确定性拒绝并计数。
+    /// 生成矩形刚体（spec §8）：`(x, y)` 左上角格坐标，`w×h` 格，`angle_deg` 绕位图
+    /// 中心的初始旋转（整数度）。契约：材质 Static、面积 ≥ `MIN_BODY_PIXELS`、数量 <
+    /// `MAX_BODIES`；违反即确定性拒绝并计数。
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn spawn_rect(
         &mut self,
@@ -124,6 +127,7 @@ impl Bodies {
         y: i32,
         w: u16,
         h: u16,
+        angle_deg: i16,
     ) -> bool {
         let area = w as usize * h as usize;
         if self.list.len() >= MAX_BODIES
@@ -138,7 +142,9 @@ impl Bodies {
         let rects = rect_cover(&mask, w as usize, h as usize);
         let pivot = (w as f32 * 0.5, h as f32 * 0.5);
         let pos = (x as f32 + pivot.0, y as f32 + pivot.1);
-        let handle = phys.insert_body(&rects, pivot, table.density(material) as f32, pos, 0.0, (0.0, 0.0), 0.0);
+        // 整数度 → f32 弧度：唯一的一次转换，f32 乘法在 IEEE 下确定。
+        let angle = angle_deg as f32 * (std::f32::consts::PI / 180.0);
+        let handle = phys.insert_body(&rects, pivot, table.density(material) as f32, pos, angle, (0.0, 0.0), 0.0);
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
         self.list.push(Body {
@@ -231,8 +237,16 @@ impl Bodies {
     }
 
     /// 第 3 步前半之二（spec §5，采样式阿基米德）：对每个清醒刚体，水面线采样得
-    /// `h`，淹没像素 = 上次盖章脚印中 `y ≥ h` 者；`F_浮 = n_sub × ρ_liq × g` 逆重力施于
-    /// 淹没质心，阻力 `−K_DRAG × n_sub × v`。全整数计数，进引擎前才转 f32。
+    /// `h`；上次盖章脚印的每个像素按其**连续**世界中心（局部像素中心经刚体变换，随
+    /// 位姿连续变化，不是盖章格的整数坐标）算被 `y ≥ h` 半平面盖住的分数 `w ∈ [0, 1]`。
+    /// `F_浮 = Σw × ρ_liq × g` 逆重力施于加权质心，阻力 `−K_DRAG × Σw × v`、角阻力
+    /// `−K_DRAG × Σ w|r|² × ω`。
+    ///
+    /// 为什么按分数（2026-09-03 目检修订）：整格计数下浮力是位姿的阶梯函数，一行就是
+    /// 一整排像素的力阶（32 宽木条 = 200 格/s²），平衡点落在台阶立面上 ⇒ 每 tick 在
+    /// ±1.7 格/s 间抖、永远过不了 1 格/s 的睡眠阈值；连续计权才有真平衡点。没有角阻尼
+    /// 时浮体的横摇永不衰减，任何扰动注入的能量全留在自旋里，故角阻力同时补上。
+    /// 浮点只在此处与引擎边界活动，累加按清单序，确定。
     pub(crate) fn apply_buoyancy(&mut self, world: &World, table: &MaterialTable, phys: &mut PhysicsWorld) {
         for body in &self.list {
             if body.stamped.is_empty() || phys.is_sleeping(body.handle) {
@@ -242,22 +256,35 @@ impl Bodies {
             let Some((h, rho)) = surface_line(world, table, (x0, y0, x1, y1)) else {
                 continue;
             };
-            let (mut n, mut sx, mut sy) = (0i64, 0i64, 0i64);
-            for &(x, y, _) in &body.stamped {
-                if y >= h {
-                    n += 1;
-                    sx += x as i64;
-                    sy += y as i64;
+            let (px, py, _) = phys.transform(body.handle);
+            let (pvx, pvy) = body.pivot();
+            let w = body.w as i32;
+            let hf = h as f32;
+            let (mut n, mut sx, mut sy, mut r2) = (0f32, 0f32, 0f32, 0f32);
+            for &(_, _, idx) in &body.stamped {
+                let (i, j) = ((idx as i32 % w) as f32, (idx as i32 / w) as f32);
+                let (cx, cy) = phys.local_to_world(body.handle, (i + 0.5 - pvx, j + 0.5 - pvy));
+                // 像素竖向占 [cy − 0.5, cy + 0.5]，与 y ≥ h 的重叠长度
+                let wgt = (cy + 0.5 - hf).clamp(0.0, 1.0);
+                if wgt <= 0.0 {
+                    continue;
                 }
+                n += wgt;
+                sx += wgt * cx;
+                sy += wgt * cy;
+                let (dx, dy) = (cx - px, cy - py);
+                r2 += wgt * (dx * dx + dy * dy);
             }
-            if n == 0 {
+            if n <= 0.0 {
                 continue;
             }
-            let centroid = ((sx as f32 + 0.5 * n as f32) / n as f32, (sy as f32 + 0.5 * n as f32) / n as f32);
-            let f_up = n as f32 * rho as f32 * GRAVITY_CELLS_PER_S2;
+            let centroid = (sx / n, sy / n);
+            let f_up = n * rho as f32 * GRAVITY_CELLS_PER_S2;
 
             phys.apply_force_at(body.handle, (0.0, -f_up), centroid);
-            phys.apply_drag(body.handle, K_DRAG * n as f32);
+            // 逐像素阻力 −K·w·v_i、v_i = v + ω×r_i 的合力/合力矩：线 −K·Σw·v，角 −K·Σw|r|²·ω。
+            phys.apply_drag(body.handle, K_DRAG * n);
+            phys.apply_angular_drag(body.handle, K_DRAG * r2);
         }
     }
 
@@ -433,24 +460,28 @@ fn terrain_rects(world: &World, table: &MaterialTable, cx: u32, cy: u32) -> Vec<
         .collect()
 }
 
-/// 有序样本的"偶数个取较高者"中位数（y 向下为正 ⇒ 较高 = 较小）。
-fn median_high(sorted: &[i32]) -> i32 {
-    debug_assert!(!sorted.is_empty());
-    sorted[(sorted.len() - 1) / 2]
-}
-
 /// 水面线采样（spec §5）：只采箱子**两侧各紧邻 2 列**（脚印之外），在 AABB 行范围
-/// 内自上而下找首个 Liquid 格；各列水面 y 取中位数（偶数个取较高者），`ρ_liq` 取样本
-/// 里出现最多的液体材质（并列取 id 小者）的 `density`。一列都没有 ⇒ `None`。
+/// 内自上而下找首个 Liquid 格；各列水面 y 取**最低者**（y 最大），`ρ_liq` 取样本里
+/// 出现最多的液体材质（并列取 id 小者）的 `density`。一列都没有 ⇒ `None`。
 ///
-/// 不采 AABB 内部的列：被排开、溅到**箱子顶上**的水会被误认成水面，产生"越浮越高"
-/// 的正反馈（Task 3 实测把箱子弹出水面）。
+/// 为什么取最低而不是中位数（2026-09-03 目检修订）：刚体自己推起来的水堆只会把读数
+/// **抬高**，从不压低——运动中的刚体把排开的水以自身线速度弹出，粒子立刻落回迎水面、
+/// 随刚体一起被抬着走，形成贴着刚体的水丘；斜木条出水时水丘比真实水面高十几格，
+/// 中位数被水丘俘获 ⇒ 判成全淹没 ⇒ 以 g/3 猛推出水 ⇒ 横拍回来的大力臂把假势能全部
+/// 转成自旋（实测 |ω| 爬到 22 rad/s）。取最低者：至少一侧没被水丘盖住就读到真水面；
+/// 尾流空腔只会让读数偏低，偏低是自限的（多沉一点就读回来了），偏高才是正反馈。
+///
+/// 列里先碰到**别的刚体格**就整列作废：不然扫过邻体后读到的是邻体吃水线以下的水。
+/// 不采 AABB 内部的列：溅到**箱子顶上**的水会被误认成水面（Task 3 实测弹出水面）。
 fn surface_line(world: &World, table: &MaterialTable, (x0, y0, x1, y1): (i32, i32, i32, i32)) -> Option<(i32, u16)> {
     let mut ys: Vec<i32> = Vec::new();
     let mut mats: Vec<u8> = Vec::new();
     let (ya, yb) = ((y0 - 1).max(0), (y1 + 1).min(world.height() - 1));
-    // `aabb_cells` 已各向外扩 1 格：x0/x1 本身就是紧邻箱子的第一列，再各取一列。
-    let cols = [x0 - 1, x0, x1, x1 + 1];
+    // `aabb_cells` 已各向外扩 1 格：x0/x1 本身就是紧邻箱子的第一列，再各取一列；
+    // 另加每侧隔 3 格的一对远列——刚体排开的水粒子首先落在紧邻列上（下压一次就抬
+    // 一行，32 宽木条 = 200 格/s² 的踢，周期 19 tick 的浮沉极限环），远列不受这一
+    // 两 tick 的堆积影响。取最低者，多采只会更稳。
+    let cols = [x0 - 4, x0 - 3, x0 - 1, x0, x1, x1 + 1, x1 + 3, x1 + 4];
     for x in cols {
         if x < 0 || x >= world.width() {
             continue;
@@ -458,7 +489,7 @@ fn surface_line(world: &World, table: &MaterialTable, (x0, y0, x1, y1): (i32, i3
         for y in ya..=yb {
             let c = world.cell(x, y);
             if c.is_body() {
-                continue;
+                break; // 邻体挡住这一列：不采
             }
             if table.category(c.material()) == Category::Liquid {
                 ys.push(y);
@@ -470,8 +501,7 @@ fn surface_line(world: &World, table: &MaterialTable, (x0, y0, x1, y1): (i32, i3
     if ys.is_empty() {
         return None;
     }
-    ys.sort_unstable();
-    let h = median_high(&ys);
+    let h = *ys.iter().max().expect("非空");
     mats.sort_unstable();
     let mut best = (mats[0], 0usize);
     let mut i = 0;
@@ -624,9 +654,9 @@ mod tests {
     #[test]
     fn spawn_rect_enforces_contracts() {
         let (_, t, mut phys, mut bodies) = setup();
-        assert!(!bodies.spawn_rect(&mut phys, &t, WATER, 10, 10, 8, 8), "液体不能当刚体");
-        assert!(!bodies.spawn_rect(&mut phys, &t, WOOD, 10, 10, 3, 3), "面积 9 < 12");
-        assert!(bodies.spawn_rect(&mut phys, &t, WOOD, 10, 10, 8, 4));
+        assert!(!bodies.spawn_rect(&mut phys, &t, WATER, 10, 10, 8, 8, 0), "液体不能当刚体");
+        assert!(!bodies.spawn_rect(&mut phys, &t, WOOD, 10, 10, 3, 3, 0), "面积 9 < 12");
+        assert!(bodies.spawn_rect(&mut phys, &t, WOOD, 10, 10, 8, 4, 0));
         assert_eq!(bodies.rejected_total, 2);
         assert_eq!(bodies.list[0].id, 0);
         assert_eq!(bodies.next_id, 1);
@@ -636,7 +666,7 @@ mod tests {
     #[test]
     fn first_stamp_covers_exact_rect() {
         let (mut w, t, mut phys, mut bodies) = setup();
-        bodies.spawn_rect(&mut phys, &t, WOOD, 20, 30, 24, 16);
+        bodies.spawn_rect(&mut phys, &t, WOOD, 20, 30, 24, 16, 0);
         let mut spawns = Vec::new();
         bodies.stamp_all(&mut w, &t, &mut phys, 0, &mut spawns);
         let cells = stamped_cells(&w);
@@ -651,7 +681,7 @@ mod tests {
     #[test]
     fn unchanged_transform_writes_nothing() {
         let (mut w, t, mut phys, mut bodies) = setup();
-        bodies.spawn_rect(&mut phys, &t, WOOD, 20, 30, 24, 16);
+        bodies.spawn_rect(&mut phys, &t, WOOD, 20, 30, 24, 16, 0);
         let mut spawns = Vec::new();
         bodies.stamp_all(&mut w, &t, &mut phys, 0, &mut spawns);
         for c in w.chunks.iter_mut() {
@@ -668,7 +698,7 @@ mod tests {
     #[test]
     fn rotated_stamp_has_no_holes() {
         let (mut w, t, mut phys, mut bodies) = setup();
-        bodies.spawn_rect(&mut phys, &t, WOOD, 40, 40, 24, 16);
+        bodies.spawn_rect(&mut phys, &t, WOOD, 40, 40, 24, 16, 0);
         // 让引擎把它转 45°：直接改角速度并步进若干步（无重力干扰：把箱子放远处不落地也无妨）
         let h = bodies.list[0].handle;
         phys.set_velocity_for_test(h, (0.0, 0.0), std::f32::consts::FRAC_PI_4 * 60.0);
@@ -699,7 +729,7 @@ mod tests {
     #[test]
     fn counter_roundtrips_through_unstamp_and_stamp() {
         let (mut w, t, mut phys, mut bodies) = setup();
-        bodies.spawn_rect(&mut phys, &t, WOOD, 20, 30, 24, 16);
+        bodies.spawn_rect(&mut phys, &t, WOOD, 20, 30, 24, 16, 0);
         let mut spawns = Vec::new();
         bodies.stamp_all(&mut w, &t, &mut phys, 0, &mut spawns);
         // 模拟 CA 点燃了 (20,30)：写 counter=7
@@ -725,7 +755,7 @@ mod tests {
                 w.set_cell_stamped(&t, x, y, WATER, 0);
             }
         }
-        bodies.spawn_rect(&mut phys, &t, WOOD, 20, 30, 24, 16);
+        bodies.spawn_rect(&mut phys, &t, WOOD, 20, 30, 24, 16, 0);
         let mut spawns = Vec::new();
         bodies.stamp_all(&mut w, &t, &mut phys, 0, &mut spawns);
         assert_eq!(spawns.len(), 384, "每个被盖住的水格一颗粒子");
@@ -738,19 +768,12 @@ mod tests {
     fn stamping_skips_terrain_cells() {
         let (mut w, t, mut phys, mut bodies) = setup();
         w.set_cell_stamped(&t, 25, 35, WALL, 0);
-        bodies.spawn_rect(&mut phys, &t, WOOD, 20, 30, 24, 16);
+        bodies.spawn_rect(&mut phys, &t, WOOD, 20, 30, 24, 16, 0);
         let mut spawns = Vec::new();
         bodies.stamp_all(&mut w, &t, &mut phys, 0, &mut spawns);
         assert_eq!(w.cell(25, 35).material(), WALL);
         assert!(!w.cell(25, 35).is_body());
         assert_eq!(bodies.list[0].stamped.len(), 383);
-    }
-
-    #[test]
-    fn median_high_takes_higher_of_even_pair() {
-        assert_eq!(median_high(&[10, 20]), 10, "偶数个取较高者（y 小）");
-        assert_eq!(median_high(&[10, 20, 30]), 20);
-        assert_eq!(median_high(&[5]), 5);
     }
 
     /// 硬格掩码排除刚体自身格与 body_passable 材质；液体/气体不算硬格。
@@ -759,7 +782,7 @@ mod tests {
         let (mut w, t, mut phys, mut bodies) = setup();
         w.set_cell_stamped(&t, 5, 5, WALL, 0);
         w.set_cell_stamped(&t, 6, 5, WATER, 0);
-        bodies.spawn_rect(&mut phys, &t, WOOD, 20, 20, 8, 4);
+        bodies.spawn_rect(&mut phys, &t, WOOD, 20, 20, 8, 4, 0);
         let mut spawns = Vec::new();
         bodies.stamp_all(&mut w, &t, &mut phys, 0, &mut spawns);
         let rects = terrain_rects(&w, &t, 0, 0);
@@ -771,7 +794,7 @@ mod tests {
     fn terrain_cache_rebuilds_only_dirty_chunks() {
         let (mut w, t, mut phys, mut bodies) = setup();
         w.set_cell_stamped(&t, 30, 60, WALL, 0);
-        bodies.spawn_rect(&mut phys, &t, WOOD, 20, 20, 8, 4);
+        bodies.spawn_rect(&mut phys, &t, WOOD, 20, 20, 8, 4, 0);
         for c in w.chunks.iter_mut() {
             c.dirty = c.next_dirty.take();
         }
@@ -793,26 +816,47 @@ mod tests {
         assert_eq!(bodies.terrain_rebuilds, first + 1);
     }
 
-    /// 水面线：三列水面 y = 40/42/44 ⇒ h = 42；半浸箱子的淹没数 = 位图下半。
+    /// 水面线：两侧水面 y = 40/42 ⇒ 取最低者 h = 42（水丘只抬高读数）；半浸箱子的
+    /// 淹没数 = 位图下半。
     #[test]
     fn surface_line_and_submerged_count() {
         let (mut w, t, mut phys, mut bodies) = setup();
-        // 箱子 8×4 放在 (20,40)..(27,43)，两侧列各填水到不同高度
+        // 箱子 8×4 放在 (20,40)..(27,43)；采样列 = AABB 外扩后的 18/19 与 29/30，
+        // 左列 19 填水到 40、右列 29 填水到 42
         for y in 40..60 {
             w.set_cell_stamped(&t, 19, y, WATER, 0);
         }
         for y in 42..60 {
-            w.set_cell_stamped(&t, 28, y, WATER, 0);
+            w.set_cell_stamped(&t, 29, y, WATER, 0);
         }
-        bodies.spawn_rect(&mut phys, &t, WOOD, 20, 40, 8, 4);
+        bodies.spawn_rect(&mut phys, &t, WOOD, 20, 40, 8, 4, 0);
         let mut spawns = Vec::new();
         bodies.stamp_all(&mut w, &t, &mut phys, 0, &mut spawns);
         let (x0, y0, x1, y1) = aabb_cells(&bodies.list[0], &phys);
         let (h, rho) = surface_line(&w, &t, (x0, y0, x1, y1)).unwrap();
-        assert_eq!(h, 40, "两列 40/42 ⇒ 取较高者 40");
+        assert_eq!(h, 42, "两列 40/42 ⇒ 取最低者 42");
         assert_eq!(rho, 16);
         let sub = bodies.list[0].stamped.iter().filter(|&&(_, y, _)| y >= 42).count();
         assert_eq!(sub, 8 * 2, "y ≥ 42 的像素 = 下半两行");
+    }
+
+    /// 采样列先碰到别的刚体格 ⇒ 该列作废；另一侧照常读到水面。
+    #[test]
+    fn surface_line_skips_columns_blocked_by_other_bodies() {
+        let (mut w, t, mut phys, mut bodies) = setup();
+        for y in 40..60 {
+            w.set_cell_stamped(&t, 19, y, WATER, 0);
+        }
+        for y in 45..60 {
+            w.set_cell_stamped(&t, 29, y, WATER, 0);
+        }
+        bodies.spawn_rect(&mut phys, &t, WOOD, 20, 40, 8, 4, 0);
+        bodies.spawn_rect(&mut phys, &t, WOOD, 28, 38, 8, 4, 0); // 紧贴右侧、盖住采样列 29/30 的上方
+        let mut spawns = Vec::new();
+        bodies.stamp_all(&mut w, &t, &mut phys, 0, &mut spawns);
+        let (x0, y0, x1, y1) = aabb_cells(&bodies.list[0], &phys);
+        let (h, _) = surface_line(&w, &t, (x0, y0, x1, y1)).unwrap();
+        assert_eq!(h, 40, "右列被邻体挡住作废，只剩左列 40");
     }
 
     fn stamp_once(bodies: &mut Bodies, w: &mut World, t: &MaterialTable, phys: &mut PhysicsWorld) {
@@ -824,7 +868,7 @@ mod tests {
     #[test]
     fn cut_line_splits_into_two_bodies() {
         let (mut w, t, mut phys, mut bodies) = setup();
-        bodies.spawn_rect(&mut phys, &t, WOOD, 20, 30, 24, 16);
+        bodies.spawn_rect(&mut phys, &t, WOOD, 20, 30, 24, 16, 0);
         stamp_once(&mut bodies, &mut w, &t, &mut phys);
         for y in 30..46 {
             w.set_cell_stamped(&t, 32, y, 0, 1); // 中线被"炸"成 air
@@ -846,7 +890,7 @@ mod tests {
     #[test]
     fn corner_loss_reshapes_in_place() {
         let (mut w, t, mut phys, mut bodies) = setup();
-        bodies.spawn_rect(&mut phys, &t, WOOD, 20, 30, 24, 16);
+        bodies.spawn_rect(&mut phys, &t, WOOD, 20, 30, 24, 16, 0);
         stamp_once(&mut bodies, &mut w, &t, &mut phys);
         w.set_cell_stamped(&t, 20, 30, 0, 1);
         w.set_cell_stamped(&t, 21, 30, 0, 1);
@@ -863,7 +907,7 @@ mod tests {
     #[test]
     fn small_fragment_is_ejected_as_particles() {
         let (mut w, t, mut phys, mut bodies) = setup();
-        bodies.spawn_rect(&mut phys, &t, WOOD, 20, 30, 24, 16);
+        bodies.spawn_rect(&mut phys, &t, WOOD, 20, 30, 24, 16, 0);
         stamp_once(&mut bodies, &mut w, &t, &mut phys);
         // 切下左边 2 列（2×16=32 ≥ 12 会成 body）；改切 1 列外加割断成 1×3 的小块：
         // 把 x=21 整列炸掉，再把 x=20 列只留 y=30..32 三格
@@ -888,7 +932,7 @@ mod tests {
     fn reextract_respects_per_tick_budget() {
         let (mut w, t, mut phys, mut bodies) = setup();
         for i in 0..3 {
-            bodies.spawn_rect(&mut phys, &t, WOOD, 10 + i * 30, 30, 8, 4);
+            bodies.spawn_rect(&mut phys, &t, WOOD, 10 + i * 30, 30, 8, 4, 0);
         }
         stamp_once(&mut bodies, &mut w, &t, &mut phys);
         for i in 0..3 {
@@ -907,7 +951,7 @@ mod tests {
     #[test]
     fn hash_is_pure_and_sensitive() {
         let (mut w, t, mut phys, mut bodies) = setup();
-        bodies.spawn_rect(&mut phys, &t, WOOD, 20, 30, 24, 16);
+        bodies.spawn_rect(&mut phys, &t, WOOD, 20, 30, 24, 16, 0);
         let mut spawns = Vec::new();
         bodies.stamp_all(&mut w, &t, &mut phys, 0, &mut spawns);
         let h1 = bodies.hash_into(&phys);

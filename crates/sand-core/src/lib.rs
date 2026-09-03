@@ -82,6 +82,9 @@ pub struct Sim {
 /// setup 期世代戳：≠ tick 0 的戳（0），保证 setup 内容从 tick 0 起可动（spec §4.4）。
 const SETUP_STAMP: u8 = 255;
 
+/// [`Sim::body_state`] 的返回：`((x, y, angle), ((vx, vy), angvel), sleeping)`。
+pub type BodyState = ((f32, f32, f32), ((f32, f32), f32), bool);
+
 impl Sim {
     /// `reactions`：M2 起为必传项（`ReactionTable::empty(&table)` 即无反应，
     /// 与 M2 之前行为逐位一致——golden 取证）。
@@ -106,8 +109,8 @@ impl Sim {
     /// 应用一个输入 op（第 1 步）：`Op::SpawnBody` 路由到刚体层，其余交给 `World`。
     fn apply_one(&mut self, op: &Op, stamp: u8, fseed: u32, op_idx: usize) {
         match *op {
-            Op::SpawnBody { material, x, y, w, h } => {
-                self.bodies.spawn_rect(&mut self.physics, &self.table, material, x, y, w, h);
+            Op::SpawnBody { material, x, y, w, h, angle_deg } => {
+                self.bodies.spawn_rect(&mut self.physics, &self.table, material, x, y, w, h, angle_deg);
             }
             _ => self.world.apply_op(&self.table, op, stamp, fseed, op_idx, &mut self.spawn_queue),
         }
@@ -173,6 +176,13 @@ impl Sim {
 
     pub fn bodies(&self) -> &Bodies {
         &self.bodies
+    }
+
+    /// 只读诊断视图：刚体 `id` 的 `(x, y, angle)`、`((vx, vy), angvel)`、是否睡眠。
+    /// 供行为测试/探针断言姿态与角速度；不进哈希路径。
+    pub fn body_state(&self, id: u16) -> Option<BodyState> {
+        let b = self.bodies.get(id)?;
+        Some((self.physics.transform(b.handle), self.physics.velocity(b.handle), self.physics.is_sleeping(b.handle)))
     }
 
     /// 引擎快照 checksum（SyncTest 巡检，M3 spec §7）。

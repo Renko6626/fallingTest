@@ -162,6 +162,14 @@ impl PhysicsWorld {
         }
     }
 
+    /// 角阻力：`τ = −k · ω`。不唤醒。
+    pub(crate) fn apply_angular_drag(&mut self, h: BodyHandle, k: f32) {
+        if let Some(rb) = self.inner.bodies.get_mut(h.0) {
+            let w = rb.angvel();
+            rb.add_torque(-k * w, false);
+        }
+    }
+
     /// 一步（dt 固定）。步完清掉本 tick 的外力——调用方每 tick 重新施加。
     /// 清力按 handle 迭代：**只清零、不产生任何可观测差异**，允许。
     pub(crate) fn step(&mut self) {

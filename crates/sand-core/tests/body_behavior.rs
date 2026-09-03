@@ -43,7 +43,7 @@ fn body_cells(s: &Sim) -> Vec<(i32, i32)> {
 #[test]
 fn spawned_crate_is_stamped_and_falls() {
     let mut s = body_sim(1, 1);
-    s.apply_setup(&[Op::SpawnBody { material: WOOD, x: 40, y: 10, w: 24, h: 16 }]);
+    s.apply_setup(&[Op::SpawnBody { material: WOOD, x: 40, y: 10, w: 24, h: 16, angle_deg: 0 }]);
     assert_eq!(s.bodies().len(), 1);
     s.step(&[]);
     let c0 = body_cells(&s);
@@ -68,8 +68,8 @@ fn body_sim_is_deterministic_across_threads() {
     let mut a = body_sim(7, 1);
     let mut b = body_sim(7, 8);
     let setup = [
-        Op::SpawnBody { material: WOOD, x: 20, y: 10, w: 24, h: 16 },
-        Op::SpawnBody { material: STONE, x: 70, y: 30, w: 12, h: 12 },
+        Op::SpawnBody { material: WOOD, x: 20, y: 10, w: 24, h: 16, angle_deg: 0 },
+        Op::SpawnBody { material: STONE, x: 70, y: 30, w: 12, h: 12, angle_deg: 0 },
     ];
     a.apply_setup(&setup);
     b.apply_setup(&setup);
@@ -85,7 +85,7 @@ fn body_sim_is_deterministic_across_threads() {
 #[test]
 fn crate_falling_out_of_world_is_removed() {
     let mut s = body_sim(3, 1);
-    s.apply_setup(&[Op::SpawnBody { material: STONE, x: 40, y: 100, w: 12, h: 12 }]);
+    s.apply_setup(&[Op::SpawnBody { material: STONE, x: 40, y: 100, w: 12, h: 12, angle_deg: 0 }]);
     for _ in 0..600 {
         s.step(&[]);
     }
@@ -99,7 +99,7 @@ fn spawn_beyond_max_bodies_is_rejected() {
     let mut s = body_sim(5, 1);
     let mut ops = Vec::new();
     for i in 0..(sand_core::MAX_BODIES as i32 + 1) {
-        ops.push(Op::SpawnBody { material: WOOD, x: (i % 16) * 8, y: (i / 16) * 8, w: 4, h: 4 });
+        ops.push(Op::SpawnBody { material: WOOD, x: (i % 16) * 8, y: (i / 16) * 8, w: 4, h: 4, angle_deg: 0 });
     }
     s.apply_setup(&ops);
     assert_eq!(s.bodies().len(), sand_core::MAX_BODIES);
@@ -120,7 +120,7 @@ fn all_chunks_asleep(s: &Sim) -> bool {
 #[test]
 fn resting_body_lets_chunk_sleep() {
     let mut s = body_sim(11, 1);
-    s.apply_setup(&[floor(128, 128), Op::SpawnBody { material: WOOD, x: 40, y: 60, w: 24, h: 16 }]);
+    s.apply_setup(&[floor(128, 128), Op::SpawnBody { material: WOOD, x: 40, y: 60, w: 24, h: 16, angle_deg: 0 }]);
     for _ in 0..400 {
         s.step(&[]);
     }
@@ -138,7 +138,7 @@ fn crate_rests_on_sand_pile() {
     s.apply_setup(&[
         floor(128, 128),
         Op::Fill { material: 2, x0: 30, y0: 100, x1: 90, y1: 123 }, // 沙层 24 深
-        Op::SpawnBody { material: WOOD, x: 50, y: 40, w: 24, h: 16 },
+        Op::SpawnBody { material: WOOD, x: 50, y: 40, w: 24, h: 16, angle_deg: 0 },
     ]);
     for _ in 0..500 {
         s.step(&[]);
@@ -159,8 +159,8 @@ fn wood_crate_floats_stone_crate_sinks() {
         Op::Fill { material: 1, x0: 10, y0: 60, x1: 11, y1: 119 },
         Op::Fill { material: 1, x0: 116, y0: 60, x1: 117, y1: 119 },
         Op::Fill { material: 3, x0: 12, y0: 80, x1: 115, y1: 119 },
-        Op::SpawnBody { material: WOOD, x: 30, y: 40, w: 16, h: 12 },
-        Op::SpawnBody { material: STONE, x: 80, y: 40, w: 16, h: 12 },
+        Op::SpawnBody { material: WOOD, x: 30, y: 40, w: 16, h: 12, angle_deg: 0 },
+        Op::SpawnBody { material: STONE, x: 80, y: 40, w: 16, h: 12, angle_deg: 0 },
     ]);
     for _ in 0..900 {
         s.step(&[]);
@@ -187,7 +187,7 @@ fn full_pool_overflows_when_crate_drops() {
         Op::Fill { material: 1, x0: 40, y0: 90, x1: 41, y1: 119 },
         Op::Fill { material: 1, x0: 86, y0: 90, x1: 87, y1: 119 },
         Op::Fill { material: 3, x0: 42, y0: 90, x1: 85, y1: 119 },
-        Op::SpawnBody { material: STONE, x: 56, y: 30, w: 16, h: 12 },
+        Op::SpawnBody { material: STONE, x: 56, y: 30, w: 16, h: 12, angle_deg: 0 },
     ]);
     let water_cells0 = s.world().count_material(3);
     for _ in 0..600 {
@@ -255,7 +255,7 @@ fn total_body_pixels(s: &Sim) -> usize {
 #[test]
 fn explosion_splits_crate_in_two() {
     let mut s = body_sim(23, 1);
-    s.apply_setup(&[floor(128, 128), Op::SpawnBody { material: WOOD, x: 40, y: 100, w: 24, h: 16 }]);
+    s.apply_setup(&[floor(128, 128), Op::SpawnBody { material: WOOD, x: 40, y: 100, w: 24, h: 16, angle_deg: 0 }]);
     for _ in 0..200 {
         s.step(&[]);
     }
@@ -278,7 +278,7 @@ fn stamped_cells_ignite_like_their_material() {
     let mut s = burn_body_sim(29);
     s.apply_setup(&[
         floor(128, 128),
-        Op::SpawnBody { material: WOOD, x: 40, y: 108, w: 24, h: 16 },
+        Op::SpawnBody { material: WOOD, x: 40, y: 108, w: 24, h: 16, angle_deg: 0 },
     ]);
     for _ in 0..60 {
         s.step(&[]);
@@ -311,7 +311,7 @@ fn burning_crate_shrinks_and_collapses() {
     let mut s = burn_body_sim(31);
     s.apply_setup(&[
         floor(128, 128),
-        Op::SpawnBody { material: WOOD, x: 40, y: 108, w: 24, h: 16 },
+        Op::SpawnBody { material: WOOD, x: 40, y: 108, w: 24, h: 16, angle_deg: 0 },
     ]);
     for _ in 0..60 {
         s.step(&[]);
@@ -349,8 +349,8 @@ fn physics_snapshot_restore_is_lossless() {
     let mut b = body_sim(37, 1);
     let setup = [
         floor(128, 128),
-        Op::SpawnBody { material: WOOD, x: 20, y: 40, w: 24, h: 16 },
-        Op::SpawnBody { material: STONE, x: 70, y: 20, w: 12, h: 12 },
+        Op::SpawnBody { material: WOOD, x: 20, y: 40, w: 24, h: 16, angle_deg: 0 },
+        Op::SpawnBody { material: STONE, x: 70, y: 20, w: 12, h: 12, angle_deg: 0 },
     ];
     a.apply_setup(&setup);
     b.apply_setup(&setup);
@@ -377,7 +377,7 @@ fn overhanging_crate_topples_off_ledge() {
     s.apply_setup(&[
         floor(128, 128),
         Op::Fill { material: 1, x0: 20, y0: 90, x1: 60, y1: 123 }, // 台子
-        Op::SpawnBody { material: WOOD, x: 50, y: 60, w: 24, h: 16 }, // 一半悬在台沿外
+        Op::SpawnBody { material: WOOD, x: 50, y: 60, w: 24, h: 16, angle_deg: 0 }, // 一半悬在台沿外
     ]);
     let mut rotated = false;
     for _ in 0..300 {
@@ -407,7 +407,7 @@ fn floating_crate_settles_and_stops_ejecting_water() {
         Op::Fill { material: 1, x0: 10, y0: 60, x1: 11, y1: 119 },
         Op::Fill { material: 1, x0: 116, y0: 60, x1: 117, y1: 119 },
         Op::Fill { material: 3, x0: 12, y0: 80, x1: 115, y1: 119 },
-        Op::SpawnBody { material: WOOD, x: 30, y: 40, w: 16, h: 12 },
+        Op::SpawnBody { material: WOOD, x: 30, y: 40, w: 16, h: 12, angle_deg: 0 },
     ]);
     for _ in 0..900 {
         s.step(&[]);
@@ -440,7 +440,7 @@ fn explosion_debris_lands_as_powder_not_static() {
     .unwrap();
     let r = ReactionTable::empty(&t);
     let mut s = sim_with_reactions(2, 2, 43, 1, ScanMode::LiveRect, t, r);
-    s.apply_setup(&[floor(128, 128), Op::SpawnBody { material: WOOD, x: 40, y: 100, w: 24, h: 16 }]);
+    s.apply_setup(&[floor(128, 128), Op::SpawnBody { material: WOOD, x: 40, y: 100, w: 24, h: 16, angle_deg: 0 }]);
     for _ in 0..200 {
         s.step(&[]);
     }
@@ -462,4 +462,67 @@ fn explosion_debris_lands_as_powder_not_static() {
     }
     assert_eq!(static_wood_outside, 0, "不得留下悬空/粘连的静态木格");
     assert!(s.world().count_material(WOOD_DEBRIS) > 0, "碎屑应以粉末落地");
+}
+
+/// 斜着入水的长条被浮力扶正：32×6 木条以 35° 落进水塘，稳定后近乎水平漂浮
+/// （脚印高度 ≤ 9 行；初始斜放 bbox 高约 22 行）。浮力施于淹没质心 ⇒ 扶正力矩（spec §5）。
+#[test]
+fn tilted_plank_rights_itself_in_water() {
+    let mut s = body_sim(47, 1);
+    s.apply_setup(&[
+        Op::Fill { material: 1, x0: 0, y0: 120, x1: 127, y1: 123 },
+        Op::Fill { material: 1, x0: 10, y0: 60, x1: 11, y1: 119 },
+        Op::Fill { material: 1, x0: 116, y0: 60, x1: 117, y1: 119 },
+        Op::Fill { material: 3, x0: 12, y0: 80, x1: 115, y1: 119 },
+        Op::SpawnBody { material: WOOD, x: 48, y: 30, w: 32, h: 6, angle_deg: 35 },
+    ]);
+    s.step(&[]);
+    let c0 = body_cells(&s);
+    let h0 = c0.iter().map(|c| c.1).max().unwrap() - c0.iter().map(|c| c.1).min().unwrap() + 1;
+    assert!(h0 >= 18, "初始应是斜放的（bbox 高 {h0}）");
+    for _ in 0..1200 {
+        s.step(&[]);
+    }
+    let c1 = body_cells(&s);
+    // 旋转体的实心光栅化 = 面积 ± 边缘格（逆映射按格心判定），不要求恰等
+    assert!((c1.len() as i32 - 32 * 6).abs() <= 12, "木条完整（{} 格）", c1.len());
+    let (y0, y1) = (c1.iter().map(|c| c.1).min().unwrap(), c1.iter().map(|c| c.1).max().unwrap());
+    assert!(y1 - y0 < 9, "稳定后应近乎水平漂浮（bbox 高 {}）", y1 - y0 + 1);
+    assert!(y0 < 84 && y1 > 76, "应漂在水面 80 附近：{y0}..{y1}");
+}
+
+/// 回归（2026-09-03 目检：水里刚体越转越快）：crate_yard 的深水塘里 32×6 木条 35° 入水，
+/// 角速度不得爬升——全程 |ω| 有界，稳定后角速度趋零且最终入睡。
+///
+/// 根因：刚体自己推起来的水堆（盖章排开的水以刚体线速度弹出、立刻落回迎水面，随刚体
+/// 一起被抬着走）被 `surface_line` 采成"水面"，`h` 比真实水面高十几格 ⇒ 判成全淹没 ⇒
+/// 以 g/3 向上猛推 ⇒ 弹出水面横拍回来 ⇒ 单端入水的大力臂把这份假势能全转成自旋；
+/// 而阻力只阻线速度，自旋无处耗散。
+#[test]
+fn plank_in_deep_pool_does_not_spin_up() {
+    let t = body_table();
+    let r = ReactionTable::empty(&t);
+    let mut s = sim_with_reactions(4, 3, 20260902, 1, ScanMode::LiveRect, t, r);
+    s.apply_setup(&[
+        Op::Fill { material: 1, x0: 0, y0: 180, x1: 255, y1: 191 },
+        Op::Fill { material: 1, x0: 170, y0: 120, x1: 173, y1: 179 },
+        Op::Fill { material: 1, x0: 246, y0: 120, x1: 249, y1: 179 },
+        Op::Fill { material: 3, x0: 174, y0: 120, x1: 245, y1: 179 },
+        Op::SpawnBody { material: WOOD, x: 190, y: 10, w: 32, h: 6, angle_deg: 35 },
+    ]);
+    let mut max_av = 0f32;
+    let mut late_max_av = 0f32;
+    for tick in 0..3000 {
+        s.step(&[]);
+        let (_, (_, av), _) = s.body_state(0).expect("木条应一直存在");
+        max_av = max_av.max(av.abs());
+        if tick >= 1500 {
+            late_max_av = late_max_av.max(av.abs());
+        }
+    }
+    assert!(max_av < 6.0, "全程角速度必须有界：max |ω| = {max_av:.2} rad/s");
+    assert!(late_max_av < 0.5, "1500 tick 后应基本不转：max |ω| = {late_max_av:.2} rad/s");
+    let ((_, y, _), _, sleeping) = s.body_state(0).unwrap();
+    assert!(sleeping, "木条最终应入睡");
+    assert!((110.0..=124.0).contains(&y), "木条应漂在水面附近：y = {y:.1}");
 }

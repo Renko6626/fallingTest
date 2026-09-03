@@ -661,9 +661,17 @@ pub enum OpSpec {
         #[serde(default = "default_max_durability")]
         max_durability: u8,
     },
-    /// `Op::SpawnBody` 的 RON 表面形式（M3 spec §8）：左上角格坐标 + 尺寸。
-    /// 加载期契约：材质 Static、面积 ≥ `MIN_BODY_PIXELS`。
-    SpawnBody { material: String, x: i32, y: i32, w: u16, h: u16 },
+    /// `Op::SpawnBody` 的 RON 表面形式（M3 spec §8）：左上角格坐标 + 尺寸 + 可选初始
+    /// 角度（整数度，缺省 0）。加载期契约：材质 Static、面积 ≥ `MIN_BODY_PIXELS`。
+    SpawnBody {
+        material: String,
+        x: i32,
+        y: i32,
+        w: u16,
+        h: u16,
+        #[serde(default)]
+        angle_deg: i16,
+    },
 }
 
 /// 场景 RON 里的十进制小数 → Q16.16 定点（`Fx`），**round**（非截断）语义：
@@ -787,7 +795,7 @@ fn resolve_op(spec: &OpSpec, table: &MaterialTable) -> Result<Op, String> {
             }
             Op::Explode { x: *x, y: *y, r: *r, power: *power, max_durability: *max_durability }
         }
-        OpSpec::SpawnBody { material, x, y, w, h } => {
+        OpSpec::SpawnBody { material, x, y, w, h, angle_deg } => {
             let mid = id(material)?;
             if table.category(mid) != Category::Static {
                 return Err(format!("SpawnBody 材质 '{material}' 必须是 Static 类别（M3 spec §3 契约）"));
@@ -798,7 +806,7 @@ fn resolve_op(spec: &OpSpec, table: &MaterialTable) -> Result<Op, String> {
                     w, h
                 ));
             }
-            Op::SpawnBody { material: mid, x: *x, y: *y, w: *w, h: *h }
+            Op::SpawnBody { material: mid, x: *x, y: *y, w: *w, h: *h, angle_deg: *angle_deg }
         }
     })
 }
@@ -1426,14 +1434,14 @@ mod tests {
     #[test]
     fn resolve_op_spawn_body_requires_static_and_min_area() {
         let t = table_with_water();
-        let ok = resolve_op(&OpSpec::SpawnBody { material: "wall".into(), x: 10, y: 20, w: 8, h: 4 }, &t).unwrap();
-        assert!(matches!(ok, Op::SpawnBody { material: 1, x: 10, y: 20, w: 8, h: 4 }));
+        let ok = resolve_op(&OpSpec::SpawnBody { material: "wall".into(), x: 10, y: 20, w: 8, h: 4, angle_deg: 30 }, &t).unwrap();
+        assert!(matches!(ok, Op::SpawnBody { material: 1, x: 10, y: 20, w: 8, h: 4, angle_deg: 30 }));
         assert!(
-            resolve_op(&OpSpec::SpawnBody { material: "water".into(), x: 0, y: 0, w: 8, h: 4 }, &t).is_err(),
+            resolve_op(&OpSpec::SpawnBody { material: "water".into(), x: 0, y: 0, w: 8, h: 4, angle_deg: 0 }, &t).is_err(),
             "液体不能当刚体材质"
         );
         assert!(
-            resolve_op(&OpSpec::SpawnBody { material: "wall".into(), x: 0, y: 0, w: 3, h: 3 }, &t).is_err(),
+            resolve_op(&OpSpec::SpawnBody { material: "wall".into(), x: 0, y: 0, w: 3, h: 3, angle_deg: 0 }, &t).is_err(),
             "面积 9 < MIN_BODY_PIXELS 必须拒绝"
         );
     }

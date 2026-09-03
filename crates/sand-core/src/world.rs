@@ -32,8 +32,10 @@ pub enum Op {
     /// 整数签名——圆心/半径是格坐标，不经过 `Fx` 量化。
     Explode { x: i32, y: i32, r: i32, power: u32, max_durability: u8 },
     /// 生成矩形刚体（M3 spec §8）：材质须 Static（加载期契约），`(x, y)` 为左上角
-    /// 格坐标，`w×h` 格。由 `Sim` 路由到 `Bodies::spawn_rect`（World 不持有刚体）。
-    SpawnBody { material: u8, x: i32, y: i32, w: u16, h: u16 },
+    /// 格坐标，`w×h` 格；`angle_deg` 为绕位图中心的初始旋转（整数度，逆时针为正，
+    /// 缺省 0——整数进、`f32` 弧度出，转换在 `physics` 边界一次完成）。
+    /// 由 `Sim` 路由到 `Bodies::spawn_rect`（World 不持有刚体）。
+    SpawnBody { material: u8, x: i32, y: i32, w: u16, h: u16, angle_deg: i16 },
 }
 
 /// 生成队列条目（M1 spec §4 第 3 步 a）：由 `Op::Emit`/`Op::Explode`

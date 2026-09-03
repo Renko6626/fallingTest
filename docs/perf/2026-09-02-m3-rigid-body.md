@@ -2,7 +2,7 @@
 
 > 文档路径：`docs/perf/2026-09-02-m3-rigid-body.md`
 > 运行时版本：Rust（sand-core + sand-harness，rapier2d 0.35.3 enhanced-determinism）
-> 最近更新：2026-09-02 (UTC+8)
+> 最近更新：2026-09-03 (UTC+8)
 > **Status**: Implemented
 
 对照 M3 spec §0 验收第 6 项。before 侧 = `c2ba933`（M3 动工前收口点）。
@@ -43,3 +43,15 @@
   若成为瓶颈，第一杠杆是只对账所在 chunk 本 tick 有写入的刚体。
 - 地形矩形数：`rect_cover` 对粗糙沙面每 chunk 产出数十矩形，仅刚体附近 chunk 才生成；
   marching squares/DP 的必要性等这里出数字再议（spec 决策记录第 7 条）。
+
+## 2026-09-03 追记：浮力修订后（spec 决策记录第 13 条）
+
+同口径（5000 tick、3 次中位、`--scan live`；场景此时多了 32×6 斜入水木条）：
+
+| 场景 | 线程 | 修前（09-02） | 修后 | Δ |
+|---|---|---|---|---|
+| crate_yard | 1 | 1.066 | 0.720 | −32% |
+| crate_yard | 8 | 1.050 | 0.768 | −27% |
+
+变快不是浮力算法更省（分数计权每像素多一次引擎变换），而是浮体真能入睡了：此前水里的刚体
+永远清醒，每 tick 反盖章/盖章 + 弹水粒子 + 唤醒 chunk，占了 crate_yard 后半程的大头。
