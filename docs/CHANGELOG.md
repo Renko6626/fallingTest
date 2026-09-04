@@ -36,6 +36,12 @@
   （入哈希）相差 ≥ `WAKE_H_ROWS = 2` 行即唤醒。行为测试 `sleeping_floater_wakes_when_water_drains`；
   golden 重录、六配置 SyncTest 绿。spec §5 + 决策记录第 15 条。
 
+- **浮力尾巴收口**（`crates/sand-core/src/{body,physics}.rs`、`data/scenarios/crate_yard.ron`）：顶面载荷
+  （高于周围自由面的水丘往下压、堆满一行即唤醒睡眠浮体）、沉降闸门（`vel ≥ 2 格/tick` 的落水流不算接触）、
+  密封支撑（两侧贴墙的塞子压着封闭水柱：向下速度截断 + 抵消重力）；撤回"排开粒子带 ω×r"（维持横摇、
+  睡不着，四项开关二分定位）。行为测试四条、单测三条；木条改 tick 700 在池右半生成让扶正真的发生。
+  golden 重录、SyncTest 绿；旧场景 bench ≈ +7%；`wake_up=true` 代价实测 +0.9 ms 入提案 §4。spec 决策记录第 16 条。
+
 ### Proposed
 - **`docs/proposals/2026-09-03-noita-style-buoyancy.md`**：日后切到 Noita 式逐像素反作用浮力（水里不睡）
   的备选路线——得失对照、触发条件、最小切换步骤、安全出口（施力 `wake_up = true` 一行）。

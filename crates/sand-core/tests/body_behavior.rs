@@ -596,3 +596,104 @@ fn sleeping_floater_wakes_when_water_drains() {
     assert!(y1 < 118.0, "不该沉到池底：y = {y1:.1}");
     assert!(sleeping, "落到新水面后应再次入睡");
 }
+
+// ==================== 浮力尾巴（2026-09-03，spec 决策记录第 16 条）====================
+
+/// 一股水从旁边落下擦过地上的箱子：下落中的水（`vel` ≥ 2 格/tick）不算接触，箱子不得被抬。
+#[test]
+fn water_stream_beside_crate_gives_no_lift() {
+    let mut s = body_sim(67, 1);
+    s.apply_setup(&[
+        floor(128, 128),
+        Op::Fill { material: 3, x0: 58, y0: 20, x1: 58, y1: 100 },
+        Op::SpawnBody { material: WOOD, x: 40, y: 112, w: 16, h: 12, angle_deg: 0 },
+    ]);
+    let mut min_y = f32::MAX;
+    for _ in 0..300 {
+        s.step(&[]);
+        let ((_, y, _), _, _) = s.body_state(0).unwrap();
+        min_y = min_y.min(y);
+    }
+    assert!(min_y > 117.4, "落水流不得抬起箱子：最高到 y = {min_y:.1}（地上静止 = 118）");
+}
+
+/// 卡在同宽槽里的木箱压着一段封闭水柱：不可压缩的水托住它（密封支撑），不沉到槽底。
+#[test]
+fn plug_in_sealed_channel_rests_on_trapped_water() {
+    let mut s = body_sim(71, 1);
+    s.apply_setup(&[
+        floor(128, 128),
+        Op::Fill { material: 1, x0: 38, y0: 60, x1: 39, y1: 123 },
+        Op::Fill { material: 1, x0: 56, y0: 60, x1: 57, y1: 123 },
+        Op::Fill { material: 3, x0: 40, y0: 100, x1: 55, y1: 123 },
+        Op::SpawnBody { material: WOOD, x: 40, y: 60, w: 16, h: 12, angle_deg: 0 },
+    ]);
+    for _ in 0..900 {
+        s.step(&[]);
+    }
+    let ((_, y, _), _, sleeping) = s.body_state(0).unwrap();
+    assert!((90.0..=100.0).contains(&y), "塞子应停在水柱顶（水面 100，箱心 ≈ 94）：y = {y:.1}");
+    assert!(sleeping, "停稳后应入睡");
+}
+
+/// 木条架在浮着的木箱上：木条的侧面碰不到水，不得被旁边的池水"抬"起来。
+#[test]
+fn plank_resting_on_floating_crate_is_not_lifted() {
+    let t = body_table();
+    let r = ReactionTable::empty(&t);
+    let mut s = sim_with_reactions(4, 3, 73, 1, ScanMode::LiveRect, t, r);
+    s.apply_setup(&[
+        Op::Fill { material: 1, x0: 0, y0: 180, x1: 255, y1: 191 },
+        Op::Fill { material: 1, x0: 170, y0: 120, x1: 173, y1: 179 },
+        Op::Fill { material: 1, x0: 246, y0: 120, x1: 249, y1: 179 },
+        Op::Fill { material: 3, x0: 174, y0: 120, x1: 245, y1: 179 },
+        Op::SpawnBody { material: WOOD, x: 185, y: 40, w: 20, h: 14, angle_deg: 0 },
+    ]);
+    for _ in 0..600 {
+        s.step(&[]);
+    }
+    let ((cx, cy, _), _, _) = s.body_state(0).unwrap();
+    // 木条水平地落在木箱正上方（两端各悬出 6 格）
+    s.step(&[Op::SpawnBody { material: WOOD, x: cx as i32 - 16, y: cy as i32 - 30, w: 32, h: 6, angle_deg: 0 }]);
+    for _ in 0..900 {
+        s.step(&[]);
+    }
+    let ((_, cy1, _), _, _) = s.body_state(0).unwrap();
+    let ((_, py, _), _, _) = s.body_state(1).unwrap();
+    assert!(py >= cy1 - 12.0, "木条不得浮到木箱之上：木条 y = {py:.1}，木箱 y = {cy1:.1}");
+    assert!(py <= cy1 + 8.0, "木条应仍在木箱附近（架着或滑到旁边）：木条 y = {py:.1}，木箱 y = {cy1:.1}");
+}
+
+/// 顶面载荷：往浮稳的木箱顶上倒 4 行水，箱子被压下去；水滑掉后回到原来的吃水并入睡。
+#[test]
+fn heap_on_floating_crate_pushes_it_down() {
+    let mut s = body_sim(79, 1);
+    s.apply_setup(&[
+        Op::Fill { material: 1, x0: 0, y0: 120, x1: 127, y1: 123 },
+        Op::Fill { material: 1, x0: 10, y0: 60, x1: 11, y1: 119 },
+        Op::Fill { material: 1, x0: 116, y0: 60, x1: 117, y1: 119 },
+        Op::Fill { material: 3, x0: 12, y0: 80, x1: 115, y1: 119 },
+        Op::SpawnBody { material: WOOD, x: 30, y: 40, w: 16, h: 12, angle_deg: 0 },
+    ]);
+    for _ in 0..900 {
+        s.step(&[]);
+    }
+    let ((_, y0, _), _, _) = s.body_state(0).unwrap();
+    let cells = body_cells(&s);
+    let (x0, x1) = (cells.iter().map(|c| c.0).min().unwrap(), cells.iter().map(|c| c.0).max().unwrap());
+    let top = cells.iter().map(|c| c.1).min().unwrap();
+    s.step(&[Op::Fill { material: 3, x0, y0: top - 4, x1, y1: top - 1 }]);
+    let mut max_y = f32::MIN;
+    for _ in 0..120 {
+        s.step(&[]);
+        let ((_, y, _), _, _) = s.body_state(0).unwrap();
+        max_y = max_y.max(y);
+    }
+    assert!(max_y > y0 + 1.0, "顶上 4 行水应把箱子压下去：{y0:.1} → 最深 {max_y:.1}");
+    for _ in 0..900 {
+        s.step(&[]);
+    }
+    let ((_, y1, _), _, sleeping) = s.body_state(0).unwrap();
+    assert!((y1 - y0).abs() < 2.5, "水滑掉后应回到原吃水附近：{y0:.1} → {y1:.1}");
+    assert!(sleeping, "应再次入睡");
+}

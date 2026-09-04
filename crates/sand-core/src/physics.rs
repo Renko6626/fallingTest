@@ -206,6 +206,27 @@ impl PhysicsWorld {
         (q.x, q.y)
     }
 
+    pub(crate) fn mass(&self, h: BodyHandle) -> f32 {
+        self.inner.bodies[h.0].mass()
+    }
+
+    /// 截断向下速度（密封支撑：塞子压着不可压缩的封闭水柱，撞上即停）。不唤醒。
+    pub(crate) fn stop_downward(&mut self, h: BodyHandle) {
+        if let Some(rb) = self.inner.bodies.get_mut(h.0) {
+            let v = rb.linvel();
+            if v.y > 0.0 {
+                rb.set_linvel(Vector::new(v.x, 0.0), false);
+            }
+        }
+    }
+
+    /// 质心处施力（密封支撑用）。不唤醒。
+    pub(crate) fn apply_force(&mut self, h: BodyHandle, f: (f32, f32)) {
+        if let Some(rb) = self.inner.bodies.get_mut(h.0) {
+            rb.add_force(Vector::new(f.0, f.1), false);
+        }
+    }
+
     pub(crate) fn velocity(&self, h: BodyHandle) -> ((f32, f32), f32) {
         let rb = &self.inner.bodies[h.0];
         let v = rb.linvel();

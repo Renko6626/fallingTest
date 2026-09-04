@@ -43,6 +43,13 @@ pub const SURFACE_REACH: i32 = 5;
 pub const WAKE_H_ROWS: i32 = 2;
 /// `Body::last_h` 的"没有水面线"哨兵。
 const NO_SURFACE: i32 = i32::MAX;
+/// "沉降液体"的竖直速度上限（`Cell::vel` 原始值，Q3.2，`VEL_ONE = 4` = 1 格/tick）：低于此
+/// 才算能给浮力/载荷的水。落水流几格内就到 ≥ 2 格/tick；入水冲击扰动的池水只有 1 格/tick 上下，
+/// 用 0 会把入水那几十 tick 的接触全滤掉、木条不减速砸到池底（实测）。
+pub const SETTLED_VEL_MAX: u8 = 2 * crate::cell::VEL_ONE;
+/// 顶面载荷（决策记录第 16 条）：堆在顶面像素上、且在水面线之上的沉降液体按格计重往下压；
+/// 睡眠刚体顶上堆到这么多格（≈ 一整行）即唤醒让它沉一沉、把水丘滑掉。
+pub const WAKE_TOP_LOAD_CELLS: f32 = 16.0;
 /// 逐淹没像素的阻力系数（spec §5）：线 `F = −K_DRAG × n_sub × v`，角
 /// `τ = −K_DRAG × Σ|r_i|² × ω`（同一系数，是"每个淹没像素受 −K·v_i"的合力与合力矩）。
 /// 取 200：对 16×12 木箱（浮力"弹簧"ω ≈ 10 rad/s）阻尼比 ≈ 0.8，近临界——入水后
@@ -278,22 +285,36 @@ impl Bodies {
             let (pvx, pvy) = body.pivot();
             let w = body.w as i32;
             let line = surface_line(world, table, body, aabb);
-            let h_now = line.map_or(NO_SURFACE, |(h, _)| h);
+            let h_now = line.as_ref().map_or(NO_SURFACE, |(h, _, _)| *h);
+            let load = top_load(world, table, body, line.as_ref().map_or(&[][..], |(_, _, c)| c.as_slice()));
             if sleeping {
                 let moved = match (h_now, body.last_h) {
                     (NO_SURFACE, NO_SURFACE) => false,
                     (NO_SURFACE, _) | (_, NO_SURFACE) => true,
                     (a, b) => (a - b).abs() >= WAKE_H_ROWS,
                 };
-                if !moved {
+                let heaped = load.is_some_and(|(n, _, _)| n >= WAKE_TOP_LOAD_CELLS);
+                if !moved && !heaped {
                     continue;
                 }
                 phys.wake(body.handle);
             }
             body.last_h = h_now;
+            if let Some((n_top, at, rho_top)) = load {
+                phys.apply_force_at(body.handle, (0.0, n_top * rho_top as f32 * GRAVITY_CELLS_PER_S2), at);
+            }
+            if line.is_none() {
+                if let Some(n_bottom) = sealed_bottom(world, table, body) {
+                    // 封闭水柱不可压缩：向下速度截断（撞上即停）+ 抵消重力 + 阻力（横向/微动）
+                    phys.stop_downward(body.handle);
+                    phys.apply_force(body.handle, (0.0, -phys.mass(body.handle) * GRAVITY_CELLS_PER_S2));
+                    phys.apply_drag(body.handle, K_DRAG * n_bottom);
+                }
+                continue;
+            }
             let (mut n, mut sx, mut sy, mut r2) = (0f32, 0f32, 0f32, 0f32);
             let mut rho = 0u16;
-            if let Some((h, r)) = line {
+            if let Some((h, r, _)) = line {
                 rho = r;
                 let hf = h as f32;
                 for &(_, _, idx) in &body.stamped {
@@ -498,6 +519,81 @@ fn terrain_rects(world: &World, table: &MaterialTable, cx: u32, cy: u32) -> Vec<
         .collect()
 }
 
+/// "沉降液体"：非本体 Liquid 且竖直速度位为 0（Layer G 的 `vel`）。落水流、溅落中的水
+/// 带速度，不算——一股水擦过箱子不该给它浮力（决策记录第 16 条）。
+fn settled_liquid(world: &World, table: &MaterialTable, x: i32, y: i32) -> bool {
+    let c = world.cell(x, y);
+    !c.is_body() && c.vel() < SETTLED_VEL_MAX && table.category(c.material()) == Category::Liquid
+}
+
+/// 顶面载荷（"5-lite"，决策记录第 16 条）：对每个上方是沉降液体的脚印像素，向上数连续沉降
+/// 液体格，只计**高于周围自由面**的部分——判据是"这一行在所有采样列里都不是沉降液体"
+/// （没有采样列 ⇒ 全计，如地上箱子顶着一摊水）。不能用"`y < h`"：`h` 只在 AABB 行带内扫，
+/// 全淹没的箱子 `h` 就是箱顶那行，上面整根池水柱都会被当成水丘（实测把木箱压到池底）。
+/// 返回 `(格数, 加权中心, ρ_liq)`；没有 ⇒ `None`。
+fn top_load(world: &World, table: &MaterialTable, body: &Body, cols: &[i32]) -> Option<(f32, (f32, f32), u16)> {
+    let (mut n, mut sx, mut sy) = (0f32, 0f32, 0f32);
+    let mut mats: Vec<u8> = Vec::new();
+    for &(x, y, _) in &body.stamped {
+        let mut yy = y - 1;
+        while yy >= 0 && settled_liquid(world, table, x, yy) {
+            if !cols.iter().any(|&cx| settled_liquid(world, table, cx, yy)) {
+                n += 1.0;
+                sx += x as f32 + 0.5;
+                sy += yy as f32 + 0.5;
+                mats.push(world.cell(x, yy).material());
+            }
+            yy -= 1;
+        }
+    }
+    if n <= 0.0 {
+        return None;
+    }
+    Some((n, (sx / n, sy / n), table.density(most_common(&mut mats))))
+}
+
+/// 密封支撑（决策记录第 16 条）：没有侧面液体接触，但底面贴着沉降液体、且**所有**侧面邻格都是
+/// 硬格（墙 / 粉末 / 他体）——卡在同宽槽里的塞子压着一段封闭水柱。不可压缩的水托住它
+/// （向下速度截断 + 抵消重力）：返回底面接触像素数（阻力系数用）；侧面有空气/液体/气体 ⇒
+/// 不密封 ⇒ `None`。
+fn sealed_bottom(world: &World, table: &MaterialTable, body: &Body) -> Option<f32> {
+    let mut n_bottom = 0usize;
+    for &(x, y, _) in &body.stamped {
+        for nx in [x - 1, x + 1] {
+            let c = world.cell(nx, y);
+            if c.is_body() {
+                continue;
+            }
+            let m = c.material();
+            if m == MAT_AIR || matches!(table.category(m), Category::Liquid | Category::Gas) {
+                return None;
+            }
+        }
+        if settled_liquid(world, table, x, y + 1) {
+            n_bottom += 1;
+        }
+    }
+    (n_bottom > 0).then_some(n_bottom as f32)
+}
+
+/// 出现最多的材质（并列取 id 小者）；调用方保证非空。
+fn most_common(mats: &mut [u8]) -> u8 {
+    mats.sort_unstable();
+    let mut best = (mats[0], 0usize);
+    let mut i = 0;
+    while i < mats.len() {
+        let mut j = i;
+        while j < mats.len() && mats[j] == mats[i] {
+            j += 1;
+        }
+        if j - i > best.1 {
+            best = (mats[i], j - i);
+        }
+        i = j;
+    }
+    best.0
+}
+
 /// 水面线采样（spec §5，方案 1"接触门控"，2026-09-03 决策记录第 14 条）。两步：
 ///
 /// **选列（接触门控）**：遍历脚印像素，左右邻格是非本体 Liquid 即一个接触；每个接触列
@@ -517,11 +613,14 @@ fn terrain_rects(world: &World, table: &MaterialTable, cx: u32, cy: u32) -> Vec<
 /// 为什么不采紧邻列：那是自身溅水与空腔回填首先扰动的地方。
 ///
 /// 已知限制：刚体两侧都贴着墙（正好卡在同宽的槽里）时无接触 ⇒ 无浮力。
-fn surface_line(world: &World, table: &MaterialTable, body: &Body, (_, y0, _, _): (i32, i32, i32, i32)) -> Option<(i32, u16)> {
-    let is_liquid = |x: i32, y: i32| {
-        let c = world.cell(x, y);
-        !c.is_body() && table.category(c.material()) == Category::Liquid
-    };
+/// 返回 `(h, ρ_liq, 采样列)`；采样列交给 `top_load` 判"这一行旁边还是不是水"。
+fn surface_line(
+    world: &World,
+    table: &MaterialTable,
+    body: &Body,
+    (_, y0, _, _): (i32, i32, i32, i32),
+) -> Option<(i32, u16, Vec<i32>)> {
+    let is_liquid = |x: i32, y: i32| settled_liquid(world, table, x, y);
     // 接触列 x → (最高接触 y, 最低接触 y, 向外方向 ±1)（BTreeMap 定序）。
     let mut contact: std::collections::BTreeMap<i32, (i32, i32, i32)> = std::collections::BTreeMap::new();
     let mut mats: Vec<u8> = Vec::new();
@@ -569,7 +668,7 @@ fn surface_line(world: &World, table: &MaterialTable, body: &Body, (_, y0, _, _)
             if c.is_body() {
                 break None;
             }
-            if table.category(c.material()) == Category::Liquid {
+            if is_liquid(x, y) {
                 break Some(y);
             }
             if y >= world.height() - 1 {
@@ -582,20 +681,7 @@ fn surface_line(world: &World, table: &MaterialTable, body: &Body, (_, y0, _, _)
         }
     }
     let h = h.unwrap_or_else(|| contact.values().map(|e| e.0).min().expect("非空"));
-    mats.sort_unstable();
-    let mut best = (mats[0], 0usize);
-    let mut i = 0;
-    while i < mats.len() {
-        let mut j = i;
-        while j < mats.len() && mats[j] == mats[i] {
-            j += 1;
-        }
-        if j - i > best.1 {
-            best = (mats[i], j - i);
-        }
-        i = j;
-    }
-    Some((h, table.density(best.0)))
+    Some((h, table.density(most_common(&mut mats)), cols.into_iter().collect()))
 }
 
 /// 格 AABB 外扩 `margin` 格所覆盖的 chunk 里，是否有任何一个上一 tick `dirty` 非空
@@ -695,7 +781,10 @@ fn stamp_body(
             match table.category(tm) {
                 Category::Static if tm != MAT_AIR => continue, // 地形：不覆盖
                 Category::Liquid | Category::Powder => {
-                    // 排开：脱格成粒子，质量守恒 + 溅射（Noita 语义的一半，spec §1.2 第 4 条）
+                    // 排开：脱格成粒子，质量守恒 + 溅射（Noita 语义的一半，spec §1.2 第 4 条）。
+                    // 出射速度只带质心线速度、**不带 ω×r**（决策记录第 16 条：试过按格点速度
+                    // v + ω×r 出射，横摇中的木条把水甩得不对称 ⇒ 接触列 h 跟着抖 ⇒ 维持横摇，
+                    // 3000 tick 一次都睡不着；撤回）。
                     spawns.push(SpawnRequest {
                         material: tm,
                         x: Fx::from_int(x) + HALF_CELL,
@@ -929,7 +1018,7 @@ mod tests {
         bodies.spawn_rect(&mut phys, &t, WOOD, 20, 40, 8, 4, 0);
         let mut spawns = Vec::new();
         bodies.stamp_all(&mut w, &t, &mut phys, 0, &mut spawns);
-        let (h, rho) = surface_line(&w, &t, &bodies.list[0], aabb_cells(&bodies.list[0], &phys)).unwrap();
+        let (h, rho, _) = surface_line(&w, &t, &bodies.list[0], aabb_cells(&bodies.list[0], &phys)).unwrap();
         assert_eq!(h, 42, "两列 40/42 ⇒ 取最低者 42");
         assert_eq!(rho, 16);
         let sub = bodies.list[0].stamped.iter().filter(|&&(_, y, _)| y >= 42).count();
@@ -1001,6 +1090,71 @@ mod tests {
         let aabb = aabb_cells(&bodies.list[0], &phys);
         assert_eq!(aabb.1, 39, "AABB 顶 = 39，行带从 38 起");
         assert_eq!(surface_line(&w, &t, &bodies.list[0], aabb).unwrap().0, 38);
+    }
+
+    /// 竖直速度 ≥ 2 格/tick 的液体格（落水流）不算接触；1 格/tick（入水扰动）仍算。
+    #[test]
+    fn falling_liquid_is_not_a_contact() {
+        let (mut w, t, mut phys, mut bodies) = setup();
+        bodies.spawn_rect(&mut phys, &t, WOOD, 20, 40, 8, 4, 0);
+        let mut spawns = Vec::new();
+        bodies.stamp_all(&mut w, &t, &mut phys, 0, &mut spawns);
+        for y in 30..60 {
+            w.set_cell_stamped(&t, 19, y, WATER, 0);
+            w.set_cell_vel(19, y, SETTLED_VEL_MAX);
+        }
+        let aabb = aabb_cells(&bodies.list[0], &phys);
+        assert!(surface_line(&w, &t, &bodies.list[0], aabb).is_none(), "下落中的水不是水面");
+        for y in 30..60 {
+            w.set_cell_vel(19, y, SETTLED_VEL_MAX / 2);
+        }
+        assert!(surface_line(&w, &t, &bodies.list[0], aabb).is_some(), "被扰动的池水仍算");
+    }
+
+    /// 顶面载荷：箱顶 3 行水 ⇒ 无采样列全计 24 格；周围水面到 39 ⇒ 只计高于它的 2 行 16 格。
+    #[test]
+    fn top_load_counts_only_above_waterline() {
+        let (mut w, t, mut phys, mut bodies) = setup();
+        bodies.spawn_rect(&mut phys, &t, WOOD, 20, 40, 8, 4, 0);
+        let mut spawns = Vec::new();
+        bodies.stamp_all(&mut w, &t, &mut phys, 0, &mut spawns);
+        for y in 37..40 {
+            for x in 20..28 {
+                w.set_cell_stamped(&t, x, y, WATER, 0);
+            }
+        }
+        let b = &bodies.list[0];
+        let (n, (cx, cy), rho) = top_load(&w, &t, b, &[]).unwrap();
+        assert_eq!((n, rho), (24.0, 16));
+        assert!((cx - 24.0).abs() < 1e-3 && (cy - 38.5).abs() < 1e-3, "中心 ({cx},{cy})");
+        // 采样列 30 在 y=39 有水（周围水面到 39）⇒ 只有 37、38 两行算水丘
+        w.set_cell_stamped(&t, 30, 39, WATER, 0);
+        assert_eq!(top_load(&w, &t, b, &[30]).unwrap().0, 16.0);
+        for y in 37..39 {
+            w.set_cell_stamped(&t, 30, y, WATER, 0);
+        }
+        assert!(top_load(&w, &t, b, &[30]).is_none(), "周围水面同高 ⇒ 不是水丘");
+    }
+
+    /// 密封支撑：两侧贴墙、底下有沉降水 ⇒ Some(底面接触数)；侧墙开一格空气 ⇒ None。
+    #[test]
+    fn sealed_bottom_requires_hard_sides_and_liquid_below() {
+        let (mut w, t, mut phys, mut bodies) = setup();
+        for y in 36..52 {
+            w.set_cell_stamped(&t, 19, y, WALL, 0);
+            w.set_cell_stamped(&t, 28, y, WALL, 0);
+        }
+        for y in 44..52 {
+            for x in 20..28 {
+                w.set_cell_stamped(&t, x, y, WATER, 0);
+            }
+        }
+        bodies.spawn_rect(&mut phys, &t, WOOD, 20, 40, 8, 4, 0);
+        let mut spawns = Vec::new();
+        bodies.stamp_all(&mut w, &t, &mut phys, 0, &mut spawns);
+        assert_eq!(sealed_bottom(&w, &t, &bodies.list[0]), Some(8.0));
+        w.set_cell_stamped(&t, 19, 41, 0, 0);
+        assert_eq!(sealed_bottom(&w, &t, &bodies.list[0]), None, "侧面漏气 ⇒ 不密封");
     }
 
     fn stamp_once(bodies: &mut Bodies, w: &mut World, t: &MaterialTable, phys: &mut PhysicsWorld) {
