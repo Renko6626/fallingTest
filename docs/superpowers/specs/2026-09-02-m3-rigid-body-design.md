@@ -191,6 +191,18 @@ pub struct Bodies { list: Vec<Body> /* 按 id 升序 */, next_id: u16, reextract
     生成（原先与木箱同时落、正好架在木箱上，扶正被顶住）。旧场景 bench cur 0.72/0.83 vs HEAD
     0.69/0.75 ms/tick（交替两轮，≈ +7%，是顶面载荷/密封判定的逐像素邻格读取）；顺手量了
     提案的安全出口 `wake_up = true`：同场景 1.70 ms（+0.9 ms，三浮体 5000 tick 全程醒着）。
+17. **2026-09-03 爆炸推刚体**（Noita `ConfigExplosion.physics_throw_enabled` / `physics_explosion_power`
+    的对应物，查证见 `docs/reference/noita-deep-dive.md` §4.2 追记）：此前 `Op::Explode` 只删格、只给
+    粒子速度，刚体不受冲量（石台上的木箱被切成两半后原地不动）。现在 `Bodies::apply_blast`：半径内
+    的每个脚印像素贡献冲量 `(1 − d/r)` 沿爆心 → 像素方向，乘 `BLAST_BODY_FACTOR(0.25) ×
+    REF_BLAST_DENSITY(40) × EXPLODE_SPEED(8 格/tick)`——与粒子同一套"同一冲量、v ∝ 1/ρ"口径，石箱
+    经引擎质量自然飞得慢；合力施于受击像素的加权中心 ⇒ 扭矩白送；`apply_impulse_at` 唤醒。
+    **时机**：第 1 步只入队 `Bodies::pending_blasts`，第 7 步对账/重提取**之后**才施——爆心在箱子
+    里时对整箱求和左右抵消（crate_yard tick 400 的箱子炸成 U 形单连通体后原地不动，物理上也该
+    如此），切开的两半各在爆心一侧才各自飞开；队列 tick 内消费完，不跨 tick、不入哈希。
+    行为测试 `explosion_throws_crate_beside_it`（硬木 durability 15 只吃冲量：推开 ≥ 4 格、小跳、
+    落回入睡）、`explosion_impulse_falls_off_with_distance`；单测方向/衰减/出半径为零。`crate_yard`
+    加 tick 3000 石台脚下 power 4 的低功率爆炸做抛掷展示。
 11. **目检修订（2026-09-02，用户三问）**：① "刚体不倾倒"——机制无恙（引擎与 Sim 两级探针
     都证实半悬空箱子翻倒），是 `crate_yard` 没安排会倒的物件；场景加台沿高箱子，行为测试
     `overhanging_crate_topples_off_ledge` 钉死。② "碎屑落回粘连"——爆炸/碎片粒子按原材质

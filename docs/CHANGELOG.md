@@ -48,6 +48,11 @@
   非纯涌现，提案 §2 更正）；Lua `PhysicsApplyForceOnArea` 回调签名。我们的 `explode.rs` 目前只删格、只给粒子
   速度，刚体不受爆炸冲量——待办。
 
+- **爆炸推刚体**（`crates/sand-core/src/{body,physics,lib,explode}.rs`）：`Bodies::apply_blast` 半径内按
+  `(1 − d/r)` 逐像素给冲量、与粒子同一套"同一冲量 v ∝ 1/ρ"口径（`BLAST_BODY_FACTOR = 0.25`），施于受击
+  像素加权中心（扭矩白送），唤醒；第 7 步重提取之后才施（切开的两半各自飞开）。行为测试两条、单测一条；
+  `crate_yard` 加 tick 3000 抛掷展示；golden 重录、SyncTest 绿。spec 决策记录第 17 条；tuning-knobs。
+
 ### Proposed
 - **`docs/proposals/2026-09-03-noita-style-buoyancy.md`**：日后切到 Noita 式逐像素反作用浮力（水里不睡）
   的备选路线——得失对照、触发条件、最小切换步骤、安全出口（施力 `wake_up = true` 一行）。

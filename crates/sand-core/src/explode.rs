@@ -59,14 +59,14 @@ const EXPLODE_JITTER: Fx = Fx(0x0000_8000);
 /// （飞行 clamp 上限）解耦：前者管"炸得多猛"的手感，后者是 DDA 步数上界的
 /// 数值纪律，不随手感调。位模式 = `Fx::from_int(8)`（`from_int` 非 `const fn`，
 /// `explode_speed_matches_from_int_eight` 单测钉死等价性）。
-const EXPLODE_SPEED: Fx = Fx(8 << 16);
+pub(crate) const EXPLODE_SPEED: Fx = Fx(8 << 16);
 
 /// 爆炸冲量的参考密度（2026-08-30 用户裁决"冲量物理"：同一冲量下
 /// v ∝ 1/密度）。出射速度按 `参考密度/材质密度` 缩放；取沙的密度 40 为
 /// 参考 → 沙的系数恒为 1（手感锚点不动），水（密度 16）系数 2.5（受
 /// `clamp_speed` 封顶 ±MAX_SPEED）。密度取 `max(1)` 防御除零（air 不会
 /// 走到溅射路径，纯防御）。
-const REF_BLAST_DENSITY: i32 = 40;
+pub(crate) const REF_BLAST_DENSITY: i32 = 40;
 
 /// Bresenham 圆周（半径 `r` 格，圆心偏移量）：返回圆心到每个周长格的整数
 /// 偏移 `(dx, dy)`，**定序、无重复**（spec §6 point 1 + §10 单测

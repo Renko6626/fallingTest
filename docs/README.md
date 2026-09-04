@@ -81,7 +81,7 @@
    唤醒。`crate_yard` 加漏水段 + `SpawnBody.angle_deg`；`Sim::body_state` 诊断视图；
    bench `perf/2026-09-02-m3-rigid-body.md` 追记 1–3。**备选路线**
    `proposals/2026-09-03-noita-style-buoyancy.md`（Proposed：Noita 式逐像素反作用、水里不睡；
-   触发条件与一行安全出口）。**浮力尾巴**：顶面载荷项、排开粒子带 ω×r、两侧贴墙无浮力。
+   触发条件与一行安全出口）。**浮力尾巴已收口**（第 16 条：顶面载荷 / 沉降闸门 / 密封支撑，ω×r 撤回）。**爆炸推刚体**（第 17 条，Noita 查证 `physics_throw_enabled` / `buoyancy = 0.7` 见 `reference/noita-deep-dive.md` §4.2）。
    **下一步 = M4 玩家与法术（brainstorm）。**
 4. **M1 粒子层：已完成并经用户验收（2026-08-31）**（spec → Implemented，会话总账 `sessions/2026-08-30-m1-particle-layer.md`）：
    脱格/落格闭环、DDA、`Op::Emit`/`Op::Explode`（Noita 射线模型 + 近心汽化 + 密度冲量 + 方向涨落）、容量限流；验收 §0

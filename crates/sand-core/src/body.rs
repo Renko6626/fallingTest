@@ -50,6 +50,11 @@ pub const SETTLED_VEL_MAX: u8 = 2 * crate::cell::VEL_ONE;
 /// 顶面载荷（决策记录第 16 条）：堆在顶面像素上、且在水面线之上的沉降液体按格计重往下压；
 /// 睡眠刚体顶上堆到这么多格（≈ 一整行）即唤醒让它沉一沉、把水丘滑掉。
 pub const WAKE_TOP_LOAD_CELLS: f32 = 16.0;
+/// 爆炸推刚体的系数（spec 决策记录第 17 条，Noita `ConfigExplosion.physics_explosion_power` 的
+/// 对应物）：每个半径内的盖章像素贡献冲量 `BLAST_BODY_FACTOR × REF_BLAST_DENSITY × EXPLODE_SPEED
+/// × (1 − d/r)`，方向爆心 → 像素，合力施于受击像素的加权中心。与粒子同一套"同一冲量、v ∝ 1/ρ"
+/// 口径（`explode.rs`）：整箱在爆心附近时 Δv ≈ 0.25 × 8 格/tick × 40/ρ_body。目检可调。
+pub const BLAST_BODY_FACTOR: f32 = 0.25;
 /// 逐淹没像素的阻力系数（spec §5）：线 `F = −K_DRAG × n_sub × v`，角
 /// `τ = −K_DRAG × Σ|r_i|² × ω`（同一系数，是"每个淹没像素受 −K·v_i"的合力与合力矩）。
 /// 取 200：对 16×12 木箱（浮力"弹簧"ω ≈ 10 rad/s）阻尼比 ≈ 0.8，近临界——入水后
@@ -102,6 +107,9 @@ pub struct Bodies {
     pub rejected_total: u64,
     /// 地形碰撞体重建次数（诊断，不入哈希；缓存命中执法测试用）。
     pub terrain_rebuilds: u64,
+    /// 本 tick 的爆炸（`Op::Explode` 的 `(x, y, r)`，入队序）：第 7 步重提取**之后**才施冲量，
+    /// 让被炸开的两半各自受力飞开（tick 内消费完，不跨 tick、不入哈希）。
+    pub(crate) pending_blasts: Vec<(i32, i32, i32)>,
     /// 已缓存的地形 chunk → 上次交给引擎的矩形（含空）。**矩形没变就不碰引擎**：
     /// 删/重建静态碰撞体会重置接触、唤醒压在上面的刚体，形成"盖章标脏 → 重建 →
     /// 唤醒 → 再盖章"的死循环（Task 3 实测：静止箱子永远睡不着）。
@@ -342,6 +350,41 @@ impl Bodies {
             // 逐像素阻力 −K·w·v_i、v_i = v + ω×r_i 的合力/合力矩：线 −K·Σw·v，角 −K·Σw|r|²·ω。
             phys.apply_drag(body.handle, K_DRAG * n);
             phys.apply_angular_drag(body.handle, K_DRAG * r2);
+        }
+    }
+
+    /// `Op::Explode` 的刚体侧（spec 决策记录第 17 条，Noita `physics_throw_enabled`）：第 1 步
+    /// 只入队 `pending_blasts`，第 7 步对账/重提取**之后**才调本函数——爆心在箱子里时对整箱求和
+    /// 左右抵消、两半原地不动（crate_yard tick 400 实测）；切开后各半的像素都在爆心一侧，各自飞开。
+    /// 对每个刚体按 id 序，脚印里落在半径内的像素各贡献一份冲量 `(1 − d/r)` 沿爆心 → 像素方向，
+    /// 乘 `BLAST_BODY_FACTOR × REF_BLAST_DENSITY × EXPLODE_SPEED` 施于受击像素的加权中心（远近像素
+    /// 不等 ⇒ 扭矩白送）；`apply_impulse_at` 唤醒。被炸掉的像素已由对账剔除，不计。
+    pub(crate) fn apply_blast(&mut self, phys: &mut PhysicsWorld, x: i32, y: i32, r: i32) {
+        use crate::explode::{EXPLODE_SPEED, REF_BLAST_DENSITY};
+        if r <= 0 {
+            return;
+        }
+        let (cx, cy, rf) = (x as f32 + 0.5, y as f32 + 0.5, r as f32);
+        let per_pixel = BLAST_BODY_FACTOR * REF_BLAST_DENSITY as f32 * (EXPLODE_SPEED.0 as f32 / 65536.0) * 60.0;
+        for body in &self.list {
+            let (mut jx, mut jy, mut sx, mut sy, mut sw) = (0f32, 0f32, 0f32, 0f32, 0f32);
+            for &(px, py, _) in &body.stamped {
+                let (dx, dy) = (px as f32 + 0.5 - cx, py as f32 + 0.5 - cy);
+                let d = (dx * dx + dy * dy).sqrt();
+                if d >= rf || d <= 0.0 {
+                    continue;
+                }
+                let w = 1.0 - d / rf;
+                jx += w * dx / d;
+                jy += w * dy / d;
+                sx += w * (px as f32 + 0.5);
+                sy += w * (py as f32 + 0.5);
+                sw += w;
+            }
+            if sw <= 0.0 {
+                continue;
+            }
+            phys.apply_impulse_at(body.handle, (jx * per_pixel, jy * per_pixel), (sx / sw, sy / sw));
         }
     }
 
@@ -1155,6 +1198,26 @@ mod tests {
         assert_eq!(sealed_bottom(&w, &t, &bodies.list[0]), Some(8.0));
         w.set_cell_stamped(&t, 19, 41, 0, 0);
         assert_eq!(sealed_bottom(&w, &t, &bodies.list[0]), None, "侧面漏气 ⇒ 不密封");
+    }
+
+    /// 爆炸冲量：爆心在箱子左侧 ⇒ 向右推；离得远推得轻；出了半径不推。
+    #[test]
+    fn blast_pushes_away_and_falls_off_with_distance() {
+        fn kick(dist: i32, r: i32) -> (f32, f32) {
+            let (mut w, t, mut phys, mut bodies) = setup();
+            bodies.spawn_rect(&mut phys, &t, WOOD, 40, 40, 8, 4, 0);
+            let mut spawns = Vec::new();
+            bodies.stamp_all(&mut w, &t, &mut phys, 0, &mut spawns);
+            bodies.apply_blast(&mut phys, 40 - dist, 42, r);
+            phys.velocity(bodies.list[0].handle).0
+        }
+        let (vx_near, vy_near) = kick(4, 20);
+        let (vx_far, _) = kick(12, 20);
+        let (vx_out, _) = kick(30, 20);
+        assert!(vx_near > 0.0, "爆心在左 ⇒ 向右推：vx = {vx_near}");
+        assert!(vy_near.abs() < vx_near * 0.2, "同一行的爆心几乎不给竖直分量：vy = {vy_near}");
+        assert!(vx_far > 0.0 && vx_far < vx_near, "远处推得轻：{vx_far} < {vx_near}");
+        assert_eq!(vx_out, 0.0, "出了半径不推");
     }
 
     fn stamp_once(bodies: &mut Bodies, w: &mut World, t: &MaterialTable, phys: &mut PhysicsWorld) {

@@ -697,3 +697,71 @@ fn heap_on_floating_crate_pushes_it_down() {
     assert!((y1 - y0).abs() < 2.5, "水滑掉后应回到原吃水附近：{y0:.1} → {y1:.1}");
     assert!(sleeping, "应再次入睡");
 }
+
+// ==================== 爆炸推刚体（2026-09-03，spec 决策记录第 17 条）====================
+
+/// 硬木（durability 15 > 爆炸门槛 10）：射线免疫，只吃冲量——把"推"和"炸碎"分开测。
+fn hard_wood_sim(seed: u64, width_chunks: usize, height_chunks: usize) -> Sim {
+    let t = MaterialTable::new(vec![
+        MaterialDef::base(0, "air", Category::Static, 0),
+        MaterialDef { durability: 15, ..MaterialDef::base(1, "wall", Category::Static, 100) },
+        MaterialDef::base(2, "sand", Category::Powder, 40),
+        MaterialDef::base(3, "water", Category::Liquid, 16),
+        MaterialDef { durability: 15, ..MaterialDef::base(WOOD, "wood", Category::Static, 12) },
+        MaterialDef { durability: 15, ..MaterialDef::base(STONE, "stone", Category::Static, 40) },
+    ])
+    .unwrap();
+    let r = ReactionTable::empty(&t);
+    sim_with_reactions(width_chunks, height_chunks, seed, 1, ScanMode::LiveRect, t, r)
+}
+
+/// 地上静止的木箱旁边一声爆炸：箱子被推开（x 增加）并离地，随后落回并入睡。
+#[test]
+fn explosion_throws_crate_beside_it() {
+    let mut s = hard_wood_sim(83, 2, 2);
+    s.apply_setup(&[floor(128, 128), Op::SpawnBody { material: WOOD, x: 60, y: 112, w: 16, h: 12, angle_deg: 0 }]);
+    for _ in 0..300 {
+        s.step(&[]);
+    }
+    let ((x0, _, _), _, sleeping) = s.body_state(0).unwrap();
+    assert!(sleeping, "爆炸前应已入睡");
+    s.step(&[Op::Explode { x: 52, y: 123, r: 24, power: 100, max_durability: 10 }]);
+    let (mut min_y, mut max_x) = (f32::MAX, f32::MIN);
+    for _ in 0..90 {
+        s.step(&[]);
+        let ((x, y, _), _, _) = s.body_state(0).unwrap();
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+    }
+    assert!(max_x > x0 + 4.0, "应被向右推开：x {x0:.1} → {max_x:.1}");
+    assert!(min_y < 117.5, "应离地（爆心与箱心同高时冲量近乎水平，只会小跳）：最高 y = {min_y:.1}（地上静止 = 118）");
+    for _ in 0..600 {
+        s.step(&[]);
+    }
+    let (_, _, sleeping) = s.body_state(0).unwrap();
+    assert!(sleeping, "落回后应入睡");
+}
+
+/// 冲量随距离衰减：同一爆炸，近的箱子比远的箱子推得远。
+#[test]
+fn explosion_impulse_falls_off_with_distance() {
+    let mut s = hard_wood_sim(89, 2, 2);
+    s.apply_setup(&[
+        floor(128, 128),
+        Op::SpawnBody { material: WOOD, x: 50, y: 112, w: 12, h: 12, angle_deg: 0 },
+        Op::SpawnBody { material: WOOD, x: 90, y: 112, w: 12, h: 12, angle_deg: 0 },
+    ]);
+    for _ in 0..300 {
+        s.step(&[]);
+    }
+    let ((x_near0, _, _), _, _) = s.body_state(0).unwrap();
+    let ((x_far0, _, _), _, _) = s.body_state(1).unwrap();
+    s.step(&[Op::Explode { x: 36, y: 118, r: 70, power: 100, max_durability: 10 }]);
+    for _ in 0..120 {
+        s.step(&[]);
+    }
+    let ((x_near1, _, _), _, _) = s.body_state(0).unwrap();
+    let ((x_far1, _, _), _, _) = s.body_state(1).unwrap();
+    let (d_near, d_far) = (x_near1 - x_near0, x_far1 - x_far0);
+    assert!(d_near > d_far && d_far > 0.5, "近箱位移 {d_near:.1} 应大于远箱位移 {d_far:.1} > 0");
+}

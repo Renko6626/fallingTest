@@ -117,3 +117,16 @@
   目检：扶正、漂浮、随漏水下降（下降有 ≥2 行滞后的阶梯感，t=1400 一帧能看出悬空）。
 - 教训：一次落四项等于放弃了定位能力，靠开关二分才救回来——下次这种"尾巴清单"逐项落、逐项跑
   木条回归。
+
+---
+
+# 深夜：爆炸推刚体
+
+- 用户问"刚体受不受爆炸冲量"——不受（`explode.rs` 只删格、只给粒子速度）。查 Noita wiki 官方组件注释：
+  `physics_throw_enabled` / `physics_explosion_power = [0, 0.2]` / 击退公式 `radius × k × inv_normalized_distance
+  / mass`；意外发现 `PhysicsBodyComponent.buoyancy = 0.7`——Noita 浮力是公式 × 系数，社区"纯涌现"复原
+  站不住，提案 §2 更正。
+- 实现 `Bodies::apply_blast`，量纲对齐粒子的"同一冲量 v ∝ 1/ρ"。第一版在第 1 步施：crate_yard tick 400
+  爆心在箱子正中，炸成 U 形单连通体后左右冲量抵消、原地不动——改到第 7 步重提取之后施
+  （`pending_blasts`）。展示改为 tick 3000 石台脚下低功率爆炸抛箱。
+- 测试用 durability 15 的硬木把"推"和"炸碎"分开；爆心与箱心同高时冲量纯水平只会小跳，爆心压到地面。

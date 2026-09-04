@@ -106,11 +106,16 @@ impl Sim {
         })
     }
 
-    /// 应用一个输入 op（第 1 步）：`Op::SpawnBody` 路由到刚体层，其余交给 `World`。
+    /// 应用一个输入 op（第 1 步）：`Op::SpawnBody` 路由到刚体层，`Op::Explode` 网格与刚体两侧都做，其余交给 `World`。
     fn apply_one(&mut self, op: &Op, stamp: u8, fseed: u32, op_idx: usize) {
         match *op {
             Op::SpawnBody { material, x, y, w, h, angle_deg } => {
                 self.bodies.spawn_rect(&mut self.physics, &self.table, material, x, y, w, h, angle_deg);
+            }
+            Op::Explode { x, y, r, .. } => {
+                // 网格侧：射线删格、碎屑成粒子；刚体侧：记下，第 7 步重提取后再给冲量（决策记录第 17 条）。
+                self.world.apply_op(&self.table, op, stamp, fseed, op_idx, &mut self.spawn_queue);
+                self.bodies.pending_blasts.push((x, y, r));
             }
             _ => self.world.apply_op(&self.table, op, stamp, fseed, op_idx, &mut self.spawn_queue),
         }
@@ -172,6 +177,11 @@ impl Sim {
         //    分量分解；碎片脱格进 spawn_queue（下一 tick 粒子相 drain）。
         self.bodies.reconcile(&self.world);
         self.bodies.reextract(&mut self.world, &self.table, &mut self.physics, stamp, &mut self.spawn_queue);
+        // 7'. 本 tick 爆炸的刚体冲量（切开之后各半各自受力；入队序）。
+        let blasts = std::mem::take(&mut self.bodies.pending_blasts);
+        for (x, y, r) in blasts {
+            self.bodies.apply_blast(&mut self.physics, x, y, r);
+        }
     }
 
     pub fn bodies(&self) -> &Bodies {

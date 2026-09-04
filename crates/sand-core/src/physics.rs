@@ -210,6 +210,14 @@ impl PhysicsWorld {
         self.inner.bodies[h.0].mass()
     }
 
+    /// 在世界点 `at` 施加冲量（爆炸推刚体，spec 决策记录第 17 条）。**唤醒**：睡着的箱子被炸
+    /// 也得飞。
+    pub(crate) fn apply_impulse_at(&mut self, h: BodyHandle, j: (f32, f32), at: (f32, f32)) {
+        if let Some(rb) = self.inner.bodies.get_mut(h.0) {
+            rb.apply_impulse_at_point(Vector::new(j.0, j.1), Vector::new(at.0, at.1), true);
+        }
+    }
+
     /// 截断向下速度（密封支撑：塞子压着不可压缩的封闭水柱，撞上即停）。不唤醒。
     pub(crate) fn stop_downward(&mut self, h: BodyHandle) {
         if let Some(rb) = self.inner.bodies.get_mut(h.0) {
