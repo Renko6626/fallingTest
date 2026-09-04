@@ -42,6 +42,12 @@
   睡不着，四项开关二分定位）。行为测试四条、单测三条；木条改 tick 700 在池右半生成让扶正真的发生。
   golden 重录、SyncTest 绿；旧场景 bench ≈ +7%；`wake_up=true` 代价实测 +0.9 ms 入提案 §4。spec 决策记录第 16 条。
 
+- **Noita 查证：爆炸推刚体 + 浮力有系数**（`docs/reference/noita-deep-dive.md` §4.2 追记）：wiki 官方组件
+  注释——`ConfigExplosion.physics_throw_enabled / physics_explosion_power=[0,0.2] / explosion_radius`、实体击退公式
+  `radius × knockback_force × inv_normalized_distance / mass`；`PhysicsBodyComponent.buoyancy = 0.7`（公式浮力，
+  非纯涌现，提案 §2 更正）；Lua `PhysicsApplyForceOnArea` 回调签名。我们的 `explode.rs` 目前只删格、只给粒子
+  速度，刚体不受爆炸冲量——待办。
+
 ### Proposed
 - **`docs/proposals/2026-09-03-noita-style-buoyancy.md`**：日后切到 Noita 式逐像素反作用浮力（水里不睡）
   的备选路线——得失对照、触发条件、最小切换步骤、安全出口（施力 `wake_up = true` 一行）。

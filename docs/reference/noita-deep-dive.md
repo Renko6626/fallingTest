@@ -1,6 +1,6 @@
 > 文档路径：`docs/reference/noita-deep-dive.md`
 > 运行时版本：调研文档（服务 Phase 1 Python 原型 → Phase 2 Godot 4.5 + C#）
-> 最近更新：2026-06-06 (UTC+8)
+> 最近更新：2026-09-03 (UTC+8)
 
 # Noita 深度调研：目标效果、核心算法、与朴素落沙 CA 的差距
 
@@ -298,6 +298,9 @@ body 像素位图 → Marching Squares（多轮廓，含洞）
 - 静态地形侧：solid 像素同管线生成 world mesh 喂 Box2D，**按 chunk 缓存、只在刚体附近的 chunk 生成**（world mesh 不用于玩家碰撞）。
 - 反面教材（slowrush.dev）：跳过 DP 简化 → shape 生成成为性能瓶颈；水做成刚体 → 灾难。**DP 不可省；液体不进刚体管线**。
 - 排开与浮力：tick 末遍历 body 像素世界坐标，遇沙/液体 → 该像素转入粒子系统（飞溅）+ 按 `velocity_at_point` 施加反向力和阻尼——**浮力是逐像素反作用力的涌现，没有显式阿基米德公式** [社区]。
+  - **2026-09-03 修订（wiki 组件文档，官方注释）**：这条"没有显式公式"**站不住**。`PhysicsBodyComponent` 与 `PhysicsBody2Component` 都有 **`buoyancy: float = 0.7`** 字段（同组还有 `linear_damping`/`angular_damping` = 0、`allow_sleep` = true、`auto_clean`"藏在沙下可能被销毁"、`hax_fix_going_through_ground/sand`"陷进地面/沙里就往上抬"、`force_add_update_areas`"把预测 AABB 标成 box2d 更新区"）。一个每 body 的标量浮力系数，只能是"算出淹没量 × 系数"那一类公式浮力（Box2D 经典 `b2BuoyancyController` 的形态：按水面线求各 fixture 的淹没面积，力 = 密度 × g × 面积 × 系数施于淹没质心 + 线/角阻尼），而不是纯涌现。水面线在非平面液体里怎么取，官方没说。**对我们的意义**：我们的"接触门控水面线 + 阿基米德 + 阻力 + 能睡（`allow_sleep`）"与 Noita 的结构同源，`docs/proposals/2026-09-03-noita-style-buoyancy.md` 里"方案 2 = 无公式涌现"是社区复原的误读，已在提案 §2 更正。
+- **爆炸推刚体（`ConfigExplosion`，wiki 官方注释）**：`physics_throw_enabled = true`"Should we throw physics objects into the air, also peasants"；`physics_explosion_power: ValueRange = [0, 0.2]`"how hard do we throw physics objects"；`physics_multiplier_ragdoll_force = 1.0`（布娃娃单独乘）；`explosion_radius = 20`"used to find the peasants and physics bodies that are thrown into the air"；`hole_destroy_physics_dynamic = true`"Do we destroy the dynamic physics cells we encountered?"。实体击退公式原文：`final_knockback = explosion_radius * knockback_force * target.inv_normalized_distance_from_explosion / target.mass`——半径内按归一化距离线性衰减、除以质量。**即 Noita 的爆炸是"删像素 + 半径内按距离给刚体一个冲量"两件事并行**，我们目前只做了前一件（`explode.rs` 只删格、只给粒子速度）。
+- **Lua 侧施力 API**：`PhysicsApplyForce(entity, fx, fy)`、`PhysicsApplyTorque`、`PhysicsApplyForceOnArea(fn, ignore, minx, miny, maxx, maxy)`——回调签名 `fn(body_entity, body_mass, body_x, body_y, body_vel_x, body_vel_y, body_vel_angular) -> force_world_pos_x, force_world_pos_y, force_x, force_y, force_angular`，即"区域内每个 body 给一个作用点 + 力 + 力矩"，法术层（Circle of Buoyancy 一类）就是拿这个推箱子的。
 
 ### 4.3 角色控制（Phase 2/3 直接采用）
 
@@ -426,4 +429,4 @@ body 像素位图 → Marching Squares（多轮廓，含洞）
 - ⚠️ braindump.jethro.dev 笔记本轮抓取失败（socket error）；其 64×64 chunk + dirty rect 表述已由 80.lv 原文独立双重确认。
 - 未复核（维持 wiki 级置信度，均非决策承重项）：世界尺寸 datamine、12×512² reality bubble、stains 效果数值表、props 清单细节、材质总数 ~400+、fire/flame lifetime 帧数。
 
-**主要未确证项清单**：Noita 防重复更新具体机制（flag vs parity）；粒子弹出精确阈值；点燃概率公式精确形式；电的传播算法；线程池规格；dirty rect 扩张/唤醒规则；模拟区域屏数；Noita 浮力实现；三角化具体算法。
+**主要未确证项清单**：Noita 防重复更新具体机制（flag vs parity）；粒子弹出精确阈值；点燃概率公式精确形式；电的传播算法；线程池规格；dirty rect 扩张/唤醒规则；模拟区域屏数；Noita 浮力实现（2026-09-03 部分确证：有 `buoyancy=0.7` 系数 ⇒ 公式浮力，水面线取法仍未知）；三角化具体算法。

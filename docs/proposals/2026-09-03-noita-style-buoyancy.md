@@ -26,6 +26,13 @@
 tick 末遍历刚体像素的世界坐标：碰到液体/沙的像素 → 该格弹入粒子系统（飞溅）+ 在该点按
 `velocity_at_point` 施反向力与阻尼。没有公式、没有水面线、没有淹没体积。
 
+> **2026-09-03 更正**：wiki 官方组件文档显示 `PhysicsBodyComponent` / `PhysicsBody2Component` 带
+> **`buoyancy: float = 0.7`**，外加 `linear_damping` / `angular_damping` / `allow_sleep`。一个每 body 的标量
+> 浮力系数只能配"算出淹没量 × 系数"的公式浮力（Box2D `b2BuoyancyController` 形态），所以 Noita 的浮力
+> **不是**纯逐像素涌现，本节描述的只是排开/飞溅那一半。这削弱了本提案的前提：Noita 走的其实是与我们
+> 同源的"公式 + 阻尼 + 可睡"路线，差别只剩水面线怎么取（未知）与是否在水里睡。§3–§5 的得失对照仍成立，
+> 但"切到 Noita 式"应改读为"切到无水面线的逐像素反作用式"，那是我们自己的方案，不是 Noita 的。
+
 从 Box2D 语义推出的两个性质（与 Noita 可见行为吻合，非一手资料）：
 - 力经 `ApplyForce(wake=true)` 施加 ⇒ **液体里的刚体永远醒着**，Noita 的木桶在水里始终轻晃。
 - 平衡是**动态的**：下沉 → 底边撞进新水格 → 被顶回 → 留下空腔 → 再沉。力正比于每 tick 新接触
