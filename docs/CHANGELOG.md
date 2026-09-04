@@ -31,6 +31,14 @@
   池壁被 `Explode(power 1200, max_durability 15)` 炸穿（wall durability 15 > 缺省门槛 10），水漏进石台与
   池壁之间的沟，浮体随水位下降、约 tick 1600 两侧齐平后全部静止——接触门控水面线在水位变化下的
   目检。golden 重录、六配置 SyncTest 绿；`out/crate_yard.gif`（未入库）。
+- **睡眠浮体随水位走**（`crates/sand-core/src/{body,physics}.rs`）：上一条目检发现漏水后木箱/木条挂在
+  半空——浮体睡着后水退不会唤醒它。补：睡眠刚体周围 chunk 有写入时重采水面线，`h` 与 `Body::last_h`
+  （入哈希）相差 ≥ `WAKE_H_ROWS = 2` 行即唤醒。行为测试 `sleeping_floater_wakes_when_water_drains`；
+  golden 重录、六配置 SyncTest 绿。spec §5 + 决策记录第 15 条。
+
+### Proposed
+- **`docs/proposals/2026-09-03-noita-style-buoyancy.md`**：日后切到 Noita 式逐像素反作用浮力（水里不睡）
+  的备选路线——得失对照、触发条件、最小切换步骤、安全出口（施力 `wake_up = true` 一行）。
 
 ## 2026-09-02
 

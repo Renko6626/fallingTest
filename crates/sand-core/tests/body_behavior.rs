@@ -567,3 +567,32 @@ fn crate_beside_shelf_tank_stays_on_ground() {
     assert!((117.0..=119.0).contains(&y), "箱子应留在地上（箱心 y = {y:.1}）");
     assert!(sleeping, "地上的箱子应入睡");
 }
+
+/// 睡着的浮体在水退掉后必须醒来跟着降（2026-09-03 目检：炸穿池壁后木箱挂在半空）：
+/// 木箱浮稳入睡 → 抽掉它脚下的水（水面从 80 降到 ≈105）→ 木箱应落到新水面并再次入睡。
+#[test]
+fn sleeping_floater_wakes_when_water_drains() {
+    let mut s = body_sim(61, 1);
+    s.apply_setup(&[
+        Op::Fill { material: 1, x0: 0, y0: 120, x1: 127, y1: 123 },
+        Op::Fill { material: 1, x0: 10, y0: 60, x1: 11, y1: 119 },
+        Op::Fill { material: 1, x0: 116, y0: 60, x1: 117, y1: 119 },
+        Op::Fill { material: 3, x0: 12, y0: 80, x1: 115, y1: 119 },
+        Op::SpawnBody { material: WOOD, x: 30, y: 40, w: 16, h: 12, angle_deg: 0 },
+    ]);
+    for _ in 0..900 {
+        s.step(&[]);
+    }
+    let ((_, y0, _), _, sleeping) = s.body_state(0).unwrap();
+    assert!(sleeping, "浮稳后应入睡");
+    assert!((78.0..=90.0).contains(&y0), "应浮在水面 80 附近：y = {y0:.1}");
+    // 抽水：把箱子下方 y=95..119 的水换成空气（上面的水会塌下去，水面降到 ≈105）
+    s.step(&[Op::Fill { material: 0, x0: 12, y0: 95, x1: 115, y1: 119 }]);
+    for _ in 0..1500 {
+        s.step(&[]);
+    }
+    let ((_, y1, _), _, sleeping) = s.body_state(0).unwrap();
+    assert!(y1 > y0 + 10.0, "水退后箱子必须跟着降：{y0:.1} → {y1:.1}");
+    assert!(y1 < 118.0, "不该沉到池底：y = {y1:.1}");
+    assert!(sleeping, "落到新水面后应再次入睡");
+}

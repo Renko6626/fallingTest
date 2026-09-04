@@ -162,6 +162,13 @@ impl PhysicsWorld {
         }
     }
 
+    /// 显式唤醒（浮体的水位变了：睡眠刚体的淹没量与入睡时相差过大，`body.rs`）。
+    pub(crate) fn wake(&mut self, h: BodyHandle) {
+        if let Some(rb) = self.inner.bodies.get_mut(h.0) {
+            rb.wake_up(true);
+        }
+    }
+
     /// 角阻力：`τ = −k · ω`。不唤醒。
     pub(crate) fn apply_angular_drag(&mut self, h: BodyHandle, k: f32) {
         if let Some(rb) = self.inner.bodies.get_mut(h.0) {

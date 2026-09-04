@@ -98,6 +98,7 @@ pub struct Bodies { list: Vec<Body> /* 按 id 升序 */, next_id: u16, reextract
 - **确定性**：分数计权在 f32 里按清单序累加（本就是引擎边界），按 id 序施力。O(AABB) / 清醒刚体 / tick。
 - **排开与溢出**：盖章覆盖到的液体格按 §3 脱格成粒子（质量守恒）——满池入箱即漫出，是 §3 的副产物，不需要额外机制。
 - **防抖**：本 tick 变换与上 tick 逐位相同（`to_bits` 相等）的刚体**跳过反盖章/采样/盖章**——浮着不动或堆着不动的箱子零写入、零溅射；睡眠刚体同样跳过（§3）。
+- **睡眠浮体的唤醒**（2026-09-03，决策记录第 15 条）：水不是碰撞体，退掉/涨上来不会经引擎唤醒刚体，而浮力只施于清醒刚体——不补这一条，池壁炸穿后浮着的箱子挂在半空。规则：睡眠刚体在其 AABB（外扩采样触达）所在 chunk 上一 tick 有写入时重采水面线，`h` 与上次清醒时的 `Body::last_h`（入哈希；无水面为哨兵）相差 ≥ `WAKE_H_ROWS = 2` 行即唤醒并照常施力。用 `h` 的行数滞回而不用淹没量比例：池面常年 ±1 行抖动，按比例设门槛会睡了又醒。平静的池子零成本。Noita 式"水里不睡"作为安全出口记在 `docs/proposals/2026-09-03-noita-style-buoyancy.md`。
 - `K_DRAG` 常量，目检调；角阻尼即上式（不用 Rapier 的 angular damping 参数：那是与淹没无关的常量阻尼）。
 
 ## 6. 破坏对账与重提取（第 7 步）
@@ -172,6 +173,14 @@ pub struct Bodies { list: Vec<Body> /* 按 id 升序 */, next_id: u16, reextract
     不碰侧向压强。行为测试 `crate_beside_glass_tank_stays_on_ground`、
     `crate_beside_shelf_tank_stays_on_ground`；单测接触/挡列/气泡三条。crate_yard 5000 tick
     0.72 → 0.64 ms/tick（盖章 536 → 476 次/1500 tick）。
+15. **2026-09-03 睡眠浮体随水位走**：`crate_yard` 加"炸穿池壁漏水"段后目检发现木箱/木条挂在
+    半空——第 11 条③"施力不唤醒"让浮体能睡，但水不是碰撞体、退掉不会唤醒它，浮力又只算清醒
+    刚体。补：睡眠刚体在周围 chunk 有写入时重采 `h`，与 `last_h` 相差 ≥ 2 行即唤醒（§5）。第一版
+    按淹没量比例 5% 设门槛，32 宽木条一行 = 17%，池面 ±1 行常抖 ⇒ 3000 tick 睡了又醒 11 次；
+    改成 `h` 行数滞回后木条 tick ~475 入睡不再被叫醒。与 Noita 的对照（Box2D `ApplyForce`
+    默认唤醒 ⇒ 液体里的刚体永远醒、永远轻晃，水退跟落是免费的；他们只模拟玩家周围几屏，浮体
+    分母小，我们 lockstep 全场模拟没有这个分母）与切换路线记 `docs/proposals/
+    2026-09-03-noita-style-buoyancy.md`（Proposed）。行为测试 `sleeping_floater_wakes_when_water_drains`。
 11. **目检修订（2026-09-02，用户三问）**：① "刚体不倾倒"——机制无恙（引擎与 Sim 两级探针
     都证实半悬空箱子翻倒），是 `crate_yard` 没安排会倒的物件；场景加台沿高箱子，行为测试
     `overhanging_crate_topples_off_ledge` 钉死。② "碎屑落回粘连"——爆炸/碎片粒子按原材质

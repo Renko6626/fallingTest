@@ -35,6 +35,14 @@ pub const TERRAIN_MARGIN: i32 = 1;
 /// 水面线采样从接触格沿接触行向外最多再走这么多格（spec §5）：紧邻列被自身溅水污染，
 /// 远列读数才稳；连通性由接触行保证。
 pub const SURFACE_REACH: i32 = 5;
+/// 睡眠刚体的唤醒门槛（spec §5）：水面线 `h` 与上次清醒时相差达到这么多行即唤醒。
+/// 水不是碰撞体，退掉/涨上来不会经引擎唤醒刚体；浮力又只施于清醒刚体——不查这一条，
+/// 池壁炸穿后浮着的木箱会挂在半空（2026-09-03 目检实测）。用 `h` 而不用淹没量比例：
+/// 池面常年有 ±1 行抖动，一行对 32 宽木条就是 17% 体积，按比例设门槛会睡了又醒（实测
+/// 3000 tick 内 11 次）；2 行滞回对尺寸无关、对一行抖动免疫。
+pub const WAKE_H_ROWS: i32 = 2;
+/// `Body::last_h` 的"没有水面线"哨兵。
+const NO_SURFACE: i32 = i32::MAX;
 /// 逐淹没像素的阻力系数（spec §5）：线 `F = −K_DRAG × n_sub × v`，角
 /// `τ = −K_DRAG × Σ|r_i|² × ω`（同一系数，是"每个淹没像素受 −K·v_i"的合力与合力矩）。
 /// 取 200：对 16×12 木箱（浮力"弹簧"ω ≈ 10 rad/s）阻尼比 ≈ 0.8，近临界——入水后
@@ -59,6 +67,9 @@ pub struct Body {
     pub(crate) handle: BodyHandle,
     /// 上一次盖章时的 `transform().to_bits()`；`None` = 尚未盖过章。
     last_xf: Option<(u32, u32, u32)>,
+    /// 上一次清醒时采到的水面线 `h`（无水面 = `NO_SURFACE`；入哈希）：睡眠期间与之比较
+    /// 决定是否唤醒。
+    last_h: i32,
 }
 
 impl Body {
@@ -161,6 +172,7 @@ impl Bodies {
             dirty: false,
             handle,
             last_xf: None,
+            last_h: NO_SURFACE,
         });
         true
     }
@@ -239,11 +251,13 @@ impl Bodies {
         }
     }
 
-    /// 第 3 步前半之二（spec §5，采样式阿基米德）：对每个清醒刚体，水面线采样得
-    /// `h`；上次盖章脚印的每个像素按其**连续**世界中心（局部像素中心经刚体变换，随
-    /// 位姿连续变化，不是盖章格的整数坐标）算被 `y ≥ h` 半平面盖住的分数 `w ∈ [0, 1]`。
-    /// `F_浮 = Σw × ρ_liq × g` 逆重力施于加权质心，阻力 `−K_DRAG × Σw × v`、角阻力
-    /// `−K_DRAG × Σ w|r|² × ω`。
+    /// 第 3 步前半之二（spec §5，采样式阿基米德）：对每个刚体，水面线采样得 `h`
+    /// （`surface_line`，接触门控）；上次盖章脚印的每个像素按其**连续**世界中心（局部像素
+    /// 中心经刚体变换，随位姿连续变化，不是盖章格的整数坐标）算被 `y ≥ h` 半平面盖住的
+    /// 分数 `w ∈ [0, 1]`。清醒刚体：`F_浮 = Σw × ρ_liq × g` 逆重力施于加权质心，阻力
+    /// `−K_DRAG × Σw × v`、角阻力 `−K_DRAG × Σ w|r|² × ω`。**睡眠刚体**：只在其 AABB
+    /// （外扩采样触达）所在 chunk 上一 tick 有写入时评估，水面线 `h` 与上次清醒时相差
+    /// ≥ `WAKE_H_ROWS` 行即唤醒并照常施力——水位变了浮体得跟着走，平静的池子零成本。
     ///
     /// 为什么按分数（2026-09-03 目检修订）：整格计数下浮力是位姿的阶梯函数，一行就是
     /// 一整排像素的力阶（32 宽木条 = 200 格/s²），平衡点落在台阶立面上 ⇒ 每 tick 在
@@ -251,32 +265,51 @@ impl Bodies {
     /// 时浮体的横摇永不衰减，任何扰动注入的能量全留在自旋里，故角阻力同时补上。
     /// 浮点只在此处与引擎边界活动，累加按清单序，确定。
     pub(crate) fn apply_buoyancy(&mut self, world: &World, table: &MaterialTable, phys: &mut PhysicsWorld) {
-        for body in &self.list {
-            if body.stamped.is_empty() || phys.is_sleeping(body.handle) {
+        for body in self.list.iter_mut() {
+            if body.stamped.is_empty() {
                 continue;
             }
             let aabb = aabb_cells(body, phys);
-            let Some((h, rho)) = surface_line(world, table, body, aabb) else {
+            let sleeping = phys.is_sleeping(body.handle);
+            if sleeping && !any_chunk_dirty(world, aabb, SURFACE_REACH + 1) {
                 continue;
-            };
+            }
             let (px, py, _) = phys.transform(body.handle);
             let (pvx, pvy) = body.pivot();
             let w = body.w as i32;
-            let hf = h as f32;
-            let (mut n, mut sx, mut sy, mut r2) = (0f32, 0f32, 0f32, 0f32);
-            for &(_, _, idx) in &body.stamped {
-                let (i, j) = ((idx as i32 % w) as f32, (idx as i32 / w) as f32);
-                let (cx, cy) = phys.local_to_world(body.handle, (i + 0.5 - pvx, j + 0.5 - pvy));
-                // 像素竖向占 [cy − 0.5, cy + 0.5]，与 y ≥ h 的重叠长度
-                let wgt = (cy + 0.5 - hf).clamp(0.0, 1.0);
-                if wgt <= 0.0 {
+            let line = surface_line(world, table, body, aabb);
+            let h_now = line.map_or(NO_SURFACE, |(h, _)| h);
+            if sleeping {
+                let moved = match (h_now, body.last_h) {
+                    (NO_SURFACE, NO_SURFACE) => false,
+                    (NO_SURFACE, _) | (_, NO_SURFACE) => true,
+                    (a, b) => (a - b).abs() >= WAKE_H_ROWS,
+                };
+                if !moved {
                     continue;
                 }
-                n += wgt;
-                sx += wgt * cx;
-                sy += wgt * cy;
-                let (dx, dy) = (cx - px, cy - py);
-                r2 += wgt * (dx * dx + dy * dy);
+                phys.wake(body.handle);
+            }
+            body.last_h = h_now;
+            let (mut n, mut sx, mut sy, mut r2) = (0f32, 0f32, 0f32, 0f32);
+            let mut rho = 0u16;
+            if let Some((h, r)) = line {
+                rho = r;
+                let hf = h as f32;
+                for &(_, _, idx) in &body.stamped {
+                    let (i, j) = ((idx as i32 % w) as f32, (idx as i32 / w) as f32);
+                    let (cx, cy) = phys.local_to_world(body.handle, (i + 0.5 - pvx, j + 0.5 - pvy));
+                    // 像素竖向占 [cy − 0.5, cy + 0.5]，与 y ≥ h 的重叠长度
+                    let wgt = (cy + 0.5 - hf).clamp(0.0, 1.0);
+                    if wgt <= 0.0 {
+                        continue;
+                    }
+                    n += wgt;
+                    sx += wgt * cx;
+                    sy += wgt * cy;
+                    let (dx, dy) = (cx - px, cy - py);
+                    r2 += wgt * (dx * dx + dy * dy);
+                }
             }
             if n <= 0.0 {
                 continue;
@@ -379,6 +412,7 @@ impl Bodies {
                         dirty: false,
                         handle,
                         last_xf: None, // 下一 tick 反盖章/盖章一次，接管格子
+                        last_h: NO_SURFACE,
                     });
                 } else {
                     for &i in &comp {
@@ -429,6 +463,7 @@ impl Bodies {
                 h.update(&f.to_bits().to_le_bytes());
             }
             h.update(&[phys.is_sleeping(b.handle) as u8]);
+            h.update(&b.last_h.to_le_bytes());
         }
         h.update(&self.next_id.to_le_bytes());
         for q in &self.reextract_queue {
@@ -561,6 +596,25 @@ fn surface_line(world: &World, table: &MaterialTable, body: &Body, (_, y0, _, _)
         i = j;
     }
     Some((h, table.density(best.0)))
+}
+
+/// 格 AABB 外扩 `margin` 格所覆盖的 chunk 里，是否有任何一个上一 tick `dirty` 非空
+/// （睡眠刚体的浮力评估门控）。
+fn any_chunk_dirty(world: &World, (x0, y0, x1, y1): (i32, i32, i32, i32), margin: i32) -> bool {
+    let c = CHUNK as i32;
+    let (cx0, cy0) = (((x0 - margin).div_euclid(c)).max(0), ((y0 - margin).div_euclid(c)).max(0));
+    let (cx1, cy1) = (
+        ((x1 + margin).div_euclid(c)).min(world.width_chunks as i32 - 1),
+        ((y1 + margin).div_euclid(c)).min(world.height_chunks as i32 - 1),
+    );
+    for cy in cy0..=cy1 {
+        for cx in cx0..=cx1 {
+            if !world.chunks[world.chunk_index(cx as usize, cy as usize)].dirty.is_empty() {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// 变换后位图的格 AABB（闭区间，未裁剪到世界）。
