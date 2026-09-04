@@ -1,7 +1,7 @@
 # docs/ 导航
 
 > 文档路径：`docs/README.md`
-> 最近更新：2026-08-30 (UTC+8)
+> 最近更新：2026-09-03 (UTC+8)
 
 ## 现行真源（先读这两篇）
 
@@ -73,6 +73,15 @@
    缓存、水面线阿基米德浮沉、对账/限额重提取/碎片脱格/燃烧散架。`crate_yard` golden + 六配置
    SyncTest（含引擎 checksum 巡检）；总纲 §11 第 8 条；bench 见 `perf/2026-09-02-m3-rigid-body.md`。
    目检 GIF：`crate_yard.gif`（沙托箱 / 落台切割 / 木浮石沉满池漫出 / 火场散架）。
+3d. **M3 浮力目检修订：已完成（2026-09-03，用户目检签收）**——会话总账
+   `sessions/2026-09-03-m3-buoyancy-spin-fix.md`，spec 决策记录第 13/14/15 条。三连：
+   ① 水里刚体越转越快 → 水面线取最低者 + 像素连续中心分数淹没（09-02 声称的"像素分数"当时
+   未落地）+ 角阻力；② 隔墙水槽让地上箱子悬浮 → 方案 1 **接触门控**水面线（候选 0–5 对照、
+   方案 5 已知缺陷同记）；③ 炸穿池壁后睡眠浮体挂在半空 → 周围 chunk 脏时重采 `h`、差 ≥ 2 行
+   唤醒。`crate_yard` 加漏水段 + `SpawnBody.angle_deg`；`Sim::body_state` 诊断视图；
+   bench `perf/2026-09-02-m3-rigid-body.md` 追记 1–3。**备选路线**
+   `proposals/2026-09-03-noita-style-buoyancy.md`（Proposed：Noita 式逐像素反作用、水里不睡；
+   触发条件与一行安全出口）。**浮力尾巴**：顶面载荷项、排开粒子带 ω×r、两侧贴墙无浮力。
    **下一步 = M4 玩家与法术（brainstorm）。**
 4. **M1 粒子层：已完成并经用户验收（2026-08-31）**（spec → Implemented，会话总账 `sessions/2026-08-30-m1-particle-layer.md`）：
    脱格/落格闭环、DDA、`Op::Emit`/`Op::Explode`（Noita 射线模型 + 近心汽化 + 密度冲量 + 方向涨落）、容量限流；验收 §0
