@@ -77,7 +77,7 @@ pub fn render_gif(
     let mut frames = 0usize;
     let mut buf = vec![0u8; ow * oh];
     for t in 0..ticks {
-        sim.step(&sc.ops_for_tick(t));
+        sim.step(&sc.ops_for_tick(t), sc.inputs_for_tick(t));
         if t >= opts.from && (t % opts.every == 0 || t + 1 == ticks) {
             fill_frame(sim, table, w, h, opts.scale, &mut buf);
             draw_particles(sim, w, h, opts.scale, &mut buf);

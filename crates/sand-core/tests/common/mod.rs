@@ -1,6 +1,8 @@
 //! 测试公用：内联材料表（core 测试不读 data/，保持 crate 自包含）。
 
-use sand_core::{Category, InitConfig, MaterialDef, MaterialTable, ReactionTable, ScanMode, Sim};
+use sand_core::{
+    Category, CreatureTable, InitConfig, MaterialDef, MaterialTable, ReactionTable, ScanMode, Sim, SpellTable,
+};
 
 pub const SAND: u8 = 2;
 pub const WATER: u8 = 3;
@@ -36,7 +38,7 @@ pub fn sim_with_table(
 ) -> Sim {
     let cfg = InitConfig { width_chunks, height_chunks, seed, threads, scan };
     let reactions = ReactionTable::empty(&table);
-    Sim::new(&cfg, table, reactions).unwrap()
+    Sim::new(&cfg, table, reactions, CreatureTable::empty(), SpellTable::empty()).unwrap()
 }
 
 /// 带反应表建 Sim（M2 Task 2 反应行为测试用）。
@@ -51,7 +53,7 @@ pub fn sim_with_reactions(
     reactions: ReactionTable,
 ) -> Sim {
     let cfg = InitConfig { width_chunks, height_chunks, seed, threads, scan };
-    Sim::new(&cfg, table, reactions).unwrap()
+    Sim::new(&cfg, table, reactions, CreatureTable::empty(), SpellTable::empty()).unwrap()
 }
 
 /// 自定义 splash_chance 的材料表（Layer G Task 3，spec §6）。`chance` 是
@@ -116,5 +118,5 @@ pub fn sim(width_chunks: usize, height_chunks: usize, seed: u64, threads: usize,
     let cfg = InitConfig { width_chunks, height_chunks, seed, threads, scan };
     let table = test_table();
     let reactions = ReactionTable::empty(&table);
-    Sim::new(&cfg, table, reactions).unwrap()
+    Sim::new(&cfg, table, reactions, CreatureTable::empty(), SpellTable::empty()).unwrap()
 }

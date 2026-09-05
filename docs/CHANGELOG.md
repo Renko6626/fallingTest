@@ -7,6 +7,19 @@
 
 ## 2026-09-05
 
+### Added
+- **M4 Task 1：管线与签名骨架**（新增 `crates/sand-core/src/{input,creature,projectile,spell,sin_table}.rs`；
+  改 `fixed.rs`[`Bam`、1024 项 sin 表查表 `dir_of`，屏幕坐标 +y 朝下]、`hash.rs`[`combine4`]、
+  `lib.rs`[`Sim::new`/`step` 签名扩展、`entity_hash`]、`sand-harness/src/{scenario,runner,render,main}.rs`
+  与全部既有测试调用点）。`InputFrame`（4 字节位打包，构造点 clamp slot）与 `sand_core::fixed::dir_of`
+  正式立起来；`state_hash` 由 `combine3` 升 `combine4`（实体层此刻恒 0，`Creatures`/`Projectiles::hash_into`
+  空表早退——依此保证零行为变化）；harness 场景新增稀疏 `inputs` 时间线 + `quantize_bam`（度→BAM，
+  环绕不报错）；`runner::Tables`/`Fingerprints` 一次扩容到四表，Task 5 前 harness 传
+  `CreatureTable::empty()`/`SpellTable::empty()`、指纹 0 且不进 golden 输出行。
+  `--grid-only` 取证六场景（sand_pile/waterfall_ci/mixed/explosion_ci/fire_oil_chain/crate_yard）
+  哈希流改动前后逐字相同，golden 因 `combine4` 结构变更全部重录。
+  `cargo test --workspace` 全绿、`cargo clippy --workspace --all-targets -- -D warnings` 零警告。
+
 ### Proposed
 - **M4 玩家与法术 spec**（`docs/superpowers/specs/2026-09-05-m4-player-and-spells-design.md`，
   Status: Proposed）。brainstorm 七问用户逐一裁决：① M4 **范围收窄**为"会动的生物 + 会飞的投射物"，

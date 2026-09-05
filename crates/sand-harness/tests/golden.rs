@@ -13,12 +13,19 @@ fn check(scenario: &str, golden: &str) {
     let (table, materials_fp) = load_materials(&repo_path("data/materials.ron")).unwrap();
     let (reactions, reactions_fp) = load_reactions(&repo_path("data/reactions.ron"), &table).unwrap();
     let sc = load_scenario(&repo_path(scenario), &table).unwrap();
+    let creature_table = sand_core::CreatureTable::empty();
+    let spell_table = sand_core::SpellTable::empty();
+    let tables = runner::Tables {
+        materials: &table,
+        reactions: &reactions,
+        creatures: &creature_table,
+        spells: &spell_table,
+    };
     // LiveRect 跑 golden：与 M0 时代（ChunkSleep）哈希一字不差是 O1 等价性的最硬证据
     let report = runner::run(
         &sc,
-        &table,
-        &reactions,
-        runner::Fingerprints { materials: materials_fp, reactions: reactions_fp },
+        &tables,
+        runner::Fingerprints { materials: materials_fp, reactions: reactions_fp, creatures: 0, spells: 0 },
         4,
         sand_core::ScanMode::LiveRect,
         sc.ticks,

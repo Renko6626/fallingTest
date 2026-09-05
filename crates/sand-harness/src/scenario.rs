@@ -8,7 +8,9 @@ use serde::Deserialize;
 use xxhash_rust::xxh3::{xxh3_64, Xxh3};
 
 use sand_core::{
-    Category, Fx, MaterialDef, MaterialTable, Op, ReactionRule, ReactionTable, DISPERSION_MAX,
+    fixed::Bam,
+    input::{BTN_DOWN, BTN_FIRE, BTN_JUMP, BTN_LEFT, BTN_RIGHT},
+    Category, Fx, InputFrame, MaterialDef, MaterialTable, Op, ReactionRule, ReactionTable, DISPERSION_MAX,
     MAX_EMIT_JITTER_RAW, MIN_BODY_PIXELS,
 };
 
@@ -496,6 +498,42 @@ pub struct ScenarioFile {
     pub setup: Vec<OpSpec>,
     #[serde(default)]
     pub script: Vec<ScriptEntry>,
+    /// 输入时间线（spec §7.3）：稀疏声明，**缺省沿用上一条**——避免逐帧铺满。
+    #[serde(default)]
+    pub inputs: Vec<InputEntry>,
+}
+
+// ---------- inputs：稀疏输入时间线（spec §3.1、§7.3）----------
+
+/// 一条输入时间线条目：从 `tick` 起、直到下一条条目生效前，`frames` 对各
+/// controller 恒定生效。
+#[derive(Deserialize, Clone)]
+pub struct InputEntry {
+    pub tick: u64,
+    /// 按 controller 序号排列；长度不足者补 `InputFrame::default()`。
+    pub frames: Vec<InputSpec>,
+}
+
+/// `InputFrame` 的 RON 表面形式：人写的按键布尔位 + 角度（度）+ 槽位，
+/// 加载期一次性量化打包成 `InputFrame`。
+#[derive(Deserialize, Clone)]
+pub struct InputSpec {
+    #[serde(default)]
+    pub left: bool,
+    #[serde(default)]
+    pub right: bool,
+    #[serde(default)]
+    pub jump: bool,
+    #[serde(default)]
+    pub fire: bool,
+    #[serde(default)]
+    pub down: bool,
+    /// 瞄准角，度（0 = +x，随值增大朝 +y 转——屏幕坐标 +y 朝下，视觉上顺时针，
+    /// 见 `sand_core::fixed::dir_of` 的坐标约定）。加载期一次性量化为 BAM。
+    #[serde(default)]
+    pub aim_deg: f64,
+    #[serde(default)]
+    pub slot: u8,
 }
 
 // ---------- grid：行级 RLE + 材质名图例（地图编辑器 spec §3）----------
@@ -703,6 +741,44 @@ pub fn quantize_fx(v: f64) -> Result<Fx, String> {
     Ok(Fx(raw as i32))
 }
 
+/// 场景 RON 里的角度（度）→ BAM（`sand_core::fixed::Bam`）。**环绕**语义：
+/// 负角/超过一圈的角一律取模落回 `0..65536`，不报错——瞄准角本就该能连续
+/// 旋转，`InputEntry` 的时间线写 `-90.0` 就该等价于 `270.0`（钉死于
+/// `quantize_bam_maps_cardinals_exactly` 单测）。唯一拒绝的是明显失控的
+/// 配置（`|deg| > 1e6`），同 `quantize_fx` 的"配置错误在加载期拦住"体例。
+pub fn quantize_bam(deg: f64) -> Result<Bam, String> {
+    if !deg.is_finite() {
+        return Err(format!("BAM 量化失败：{deg} 不是有限数"));
+    }
+    if deg.abs() > 1e6 {
+        return Err(format!("BAM 量化失败：{deg} 超出合理范围（|deg| > 1e6）"));
+    }
+    let raw = (deg / 360.0 * 65536.0).round() as i64;
+    Ok((raw & 0xFFFF) as u16)
+}
+
+/// `InputSpec` → `InputFrame`：按键布尔位打包 + 瞄准角量化。
+fn resolve_input(spec: &InputSpec) -> Result<InputFrame, String> {
+    let mut buttons = 0u8;
+    if spec.left {
+        buttons |= BTN_LEFT;
+    }
+    if spec.right {
+        buttons |= BTN_RIGHT;
+    }
+    if spec.jump {
+        buttons |= BTN_JUMP;
+    }
+    if spec.fire {
+        buttons |= BTN_FIRE;
+    }
+    if spec.down {
+        buttons |= BTN_DOWN;
+    }
+    let aim = quantize_bam(spec.aim_deg)?;
+    Ok(InputFrame::new(buttons, aim, spec.slot))
+}
+
 /// `OpSpec::Explode::max_durability` 的 serde 缺省（M2 spec §2.2）。
 fn default_max_durability() -> u8 {
     10
@@ -723,6 +799,8 @@ pub struct Scenario {
     pub script: Vec<(ScheduleKind, Op)>,
     /// 场景文件内容指纹。
     pub fingerprint: u64,
+    /// 输入时间线（spec §7.3），按 tick 严格升序（`load_scenario` 加载期校验）。
+    pub inputs: Vec<(u64, Vec<InputFrame>)>,
 }
 
 pub enum ScheduleKind {
@@ -871,6 +949,23 @@ pub fn load_scenario(path: &str, table: &MaterialTable) -> Result<Scenario, Stri
         })
         .collect::<Result<Vec<_>, String>>()?;
 
+    // 输入时间线（spec §7.3）：逐条量化，加载期校验 tick 严格递增——
+    // `inputs_for_tick` 的 `partition_point` 二分要求这一前提，乱序场景文件
+    // 必须在这里就被拒绝，而不是留到运行期悄悄取错值。
+    let mut inputs = Vec::with_capacity(file.inputs.len());
+    let mut prev_tick: Option<u64> = None;
+    for entry in &file.inputs {
+        if let Some(p) = prev_tick
+            && entry.tick <= p
+        {
+            return Err(format!("场景 inputs 时间线必须按 tick 严格递增：{p} 之后出现 {}", entry.tick));
+        }
+        prev_tick = Some(entry.tick);
+        let frames =
+            entry.frames.iter().map(resolve_input).collect::<Result<Vec<_>, _>>()?;
+        inputs.push((entry.tick, frames));
+    }
+
     // 指纹 = combine(源字节哈希, 全部已解析 Emit 的 Fx raw 位定序折叠)
     // （spec §7；Task 5 修复轮 1 I2）。定序：setup 先、script 后，各自按
     // 声明序——与 `ops_for_tick` 的确定性遍历序一致，不引入新的排序歧义。
@@ -888,6 +983,7 @@ pub fn load_scenario(path: &str, table: &MaterialTable) -> Result<Scenario, Stri
         setup,
         script,
         fingerprint,
+        inputs,
     })
 }
 
@@ -904,6 +1000,15 @@ impl Scenario {
             })
             .map(|(_, op)| op.clone())
             .collect()
+    }
+
+    /// 本 tick 生效的输入（稀疏时间线：取 tick 不大于当前值的最后一条）。
+    /// 无任何条目时返回空切片——生物按"全键松开"处理。
+    pub fn inputs_for_tick(&self, tick: u64) -> &[InputFrame] {
+        match self.inputs.partition_point(|(t, _)| *t <= tick) {
+            0 => &[],
+            i => &self.inputs[i - 1].1,
+        }
     }
 }
 
@@ -1545,5 +1650,83 @@ mod tests {
             std::fs::remove_file(&path).ok();
             assert!(r.is_err(), "{why}");
         }
+    }
+
+    // ==================== inputs：稀疏时间线 + quantize_bam（M4 Task 1）====================
+
+    #[test]
+    fn inputs_timeline_is_sparse_and_holds_last_value() {
+        let sc = Scenario {
+            name: "t".into(),
+            world: (1, 1),
+            seed: 0,
+            ticks: 10,
+            setup: vec![],
+            script: vec![],
+            fingerprint: 0,
+            inputs: vec![
+                (0, vec![InputFrame::new(BTN_RIGHT, 0, 0)]),
+                (5, vec![InputFrame::new(BTN_JUMP, 0, 0)]),
+            ],
+        };
+        assert_eq!(sc.inputs_for_tick(0)[0].buttons, BTN_RIGHT);
+        assert_eq!(sc.inputs_for_tick(4)[0].buttons, BTN_RIGHT, "缺省沿用上一条");
+        assert_eq!(sc.inputs_for_tick(5)[0].buttons, BTN_JUMP);
+        assert_eq!(sc.inputs_for_tick(999)[0].buttons, BTN_JUMP);
+    }
+
+    #[test]
+    fn inputs_for_tick_returns_empty_slice_before_first_entry() {
+        let sc = Scenario {
+            name: "t".into(),
+            world: (1, 1),
+            seed: 0,
+            ticks: 10,
+            setup: vec![],
+            script: vec![],
+            fingerprint: 0,
+            inputs: vec![(5, vec![InputFrame::new(BTN_JUMP, 0, 0)])],
+        };
+        assert!(sc.inputs_for_tick(0).is_empty(), "无任何条目生效时返回空切片");
+        assert!(sc.inputs_for_tick(4).is_empty());
+    }
+
+    #[test]
+    fn quantize_bam_maps_cardinals_exactly() {
+        assert_eq!(quantize_bam(0.0).unwrap(), 0);
+        assert_eq!(quantize_bam(90.0).unwrap(), 16384);
+        assert_eq!(quantize_bam(-90.0).unwrap(), 49152, "负角必须环绕，不报错");
+    }
+
+    #[test]
+    fn quantize_bam_rejects_runaway_values() {
+        assert!(quantize_bam(f64::NAN).is_err());
+        assert!(quantize_bam(2.0e6).is_err());
+        assert!(quantize_bam(-2.0e6).is_err());
+    }
+
+    #[test]
+    fn load_scenario_rejects_non_increasing_input_ticks() {
+        let t = table_with_water();
+        let ron = "Scenario(name:\"i\",world:(1,1),seed:0,ticks:10,\
+             inputs:[(tick:5,frames:[(left:true)]),(tick:5,frames:[(right:true)])])";
+        let path = write_temp_scenario_text("inputs-order", ron);
+        let r = load_scenario(path.to_str().unwrap(), &t);
+        std::fs::remove_file(&path).ok();
+        assert!(r.is_err(), "tick 非严格递增必须报错");
+    }
+
+    #[test]
+    fn load_scenario_parses_inputs_timeline() {
+        let t = table_with_water();
+        let ron = "Scenario(name:\"i\",world:(1,1),seed:0,ticks:10,\
+             inputs:[(tick:0,frames:[(right:true,aim_deg:90.0,slot:1)])])";
+        let path = write_temp_scenario_text("inputs-parse", ron);
+        let sc = load_scenario(path.to_str().unwrap(), &t).unwrap();
+        std::fs::remove_file(&path).ok();
+        let f = sc.inputs_for_tick(0)[0];
+        assert_eq!(f.buttons, BTN_RIGHT);
+        assert_eq!(f.aim, 16384);
+        assert_eq!(f.slot, 1);
     }
 }

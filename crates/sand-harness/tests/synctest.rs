@@ -18,7 +18,15 @@ fn waterfall_ci_six_configs_zero_divergence() {
     let (table, _materials_fp) = load_materials(&repo_path("data/materials.ron")).unwrap();
     let (reactions, _fp) = load_reactions(&repo_path("data/reactions.ron"), &table).unwrap();
     let sc = load_scenario(&repo_path("data/scenarios/waterfall_ci.ron"), &table).unwrap();
-    runner::synctest(&sc, &table, &reactions, 4, sc.ticks)
+    let creature_table = sand_core::CreatureTable::empty();
+    let spell_table = sand_core::SpellTable::empty();
+    let tables = runner::Tables {
+        materials: &table,
+        reactions: &reactions,
+        creatures: &creature_table,
+        spells: &spell_table,
+    };
+    runner::synctest(&sc, &tables, 4, sc.ticks)
         .unwrap_or_else(|e| panic!("waterfall_ci 六配置 SyncTest 分叉：{e}"));
 }
 
@@ -30,7 +38,15 @@ fn explosion_ci_six_configs_zero_divergence() {
     let (table, _materials_fp) = load_materials(&repo_path("data/materials.ron")).unwrap();
     let (reactions, _fp) = load_reactions(&repo_path("data/reactions.ron"), &table).unwrap();
     let sc = load_scenario(&repo_path("data/scenarios/explosion_ci.ron"), &table).unwrap();
-    runner::synctest(&sc, &table, &reactions, 4, sc.ticks)
+    let creature_table = sand_core::CreatureTable::empty();
+    let spell_table = sand_core::SpellTable::empty();
+    let tables = runner::Tables {
+        materials: &table,
+        reactions: &reactions,
+        creatures: &creature_table,
+        spells: &spell_table,
+    };
+    runner::synctest(&sc, &tables, 4, sc.ticks)
         .unwrap_or_else(|e| panic!("explosion_ci 六配置 SyncTest 分叉：{e}"));
 }
 
@@ -41,7 +57,15 @@ fn fire_oil_chain_six_configs_zero_divergence() {
     let (table, _materials_fp) = load_materials(&repo_path("data/materials.ron")).unwrap();
     let (reactions, _fp) = load_reactions(&repo_path("data/reactions.ron"), &table).unwrap();
     let sc = load_scenario(&repo_path("data/scenarios/fire_oil_chain.ron"), &table).unwrap();
-    runner::synctest(&sc, &table, &reactions, 4, sc.ticks)
+    let creature_table = sand_core::CreatureTable::empty();
+    let spell_table = sand_core::SpellTable::empty();
+    let tables = runner::Tables {
+        materials: &table,
+        reactions: &reactions,
+        creatures: &creature_table,
+        spells: &spell_table,
+    };
+    runner::synctest(&sc, &tables, 4, sc.ticks)
         .unwrap_or_else(|e| panic!("fire_oil_chain 六配置 SyncTest 分叉：{e}"));
 }
 
@@ -52,6 +76,14 @@ fn crate_yard_six_configs_zero_divergence() {
     let (table, _materials_fp) = load_materials(&repo_path("data/materials.ron")).unwrap();
     let (reactions, _fp) = load_reactions(&repo_path("data/reactions.ron"), &table).unwrap();
     let sc = load_scenario(&repo_path("data/scenarios/crate_yard.ron"), &table).unwrap();
-    runner::synctest(&sc, &table, &reactions, 4, sc.ticks)
+    let creature_table = sand_core::CreatureTable::empty();
+    let spell_table = sand_core::SpellTable::empty();
+    let tables = runner::Tables {
+        materials: &table,
+        reactions: &reactions,
+        creatures: &creature_table,
+        spells: &spell_table,
+    };
+    runner::synctest(&sc, &tables, 4, sc.ticks)
         .unwrap_or_else(|e| panic!("crate_yard 六配置 SyncTest 分叉：{e}"));
 }

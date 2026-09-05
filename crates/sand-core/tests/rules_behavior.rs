@@ -21,11 +21,11 @@ fn floor_op(w: i32, h: i32) -> Op {
 fn sand_falls_straight_down() {
     let mut s = sim(2, 2, 1, 1, ScanMode::LiveRect);
     s.apply_setup(&[Op::Brush { material: SAND, x: 40, y: 10, r: 0 }]);
-    s.step(&[]);
+    s.step(&[], &[]);
     assert_eq!(s.world().cell(40, 10).material(), MAT_AIR);
     assert_eq!(s.world().cell(40, 11).material(), SAND);
     for _ in 0..5 {
-        s.step(&[]);
+        s.step(&[], &[]);
         for x in 0..128 {
             for y in 0..128 {
                 if s.world().cell(x, y).material() == SAND {
@@ -47,7 +47,7 @@ fn sand_piles_and_is_conserved() {
         } else {
             vec![]
         };
-        s.step(&ops);
+        s.step(&ops, &[]);
     }
     let n = s.world().count_material(SAND);
     assert!(n > 0);
@@ -60,7 +60,7 @@ fn sand_piles_and_is_conserved() {
     // 静置后不再变化（堆稳定）
     let h1 = s.state_hash();
     let t1 = s.tick();
-    s.step(&[]);
+    s.step(&[], &[]);
     // tick 计数变化会改 state_hash；比 cells 就位：材质计数与位置抽样
     assert_eq!(s.world().count_material(SAND), n, "静置期沙数量必须守恒");
     let _ = (h1, t1);
@@ -75,7 +75,7 @@ fn sand_sinks_in_water() {
         Op::Brush { material: SAND, x: 64, y: 100, r: 1 },
     ]);
     for _ in 0..200 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     // 下沉判据：稳态下任何沙的正下方不允许是水（沙浮在水上 = 未沉）
     let mut sand_seen = false;
@@ -106,7 +106,7 @@ fn water_levels_out_across_chunk_seam() {
     ]);
     let n0 = s.world().count_material(WATER);
     for _ in 0..1200 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     assert_eq!(s.world().count_material(WATER), n0, "水量守恒（chunk 缝无源汇）");
     // 摊平判据：水面最高与最低行差 ≤ 2（简版横流收敛慢，放宽阈值）
@@ -151,7 +151,7 @@ fn water_direction_commitment() {
     // 然后翻转向右一路走远。
     let mut positions = vec![];
     for _ in 0..30 {
-        s.step(&[]);
+        s.step(&[], &[]);
         for x in 0..128 {
             if s.world().cell(x, 123).material() == WATER {
                 positions.push(x);
@@ -178,7 +178,7 @@ fn water_direction_commitment() {
 fn water_disperses_to_farthest_reachable_air_cell() {
     let mut s = sim_with_table(2, 2, 7, 1, ScanMode::LiveRect, test_table_with_water_dispersion(5));
     s.apply_setup(&[floor_op(128, 128), Op::Brush { material: WATER, x: 100, y: 123, r: 0 }]);
-    s.step(&[]);
+    s.step(&[], &[]);
     assert_eq!(s.world().cell(100, 123).material(), MAT_AIR, "源格必须腾空");
     assert_eq!(
         s.world().cell(95, 123).material(),
@@ -196,7 +196,7 @@ fn water_dispersion_stops_at_first_obstacle() {
         Op::Fill { material: MAT_WALL, x0: 97, y0: 123, x1: 97, y1: 123 },
         Op::Brush { material: WATER, x: 100, y: 123, r: 0 },
     ]);
-    s.step(&[]);
+    s.step(&[], &[]);
     assert_eq!(
         s.world().cell(98, 123).material(),
         WATER,
@@ -212,7 +212,7 @@ fn water_dispersion_preserves_direction_commitment() {
     // ① 正常左行：dir 保持 -1
     let mut s = sim_with_table(2, 2, 9, 1, ScanMode::LiveRect, test_table_with_water_dispersion(5));
     s.apply_setup(&[floor_op(128, 128), Op::Brush { material: WATER, x: 100, y: 123, r: 0 }]);
-    s.step(&[]);
+    s.step(&[], &[]);
     assert_eq!(s.world().cell(95, 123).dir(), -1, "左行后记忆方向必须是左");
 
     // ② 翻向：紧邻左侧是墙 → 首选方向失败 → 翻向右行，记忆必须跟着翻成 +1
@@ -222,7 +222,7 @@ fn water_dispersion_preserves_direction_commitment() {
         Op::Fill { material: MAT_WALL, x0: 99, y0: 123, x1: 99, y1: 123 },
         Op::Brush { material: WATER, x: 100, y: 123, r: 0 },
     ]);
-    s.step(&[]);
+    s.step(&[], &[]);
     assert_eq!(
         s.world().cell(105, 123).material(),
         WATER,
@@ -239,7 +239,7 @@ fn water_dispersion_preserves_direction_commitment() {
 fn water_dispersion_is_clamped_to_max_inside_core() {
     let mut s = sim_with_table(2, 2, 11, 1, ScanMode::LiveRect, test_table_with_water_dispersion(20));
     s.apply_setup(&[floor_op(128, 128), Op::Brush { material: WATER, x: 100, y: 123, r: 0 }]);
-    s.step(&[]);
+    s.step(&[], &[]);
     let landed = (0..128).find(|&x| s.world().cell(x, 123).material() == WATER).unwrap();
     assert_eq!(
         landed,
@@ -253,7 +253,7 @@ fn water_dispersion_is_clamped_to_max_inside_core() {
 fn water_with_default_dispersion_moves_exactly_one_cell() {
     let mut s = sim(2, 2, 12, 1, ScanMode::LiveRect);
     s.apply_setup(&[floor_op(128, 128), Op::Brush { material: WATER, x: 100, y: 123, r: 0 }]);
-    s.step(&[]);
+    s.step(&[], &[]);
     assert_eq!(s.world().cell(99, 123).material(), WATER, "缺省色散必须仍是单格横移");
 }
 
@@ -279,7 +279,7 @@ fn higher_dispersion_levels_water_faster() {
             Op::Fill { material: WATER, x0: 30, y0: 90, x1: 45, y1: 123 },
         ]);
         for t in 1..=budget {
-            s.step(&[]);
+            s.step(&[], &[]);
             let top = (1..191)
                 .filter_map(|x| (0..124).find(|&y| s.world().cell(x, y).material() == WATER))
                 .min();
@@ -311,7 +311,7 @@ fn falling_sand_starts_at_exactly_one_cell_per_tick() {
     let mut s = sim(2, 2, 21, 1, ScanMode::LiveRect);
     s.apply_setup(&[Op::Brush { material: SAND, x: 40, y: 10, r: 0 }]);
     for t in 1..=4i32 {
-        s.step(&[]);
+        s.step(&[], &[]);
         assert_eq!(
             s.world().cell(40, 10 + t).material(),
             SAND,
@@ -328,7 +328,7 @@ fn free_fall_reaches_terminal_velocity_at_tick_16() {
     s.apply_setup(&[Op::Brush { material: SAND, x: 40, y: 2, r: 0 }]);
     let find = |s: &sand_core::Sim| (0..128).find(|&y| s.world().cell(40, y).material() == SAND);
     for _ in 0..15 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     let y15 = find(&s).expect("沙还在下落中");
     assert_eq!(
@@ -336,10 +336,10 @@ fn free_fall_reaches_terminal_velocity_at_tick_16() {
         15 * G_ACCEL,
         "第 15 tick 速度应为 15 个 ¼ 格单位，尚未封顶"
     );
-    s.step(&[]);
+    s.step(&[], &[]);
     let y16 = find(&s).expect("沙还在下落中");
     assert_eq!(s.world().cell(40, y16).vel(), V_MAX_CELL, "第 16 tick 应首次达终端速度");
-    s.step(&[]);
+    s.step(&[], &[]);
     let y17 = find(&s).expect("沙还在下落中");
     assert_eq!(s.world().cell(40, y17).vel(), V_MAX_CELL, "终端速度必须被 clamp 住");
     assert_eq!(y17 - y16, (V_MAX_CELL / VEL_ONE) as i32, "终端速度下每 tick 恰好 4 格");
@@ -351,7 +351,7 @@ fn gravity_makes_sand_fall_farther_than_one_cell_per_tick() {
     let mut s = sim(2, 2, 23, 1, ScanMode::LiveRect);
     s.apply_setup(&[Op::Brush { material: SAND, x: 40, y: 2, r: 0 }]);
     for _ in 0..20 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     let y = (0..128).find(|&y| s.world().cell(40, y).material() == SAND).unwrap();
     assert!(y - 2 > 20, "20 tick 落距 {} 格，加速后必须 > 20 格", y - 2);
@@ -364,7 +364,7 @@ fn landing_resets_velocity_to_zero() {
     let mut s = sim(2, 2, 24, 1, ScanMode::LiveRect);
     s.apply_setup(&[floor_op(128, 128), Op::Brush { material: SAND, x: 40, y: 2, r: 0 }]);
     for _ in 0..80 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     assert_eq!(s.world().cell(40, 123).material(), SAND, "沙应停在地板上方");
     assert_eq!(s.world().cell(40, 123).vel(), 0, "撞停后速度必须清零");
@@ -380,7 +380,7 @@ fn fast_fall_does_not_tunnel_through_thin_floor() {
         Op::Brush { material: SAND, x: 40, y: 2, r: 0 },
     ]);
     for _ in 0..120 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     assert_eq!(s.world().cell(40, 59).material(), SAND, "沙必须停在地板正上方 y=59");
     assert_eq!(s.world().cell(40, 60).material(), MAT_WALL, "地板不得被穿过");
@@ -402,7 +402,7 @@ fn resting_pile_lets_every_chunk_sleep() {
         Op::Fill { material: SAND, x0: 40, y0: 118, x1: 80, y1: 123 },
     ]);
     for _ in 0..400 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     for (ci, c) in s.world().chunks.iter().enumerate() {
         assert!(c.dirty.is_empty(), "chunk {ci} 静置后仍脏：{:?}", c.dirty);
@@ -435,7 +435,7 @@ fn fast_water_at_max_dispersion_stays_inside_write_window() {
         Op::Fill { material: SAND, x0: 120, y0: 2, x1: 140, y1: 20 },
     ]);
     for _ in 0..300 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     assert!(s.world().count_material(WATER) > 0, "水不该凭空消失");
 }
@@ -460,7 +460,7 @@ fn gas_bubble_rises_exactly_one_cell_per_tick() {
     let mut s = sim_with_table(2, 2, 7, 1, ScanMode::LiveRect, test_table_with_gas());
     s.apply_setup(&[Op::Brush { material: SMOKE, x: 40, y: 100, r: 0 }]);
     for t in 1..=20i32 {
-        s.step(&[]);
+        s.step(&[], &[]);
         assert_eq!(s.world().cell(40, 100 - t).material(), SMOKE, "tick {t}：烟应恰在 y={}", 100 - t);
         assert_eq!(s.world().count_material(SMOKE), 1, "tick {t}：烟数量守恒");
     }
@@ -479,7 +479,7 @@ fn gas_bubbles_up_through_liquid() {
         Op::Brush { material: SMOKE, x: 40, y: 108, r: 0 },                // 池底一格烟
     ]);
     for _ in 0..200 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     assert_eq!(s.world().count_material(SMOKE), 1, "烟不得消失");
     let smoke_y = (0..128)
@@ -509,7 +509,7 @@ fn trapped_gas_lets_chunk_sleep() {
         Op::Brush { material: SMOKE, x: 40, y: 100, r: 0 },               // 中心换成烟
     ]);
     for _ in 0..100 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     assert_eq!(s.world().cell(40, 100).material(), SMOKE, "被困的烟原地不动");
     for (ci, c) in s.world().chunks.iter().enumerate() {
@@ -560,7 +560,7 @@ fn initiator_convention_prevents_double_settlement() {
         Op::Brush { material: WATER, x: 40, y: 100, r: 0 },
         Op::Brush { material: FIRE, x: 40, y: 99, r: 0 },
     ]);
-    s.step(&[]);
+    s.step(&[], &[]);
     assert_eq!(s.world().cell(40, 100).material(), WATER, "发起方产物 = water（1:1）");
     assert_eq!(s.world().cell(40, 99).material(), SMOKE, "邻居产物 = smoke");
     assert_eq!(s.world().count_material(FIRE), 0);
@@ -591,13 +591,13 @@ fn reaction_skips_neighbors_stamped_this_tick() {
         Op::Brush { material: FIRE, x: 40, y: 100, r: 0 },
         Op::Brush { material: WATER, x: 41, y: 100, r: 0 },
     ]);
-    s.step(&[]);
+    s.step(&[], &[]);
     assert_eq!(s.world().count_material(SAND), 0, "戳跳过失效：产物同 tick 被二次结算成 sand");
     assert_eq!(s.world().count_material(SMOKE), 1);
     assert_eq!(s.world().count_material(WATER), 2);
     // 下一 tick 戳过期，water+smoke 才允许结算（机制是"一格一 tick 至多一次"，
     // 不是"永不"）。
-    s.step(&[]);
+    s.step(&[], &[]);
     assert_eq!(s.world().count_material(SAND), 2, "次 tick 应正常结算 water+smoke");
 }
 
@@ -628,7 +628,7 @@ fn reaction_rate_matches_declared_probability() {
         x += 3;
     }
     s.apply_setup(&setup);
-    s.step(&[]);
+    s.step(&[], &[]);
     let hits = s.world().count_material(SMOKE) as f64;
     let p = hits / pairs as f64;
     let expect = 128.0 / 255.0;
@@ -710,7 +710,7 @@ fn ignition_needs_burning_source() {
         Op::Brush { material: 0, x: 40, y: 99, r: 0 }, // wood 上方留 air（氧气）
     ]);
     for _ in 0..100 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     assert_eq!(s.world().cell(40, 100).material(), WOOD, "冷油旁的 wood 必须还在");
     assert_eq!(s.world().cell(40, 100).counter(), 0, "冷油绝不点燃邻居（源门 spec §5.2）");
@@ -733,7 +733,7 @@ fn fire_ignites_oil_and_chain_decays_to_air() {
     let oil0 = s.world().count_material(OIL);
     let (mut saw_burning_oil, mut saw_smoke) = (false, false);
     for _ in 0..1500 {
-        s.step(&[]);
+        s.step(&[], &[]);
         if !saw_burning_oil {
             'scan: for x in 32..59 {
                 for y in 92..109 {
@@ -766,7 +766,7 @@ fn wood_burns_outside_in() {
         Op::Fill { material: FIRE, x0: 44, y0: 99, x1: 47, y1: 99 }, // 顶面点火
     ]);
     for t in 0..200u64 {
-        s.step(&[]);
+        s.step(&[], &[]);
         let center = s.world().cell(45, 106);
         assert_eq!(center.material(), WOOD, "tick {t}：中心格不该被烧没");
         assert_eq!(center.counter(), 0, "tick {t}：中心格在表面烧完前不得装填（由外向内）");
@@ -789,7 +789,7 @@ fn fire_dropped_on_surface_ignites_pool() {
     ]);
     let oil0 = s.world().count_material(OIL);
     for _ in 0..600 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     assert!(
         s.world().count_material(OIL) < oil0,
@@ -821,7 +821,7 @@ fn water_extinguishes_burning_fuel() {
     setup.extend(cavity(80, false));
     s.apply_setup(&setup);
     for _ in 0..600 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     assert_eq!(s.world().cell(40, 100).material(), WOOD, "有 water 邻居：wood 必须幸存");
     assert_eq!(s.world().cell(40, 100).counter(), 0, "灭火后 counter 清零");
@@ -843,7 +843,7 @@ fn resting_wood_lets_chunk_sleep() {
         Op::Fill { material: OIL, x0: 90, y0: 120, x1: 110, y1: 123 },
     ]);
     for _ in 0..400 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     for (ci, c) in s.world().chunks.iter().enumerate() {
         assert!(c.dirty.is_empty(), "chunk {ci} 静置后仍脏：{:?}", c.dirty);
@@ -892,7 +892,7 @@ fn ignition_direction_roll_is_uniform() {
         cx += 4;
     }
     s.apply_setup(&setup);
-    s.step(&[]);
+    s.step(&[], &[]);
     // NEIGHBORS4 序：上、下、左、右
     let mut counts = [0u32; 4];
     let mut lit_total = 0u32;
@@ -934,7 +934,7 @@ fn fast_impact_ejects_a_splash_particle() {
     ops.push(Op::Brush { material: WATER, x: 40, y: 81, r: 0 });
     s.apply_setup(&ops);
     for _ in 0..60 {
-        s.step(&[]);
+        s.step(&[], &[]);
         if !s.particles().is_empty() {
             break;
         }
@@ -950,7 +950,7 @@ fn free_falling_cell_never_splashes() {
     let mut s = sim_with_table(2, 2, 42, 1, ScanMode::LiveRect, test_table_with_splash(255, 255));
     s.apply_setup(&[Op::Brush { material: WATER, x: 40, y: 2, r: 0 }]);
     for _ in 0..20 {
-        s.step(&[]);
+        s.step(&[], &[]);
         assert_eq!(s.particles().len(), 0, "下落途中不得溅射");
     }
 }
@@ -964,7 +964,7 @@ fn slow_impact_does_not_splash() {
     ops.push(Op::Brush { material: WATER, x: 40, y: 123, r: 0 });
     s.apply_setup(&ops);
     for _ in 0..20 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     assert_eq!(s.particles().len(), 0, "低速撞停不得溅射");
     assert_eq!(s.world().count_material(WATER), 1, "水必须原地留在网格里");
@@ -978,7 +978,7 @@ fn zero_splash_chance_never_splashes() {
     ops.push(Op::Brush { material: WATER, x: 40, y: 81, r: 0 });
     s.apply_setup(&ops);
     for _ in 0..60 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     assert_eq!(s.particles().len(), 0, "splash_chance=0 必须永不溅射");
     assert_eq!(s.world().count_material(WATER), 1, "水必须留在网格里");
@@ -999,7 +999,7 @@ fn splash_probability_is_per_cell_not_all_or_nothing() {
     // 跑完再数必然是 0。
     let mut peak = 0usize;
     for _ in 0..80 {
-        s.step(&[]);
+        s.step(&[], &[]);
         peak = peak.max(s.particles().len());
     }
     assert!(peak > 10 && peak < 90, "100 格水在 chance≈0.5 下应部分脱格，峰值实际 {peak}");
@@ -1020,7 +1020,7 @@ fn splash_spawn_order_is_thread_count_invariant() {
         let mut hashes = Vec::new();
         let mut peak = 0usize;
         for _ in 0..200 {
-            s.step(&[]);
+            s.step(&[], &[]);
             hashes.push(s.state_hash());
             peak = peak.max(s.particles().len());
         }
@@ -1060,7 +1060,7 @@ fn landing_particle_carries_impact_momentum_into_the_grid() {
     // 跑到粒子落格：网格里出现水
     let mut landed = None;
     for _ in 0..60 {
-        s.step(&[]);
+        s.step(&[], &[]);
         if let Some(y) = (0..124).find(|&y| s.world().cell(64, y).material() == WATER) {
             landed = Some(y);
             break;
@@ -1072,7 +1072,7 @@ fn landing_particle_carries_impact_momentum_into_the_grid() {
         V_MAX_CELL,
         "落格 cell 必须带上撞击速度（自由落体 120 格早已封顶）"
     );
-    s.step(&[]);
+    s.step(&[], &[]);
     assert_eq!(s.particles().len(), 1, "满速落格 cell 应在下一 tick 经溅射判定重新脱格");
     assert_eq!(s.world().count_material(WATER), 0, "脱格后网格里不该再有水");
 }

@@ -3,6 +3,6 @@ scenario_fp 6c269e62add21153
 materials_fp fee3946a481b1c4e
 reactions_fp 91ee5c6afd906fb0
 world 128x128 seed 20260830 ticks 600
-tick      256 hash 6e07c714fcaecd0b
-tick      512 hash 1c3d8b5845b46963
-final fa6a289a13091ab9
+tick      256 hash 592934ff48403dbc
+tick      512 hash 26d0edbd1602022e
+final 2650362dea532d5f

@@ -26,11 +26,11 @@ fn particles_free_fall_and_land_conserving_count() {
         let x = Fx::from_int(10 + i as i32);
         s.queue_spawn(SAND, x, Fx::from_int(5), Fx::ZERO, Fx::ZERO);
     }
-    s.step(&[]); // 本 tick 完成生成 + 首次积分
+    s.step(&[], &[]); // 本 tick 完成生成 + 首次积分
 
     // 下落 ~118 格，重力 0.25/tick²，约 31 tick 落地；200 tick 留足余量。
     for _ in 0..200 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
 
     assert_eq!(s.particles().len(), 0, "所有粒子应已落格，池中不应再有自由粒子");
@@ -51,12 +51,12 @@ fn particles_same_position_and_velocity_conflict_still_conserves_and_drains_pool
         // 同一位置、同一速度：DDA 结果逐帧完全一致，几乎必然争抢同一候选格。
         s.queue_spawn(SAND, Fx::from_int(64), Fx::from_int(5), Fx::ZERO, Fx::ZERO);
     }
-    s.step(&[]);
+    s.step(&[], &[]);
 
     // 冲突消解会把落点摊到候选格 + 邻格 + 向上兜底一整根竖列，比自由落体
     // 单粒子慢不了太多；300 tick 留足余量（含世界顶溢出保护路径的可能性）。
     for _ in 0..300 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
 
     assert_eq!(s.particles().len(), 0, "C1 修复后：全部粒子必须落格或经兜底排空，池不得残留");
@@ -89,7 +89,7 @@ fn particle_phase_is_thread_count_and_scan_mode_invariant() {
             spawn_batch(s, tick);
         }
         for s in &mut sims {
-            s.step(&[]);
+            s.step(&[], &[]);
         }
         let h0 = sims[0].state_hash();
         for (i, s) in sims.iter().enumerate().skip(1) {

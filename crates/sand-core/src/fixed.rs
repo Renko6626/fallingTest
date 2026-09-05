@@ -9,6 +9,8 @@
 
 use std::ops::{Add, Neg, Sub};
 
+use crate::sin_table::SIN_TABLE;
+
 pub(crate) const FRAC_BITS: u32 = 16;
 
 /// Q16.16 定点：高位整数部分 + 低 16 位小数部分，二补码 `i32`。
@@ -106,6 +108,24 @@ pub fn isqrt(v: u64) -> u32 {
         x = y;
     }
     x as u32
+}
+
+/// BAM 角（binary angle measurement）：无符号 16 位，65536 = 360°，0 = +x。
+/// 选它而非度数/弧度是因为**加减法天然环绕**，无需取模，且与架构 §3
+/// `bridge-input` 条目定的编码一致。
+pub type Bam = u16;
+
+/// BAM 角 → 单位方向向量 `(cos, sin)`，查 1024 项表（角分辨率 0.35°）。
+/// 核心禁用系统超越函数（总纲 §6），故这里是唯一的三角来源。
+///
+/// **坐标约定**：屏幕坐标系，+y 朝下。角度从 +x 轴起算，随值增大朝 +y 转
+/// （视觉上为顺时针）——0 = +x，16384（90°）= +y，32768（180°）= -x，
+/// 49152（270°）= -y（`dir_of_cardinals_are_exact` 钉死这四点）。
+pub fn dir_of(a: Bam) -> (Fx, Fx) {
+    let i = (a >> 6) as usize; // 65536 / 1024 = 64
+    let sin = Fx(SIN_TABLE[i]);
+    let cos = Fx(SIN_TABLE[(i + 256) & 1023]); // cos θ = sin(θ + 90°)
+    (cos, sin)
 }
 
 #[cfg(test)]
@@ -233,5 +253,36 @@ mod tests {
     #[test]
     fn isqrt_u64_max() {
         assert_eq!(isqrt(u64::MAX), u32::MAX);
+    }
+
+    // ---- sin 表 + dir_of（M4 Task 1）----
+
+    #[test]
+    fn sin_table_golden_checksum() {
+        // 金值：表一旦被改动即失败（生成物不得手改）
+        let mut h = xxhash_rust::xxh3::Xxh3::new();
+        for v in crate::sin_table::SIN_TABLE {
+            h.update(&v.to_le_bytes());
+        }
+        assert_eq!(h.digest(), 0x02ac_6746_2a72_29c9, "sin 表被改动——重跑生成脚本或恢复");
+    }
+
+    #[test]
+    fn dir_of_cardinals_are_exact() {
+        assert_eq!(dir_of(0), (Fx::from_int(1), Fx::ZERO), "0° = +x");
+        assert_eq!(dir_of(16384), (Fx::ZERO, Fx::from_int(1)), "90° = +y（屏幕坐标向下）");
+        assert_eq!(dir_of(32768), (Fx::from_int(-1), Fx::ZERO), "180° = -x");
+        assert_eq!(dir_of(49152), (Fx::ZERO, Fx::from_int(-1)), "270° = -y");
+    }
+
+    #[test]
+    fn dir_of_is_unit_length_within_tolerance() {
+        // 查表 + 定点截断的误差上界：逐项检查 |v|² 落在 1.0 ± 1/256 内
+        for a in (0u32..65536).step_by(37) {
+            let (cx, cy) = dir_of(a as u16);
+            let n = (cx.mul(cx) + cy.mul(cy)).0 as i64;
+            let one = 1i64 << 16;
+            assert!((n - one).abs() < one / 256, "角 {a} 的模平方 {n} 偏离 1.0 过多");
+        }
     }
 }

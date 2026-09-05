@@ -28,7 +28,7 @@ fn six_configs_identical_hash_stream() {
     for tick in 0..6_000u64 {
         let ops = pour(tick);
         for s in &mut sims {
-            s.step(&ops);
+            s.step(&ops, &[]);
         }
         let h0 = sims[0].state_hash();
         for (i, s) in sims.iter().enumerate().skip(1) {

@@ -14,31 +14,40 @@
 pub mod body;
 pub mod cell;
 pub mod chunk;
+pub mod creature;
 mod dda;
 mod emit;
 mod explode;
 pub mod fixed;
 mod geom;
 pub mod hash;
+pub mod input;
 pub mod material;
 pub mod particle;
 mod physics;
+pub mod projectile;
 pub mod reaction;
 pub mod rng;
 mod rules;
 pub mod scheduler;
+pub(crate) mod sin_table;
+pub mod spell;
 mod window;
 pub mod world;
 
 pub use body::{Bodies, Body, MAX_BODIES, MAX_REEXTRACT_PER_TICK, MIN_BODY_PIXELS};
 pub use cell::{Cell, G_ACCEL, VEL_ONE, V_MAX_CELL};
+pub use creature::{CreatureTable, Creatures};
 pub use emit::MAX_EMIT_JITTER_RAW;
 pub use fixed::Fx;
+pub use input::{InputFrame, MAX_SLOTS};
 pub use material::{
     Category, MaterialDef, MaterialTable, DISPERSION_MAX, MAT_AIR, MAT_WALL,
 };
 pub use particle::{Particles, MAX_PARTICLES};
+pub use projectile::Projectiles;
 pub use reaction::{ReactionRule, ReactionTable};
+pub use spell::SpellTable;
 pub use world::{Op, World};
 
 /// 扫描模式（O1 spec §2.1）。三种模式**语义逐位等价**（SyncTest 六配置执法）；
@@ -77,6 +86,11 @@ pub struct Sim {
     /// M3 刚体层：同步态本体 + 引擎世界（spec §2）。
     bodies: Bodies,
     physics: physics::PhysicsWorld,
+    /// M4 实体层：模板表（加载期构造、只读）+ 运行时状态（Task 1 恒为空表）。
+    creature_table: creature::CreatureTable,
+    spell_table: spell::SpellTable,
+    creatures: creature::Creatures,
+    projectiles: projectile::Projectiles,
 }
 
 /// setup 期世代戳：≠ tick 0 的戳（0），保证 setup 内容从 tick 0 起可动（spec §4.4）。
@@ -87,8 +101,16 @@ pub type BodyState = ((f32, f32, f32), ((f32, f32), f32), bool);
 
 impl Sim {
     /// `reactions`：M2 起为必传项（`ReactionTable::empty(&table)` 即无反应，
-    /// 与 M2 之前行为逐位一致——golden 取证）。
-    pub fn new(cfg: &InitConfig, table: MaterialTable, reactions: ReactionTable) -> Result<Sim, String> {
+    /// 与 M2 之前行为逐位一致——golden 取证）。`creature_table`/`spell_table`：
+    /// M4 起必传项（`CreatureTable::empty()`/`SpellTable::empty()` 即无生物
+    /// 无法术，Task 1 之前行为逐位一致——golden 取证，见 `--grid-only` 程序）。
+    pub fn new(
+        cfg: &InitConfig,
+        table: MaterialTable,
+        reactions: ReactionTable,
+        creature_table: creature::CreatureTable,
+        spell_table: spell::SpellTable,
+    ) -> Result<Sim, String> {
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(cfg.threads.max(1))
             .build()
@@ -103,6 +125,10 @@ impl Sim {
             spawn_queue: Vec::new(),
             bodies: Bodies::new(),
             physics: physics::PhysicsWorld::new(),
+            creature_table,
+            spell_table,
+            creatures: creature::Creatures::new(),
+            projectiles: projectile::Projectiles::new(),
         })
     }
 
@@ -144,7 +170,12 @@ impl Sim {
         }
     }
 
-    pub fn step(&mut self, ops: &[Op]) {
+    /// `inputs`：本 tick 生效的玩家意图，按 controller 序号索引（spec §3.1）。
+    /// Task 1 只把它收进签名、暂不消费——第 2 步的四个子步骤（输入应用 → 生物
+    /// 运动学 → 弹体积分 → 施法结算）留在 Task 2/4/5 逐一接线，此刻生物表恒
+    /// 为空，`inputs` 无处可用（不产生任何行为差异——本 Task 的既定性质）。
+    pub fn step(&mut self, ops: &[Op], inputs: &[InputFrame]) {
+        let _ = inputs;
         let tick = self.world.tick;
         let stamp = (tick % 256) as u8;
         let fseed = rng::frame_seed(self.world.seed, tick);
@@ -153,6 +184,9 @@ impl Sim {
         for (op_idx, op) in ops.iter().enumerate() {
             self.apply_one(op, stamp, fseed, op_idx);
         }
+        // 2. 实体与法术（架构 §4，M4 起生效；Task 1 只留位置——生物/弹体表恒空，
+        //    四个子步骤（2a 输入应用 / 2b 生物运动学 / 2c 弹体积分 / 2d 施法结算）
+        //    分别在 Task 2/2/4/5 接线，此刻无代码可跑）。
         // 3. 刚体相（M3 spec §2）：物理步进 → 变换变化者反盖章/盖章（被盖液体/粉末
         //    脱格进 spawn_queue，与 ops 的生成请求同队列、追加序即入队序）。
         //    地形（B′ 按 chunk 缓存）与浮力（水面线阿基米德）在步进前施加。
@@ -221,9 +255,26 @@ impl Sim {
         hash::state_hash(&self.world)
     }
 
-    /// 总哈希 = `combine3(网格哈希树根, 粒子层, 刚体层)`（M1 spec §9 + M3 spec §7）。
+    /// 总哈希 = `combine4(网格哈希树根, 粒子层, 刚体层, 实体层)`（M1 spec §9 +
+    /// M3 spec §7 + M4 spec §1.3）。实体层此刻恒 0（生物/弹体表恒空），
+    /// 与 M4 之前的 `combine3` 输出**不**逐位相同——这是本 Task 唯一刻意的
+    /// 哈希结构变更，golden 因此重录一次（`--grid-only` 取证网格哈希流本身
+    /// 不受影响）。
     pub fn state_hash(&self) -> u64 {
-        hash::combine3(self.grid_hash(), self.particles.hash_into(), self.bodies.hash_into(&self.physics))
+        hash::combine4(
+            self.grid_hash(),
+            self.particles.hash_into(),
+            self.bodies.hash_into(&self.physics),
+            self.entity_hash(),
+        )
+    }
+
+    /// 实体层哈希 = 生物 + 弹体（两者都为空时恒 0）。
+    fn entity_hash(&self) -> u64 {
+        let mut h = xxhash_rust::xxh3::Xxh3::new();
+        h.update(&self.creatures.hash_into().to_le_bytes());
+        h.update(&self.projectiles.hash_into().to_le_bytes());
+        h.digest()
     }
 
     pub fn world(&self) -> &World {
@@ -232,5 +283,15 @@ impl Sim {
 
     pub fn table(&self) -> &MaterialTable {
         &self.table
+    }
+
+    /// 生物模板表只读视图（加载期构造，Task 3 前恒空）。
+    pub fn creature_table(&self) -> &creature::CreatureTable {
+        &self.creature_table
+    }
+
+    /// 法术表只读视图（加载期构造，Task 5 前恒空）。
+    pub fn spell_table(&self) -> &spell::SpellTable {
+        &self.spell_table
     }
 }

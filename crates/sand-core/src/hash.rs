@@ -43,6 +43,18 @@ pub fn combine3(grid_root: u64, particle_hash: u64, body_hash: u64) -> u64 {
     h.digest()
 }
 
+/// 总哈希折叠（M4 起四层）：网格 + 粒子 + 刚体 + 实体（生物 + 弹体）。
+/// **结构变更**（M3 的三层 `combine3` 退役）⇒ 既有 golden 全部重录一次，
+/// 取证程序同 M3：先用 `--grid-only` 证明网格哈希流逐位不变。
+pub fn combine4(grid_root: u64, particle_hash: u64, body_hash: u64, entity_hash: u64) -> u64 {
+    let mut h = Xxh3::new();
+    h.update(&grid_root.to_le_bytes());
+    h.update(&particle_hash.to_le_bytes());
+    h.update(&body_hash.to_le_bytes());
+    h.update(&entity_hash.to_le_bytes());
+    h.digest()
+}
+
 /// 总哈希折叠：网格哈希树根 + 粒子层哈希 → 单个 u64（M1 spec §9）。
 /// 纯函数，xxh3 折叠两个输入的原始位，无隐藏状态。
 pub fn combine(grid_root: u64, particle_hash: u64) -> u64 {
@@ -87,5 +99,15 @@ mod tests {
         assert_eq!(combine(1, 2), combine(1, 2), "同输入必须同值");
         assert_ne!(combine(1, 2), combine(1, 3), "粒子层哈希差异必须反映到总哈希");
         assert_ne!(combine(1, 2), combine(9, 2), "网格根差异必须反映到总哈希");
+    }
+
+    #[test]
+    fn combine4_is_sensitive_to_every_input() {
+        let base = combine4(1, 2, 3, 4);
+        assert_eq!(base, combine4(1, 2, 3, 4), "同输入必须同值");
+        assert_ne!(base, combine4(9, 2, 3, 4), "网格根差异必须可见");
+        assert_ne!(base, combine4(1, 9, 3, 4), "粒子层差异必须可见");
+        assert_ne!(base, combine4(1, 2, 9, 4), "刚体层差异必须可见");
+        assert_ne!(base, combine4(1, 2, 3, 9), "实体层差异必须可见");
     }
 }

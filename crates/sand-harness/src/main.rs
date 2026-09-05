@@ -126,6 +126,17 @@ fn run() -> Result<(), String> {
     let (reactions, reactions_fp) = load_reactions(&a.reactions, &table)?;
     let sc = load_scenario(&a.scenario, &table)?;
     let ticks = a.ticks.unwrap_or(sc.ticks);
+    // M4 起生物/法术表随 Tables 同行——Task 5 之前恒空、指纹恒 0（sand-harness
+    // 还不读 creatures.ron/spells.ron，Task 5 起改为真加载，见 runner::Tables
+    // 文档）。
+    let creature_table = sand_core::CreatureTable::empty();
+    let spell_table = sand_core::SpellTable::empty();
+    let tables = runner::Tables {
+        materials: &table,
+        reactions: &reactions,
+        creatures: &creature_table,
+        spells: &spell_table,
+    };
 
     match a.cmd.as_str() {
         "synctest" => {
@@ -136,16 +147,23 @@ fn run() -> Result<(), String> {
                 sc.world.1 * 64,
                 a.threads
             );
-            runner::synctest(&sc, &table, &reactions, a.threads, ticks)?;
+            runner::synctest(&sc, &tables, a.threads, ticks)?;
             println!("SyncTest 通过：{ticks} tick 零分叉（scenario_fp {:016x}）", sc.fingerprint);
         }
         "replay" | "hashrun" => {
             let report =
                 runner::run(
                     &sc,
-                    &table,
-                    &reactions,
-                    runner::Fingerprints { materials: materials_fp, reactions: reactions_fp },
+                    &tables,
+                    // creatures/spells 恒 0：Task 1 起两张表恒空，指纹不进
+                    // golden 输出行（Task 5 接真表时才连指纹一起打印，见
+                    // `runner::Fingerprints` 文档）。
+                    runner::Fingerprints {
+                        materials: materials_fp,
+                        reactions: reactions_fp,
+                        creatures: 0,
+                        spells: 0,
+                    },
                     a.threads,
                     a.scan,
                     ticks,
@@ -168,7 +186,7 @@ fn run() -> Result<(), String> {
         }
         "render" => {
             let out = a.out.ok_or("render 需要 -o 输出路径")?;
-            let mut sim = runner::build_sim(&sc, &table, &reactions, a.threads, sand_core::ScanMode::LiveRect)?;
+            let mut sim = runner::build_sim(&sc, &tables, a.threads, sand_core::ScanMode::LiveRect)?;
             let opts =
                 RenderOpts { every: a.every.max(1), scale: a.scale.max(1), fps: a.fps, from: a.from, out };
             let frames = render_gif(&sc, &table, &mut sim, ticks, &opts)?;
@@ -184,7 +202,7 @@ fn run() -> Result<(), String> {
         "rasterize" => {
             // 地图编辑器回读（spec §4）：建 Sim、apply_setup（含 grid 前缀）、
             // 不 step，整幅网格按自动图例 RLE 编码成 JSON。只读、无副作用。
-            let sim = runner::build_sim(&sc, &table, &reactions, 1, sand_core::ScanMode::LiveRect)?;
+            let sim = runner::build_sim(&sc, &tables, 1, sand_core::ScanMode::LiveRect)?;
             let symbols = default_legend(&table)?;
             let (w, h) = (sc.world.0 * 64, sc.world.1 * 64);
             let mut rows = Vec::with_capacity(h);

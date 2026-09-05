@@ -45,13 +45,13 @@ fn spawned_crate_is_stamped_and_falls() {
     let mut s = body_sim(1, 1);
     s.apply_setup(&[Op::SpawnBody { material: WOOD, x: 40, y: 10, w: 24, h: 16, angle_deg: 0 }]);
     assert_eq!(s.bodies().len(), 1);
-    s.step(&[]);
+    s.step(&[], &[]);
     let c0 = body_cells(&s);
     assert_eq!(c0.len(), 24 * 16, "首 tick 盖章格数 = 面积");
     let top0 = c0.iter().map(|c| c.1).min().unwrap();
     // 重力 0.25 格/tick²：10 tick 约落 12 格，仍在 128 高的世界里
     for _ in 0..10 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     let c1 = body_cells(&s);
     assert_eq!(c1.len(), 24 * 16, "下落中格数守恒（无洞、无重复）");
@@ -74,8 +74,8 @@ fn body_sim_is_deterministic_across_threads() {
     a.apply_setup(&setup);
     b.apply_setup(&setup);
     for t in 0..120 {
-        a.step(&[]);
-        b.step(&[]);
+        a.step(&[], &[]);
+        b.step(&[], &[]);
         assert_eq!(a.state_hash(), b.state_hash(), "tick {t} 状态哈希分叉");
         assert_eq!(a.physics_checksum(), b.physics_checksum(), "tick {t} 引擎快照分叉");
     }
@@ -87,7 +87,7 @@ fn crate_falling_out_of_world_is_removed() {
     let mut s = body_sim(3, 1);
     s.apply_setup(&[Op::SpawnBody { material: STONE, x: 40, y: 100, w: 12, h: 12, angle_deg: 0 }]);
     for _ in 0..600 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     assert_eq!(s.bodies().len(), 0, "掉出世界的刚体应被移除");
     assert!(body_cells(&s).is_empty());
@@ -122,7 +122,7 @@ fn resting_body_lets_chunk_sleep() {
     let mut s = body_sim(11, 1);
     s.apply_setup(&[floor(128, 128), Op::SpawnBody { material: WOOD, x: 40, y: 60, w: 24, h: 16, angle_deg: 0 }]);
     for _ in 0..400 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     let cells = body_cells(&s);
     assert_eq!(cells.len(), 24 * 16, "箱子完整");
@@ -141,7 +141,7 @@ fn crate_rests_on_sand_pile() {
         Op::SpawnBody { material: WOOD, x: 50, y: 40, w: 24, h: 16, angle_deg: 0 },
     ]);
     for _ in 0..500 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     let cells = body_cells(&s);
     assert_eq!(cells.len(), 24 * 16);
@@ -163,7 +163,7 @@ fn wood_crate_floats_stone_crate_sinks() {
         Op::SpawnBody { material: STONE, x: 80, y: 40, w: 16, h: 12, angle_deg: 0 },
     ]);
     for _ in 0..900 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     let cells = body_cells(&s);
     let wood: Vec<_> = cells.iter().filter(|&&(x, _)| x < 64).collect();
@@ -191,7 +191,7 @@ fn full_pool_overflows_when_crate_drops() {
     ]);
     let water_cells0 = s.world().count_material(3);
     for _ in 0..600 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     let mut outside = 0;
     for y in 0..128 {
@@ -257,16 +257,16 @@ fn explosion_splits_crate_in_two() {
     let mut s = body_sim(23, 1);
     s.apply_setup(&[floor(128, 128), Op::SpawnBody { material: WOOD, x: 40, y: 100, w: 24, h: 16, angle_deg: 0 }]);
     for _ in 0..200 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     assert_eq!(s.bodies().len(), 1);
     // 箱子已落到地板上：找到当前脚印中心
     let cells = body_cells(&s);
     let cx = (cells.iter().map(|c| c.0).min().unwrap() + cells.iter().map(|c| c.0).max().unwrap()) / 2;
     let cy = (cells.iter().map(|c| c.1).min().unwrap() + cells.iter().map(|c| c.1).max().unwrap()) / 2;
-    s.step(&[Op::Explode { x: cx, y: cy, r: 10, power: 400, max_durability: 10 }]);
+    s.step(&[Op::Explode { x: cx, y: cy, r: 10, power: 400, max_durability: 10 }], &[]);
     for _ in 0..10 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     assert!(s.bodies().len() >= 2, "爆炸后应切成 ≥ 2 块，实际 {}", s.bodies().len());
     assert!(total_body_pixels(&s) < 24 * 16, "像素应有损失");
@@ -281,14 +281,14 @@ fn stamped_cells_ignite_like_their_material() {
         Op::SpawnBody { material: WOOD, x: 40, y: 108, w: 24, h: 16, angle_deg: 0 },
     ]);
     for _ in 0..60 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     // 箱子已静止；在箱顶上方一行放一排火（气体、rise 0.5 会逗留）
     let top = body_cells(&s).iter().map(|c| c.1).min().unwrap();
-    s.step(&[Op::Fill { material: FIRE, x0: 44, y0: top - 1, x1: 59, y1: top - 1 }]);
+    s.step(&[Op::Fill { material: FIRE, x0: 44, y0: top - 1, x1: 59, y1: top - 1 }], &[]);
     let mut lit = false;
     for _ in 0..200 {
-        s.step(&[]);
+        s.step(&[], &[]);
         if body_cells(&s).iter().any(|&(x, y)| {
             let c = s.world().cell(x, y);
             c.is_body() && c.counter() > 0
@@ -314,7 +314,7 @@ fn burning_crate_shrinks_and_collapses() {
         Op::SpawnBody { material: WOOD, x: 40, y: 108, w: 24, h: 16, angle_deg: 0 },
     ]);
     for _ in 0..60 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     let initial = total_body_pixels(&s);
     let mut last = initial;
@@ -327,7 +327,7 @@ fn burning_crate_shrinks_and_collapses() {
         } else {
             vec![]
         };
-        s.step(&ops);
+        s.step(&ops, &[]);
         let now = total_body_pixels(&s);
         assert!(now <= last, "tick {t}：刚体像素只减不增（{last} → {now}）");
         last = now;
@@ -355,14 +355,14 @@ fn physics_snapshot_restore_is_lossless() {
     a.apply_setup(&setup);
     b.apply_setup(&setup);
     for _ in 0..150 {
-        a.step(&[]);
-        b.step(&[]);
+        a.step(&[], &[]);
+        b.step(&[], &[]);
     }
     let snap = a.physics_snapshot();
     a.restore_physics(&snap).unwrap();
     for t in 0..300 {
-        a.step(&[]);
-        b.step(&[]);
+        a.step(&[], &[]);
+        b.step(&[], &[]);
         assert_eq!(a.state_hash(), b.state_hash(), "tick {t}：恢复后状态哈希分叉");
         assert_eq!(a.physics_checksum(), b.physics_checksum(), "tick {t}：恢复后引擎快照分叉");
     }
@@ -381,7 +381,7 @@ fn overhanging_crate_topples_off_ledge() {
     ]);
     let mut rotated = false;
     for _ in 0..300 {
-        s.step(&[]);
+        s.step(&[], &[]);
         let cells = body_cells(&s);
         if cells.is_empty() {
             continue;
@@ -410,11 +410,11 @@ fn floating_crate_settles_and_stops_ejecting_water() {
         Op::SpawnBody { material: WOOD, x: 30, y: 40, w: 16, h: 12, angle_deg: 0 },
     ]);
     for _ in 0..900 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     let footprint = body_cells(&s);
     for t in 0..300 {
-        s.step(&[]);
+        s.step(&[], &[]);
         assert_eq!(s.particles().len(), 0, "tick {}：稳定后不应再弹出粒子", 900 + t);
         assert_eq!(body_cells(&s), footprint, "tick {}：稳定后脚印不应变化", 900 + t);
     }
@@ -442,14 +442,14 @@ fn explosion_debris_lands_as_powder_not_static() {
     let mut s = sim_with_reactions(2, 2, 43, 1, ScanMode::LiveRect, t, r);
     s.apply_setup(&[floor(128, 128), Op::SpawnBody { material: WOOD, x: 40, y: 100, w: 24, h: 16, angle_deg: 0 }]);
     for _ in 0..200 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     let cells = body_cells(&s);
     let cx = (cells.iter().map(|c| c.0).min().unwrap() + cells.iter().map(|c| c.0).max().unwrap()) / 2;
     let cy = (cells.iter().map(|c| c.1).min().unwrap() + cells.iter().map(|c| c.1).max().unwrap()) / 2;
-    s.step(&[Op::Explode { x: cx, y: cy, r: 10, power: 400, max_durability: 10 }]);
+    s.step(&[Op::Explode { x: cx, y: cy, r: 10, power: 400, max_durability: 10 }], &[]);
     for _ in 0..400 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     let body_set: std::collections::BTreeSet<(i32, i32)> = body_cells(&s).into_iter().collect();
     let mut static_wood_outside = 0;
@@ -476,12 +476,12 @@ fn tilted_plank_rights_itself_in_water() {
         Op::Fill { material: 3, x0: 12, y0: 80, x1: 115, y1: 119 },
         Op::SpawnBody { material: WOOD, x: 48, y: 30, w: 32, h: 6, angle_deg: 35 },
     ]);
-    s.step(&[]);
+    s.step(&[], &[]);
     let c0 = body_cells(&s);
     let h0 = c0.iter().map(|c| c.1).max().unwrap() - c0.iter().map(|c| c.1).min().unwrap() + 1;
     assert!(h0 >= 18, "初始应是斜放的（bbox 高 {h0}）");
     for _ in 0..1200 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     let c1 = body_cells(&s);
     // 旋转体的实心光栅化 = 面积 ± 边缘格（逆映射按格心判定），不要求恰等
@@ -513,7 +513,7 @@ fn plank_in_deep_pool_does_not_spin_up() {
     let mut max_av = 0f32;
     let mut late_max_av = 0f32;
     for tick in 0..3000 {
-        s.step(&[]);
+        s.step(&[], &[]);
         let (_, (_, av), _) = s.body_state(0).expect("木条应一直存在");
         max_av = max_av.max(av.abs());
         if tick >= 1500 {
@@ -541,7 +541,7 @@ fn crate_beside_glass_tank_stays_on_ground() {
         Op::SpawnBody { material: WOOD, x: 40, y: 112, w: 16, h: 12, angle_deg: 0 },
     ]);
     for _ in 0..300 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     let ((_, y, _), _, sleeping) = s.body_state(0).unwrap();
     assert!((117.0..=119.0).contains(&y), "箱子应留在地上（箱心 y = {y:.1}，地上静止 = 118）");
@@ -561,7 +561,7 @@ fn crate_beside_shelf_tank_stays_on_ground() {
         Op::SpawnBody { material: WOOD, x: 40, y: 112, w: 16, h: 12, angle_deg: 0 },
     ]);
     for _ in 0..300 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     let ((_, y, _), _, sleeping) = s.body_state(0).unwrap();
     assert!((117.0..=119.0).contains(&y), "箱子应留在地上（箱心 y = {y:.1}）");
@@ -581,15 +581,15 @@ fn sleeping_floater_wakes_when_water_drains() {
         Op::SpawnBody { material: WOOD, x: 30, y: 40, w: 16, h: 12, angle_deg: 0 },
     ]);
     for _ in 0..900 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     let ((_, y0, _), _, sleeping) = s.body_state(0).unwrap();
     assert!(sleeping, "浮稳后应入睡");
     assert!((78.0..=90.0).contains(&y0), "应浮在水面 80 附近：y = {y0:.1}");
     // 抽水：把箱子下方 y=95..119 的水换成空气（上面的水会塌下去，水面降到 ≈105）
-    s.step(&[Op::Fill { material: 0, x0: 12, y0: 95, x1: 115, y1: 119 }]);
+    s.step(&[Op::Fill { material: 0, x0: 12, y0: 95, x1: 115, y1: 119 }], &[]);
     for _ in 0..1500 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     let ((_, y1, _), _, sleeping) = s.body_state(0).unwrap();
     assert!(y1 > y0 + 10.0, "水退后箱子必须跟着降：{y0:.1} → {y1:.1}");
@@ -610,7 +610,7 @@ fn water_stream_beside_crate_gives_no_lift() {
     ]);
     let mut min_y = f32::MAX;
     for _ in 0..300 {
-        s.step(&[]);
+        s.step(&[], &[]);
         let ((_, y, _), _, _) = s.body_state(0).unwrap();
         min_y = min_y.min(y);
     }
@@ -629,7 +629,7 @@ fn plug_in_sealed_channel_rests_on_trapped_water() {
         Op::SpawnBody { material: WOOD, x: 40, y: 60, w: 16, h: 12, angle_deg: 0 },
     ]);
     for _ in 0..900 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     let ((_, y, _), _, sleeping) = s.body_state(0).unwrap();
     assert!((90.0..=100.0).contains(&y), "塞子应停在水柱顶（水面 100，箱心 ≈ 94）：y = {y:.1}");
@@ -650,13 +650,13 @@ fn plank_resting_on_floating_crate_is_not_lifted() {
         Op::SpawnBody { material: WOOD, x: 185, y: 40, w: 20, h: 14, angle_deg: 0 },
     ]);
     for _ in 0..600 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     let ((cx, cy, _), _, _) = s.body_state(0).unwrap();
     // 木条水平地落在木箱正上方（两端各悬出 6 格）
-    s.step(&[Op::SpawnBody { material: WOOD, x: cx as i32 - 16, y: cy as i32 - 30, w: 32, h: 6, angle_deg: 0 }]);
+    s.step(&[Op::SpawnBody { material: WOOD, x: cx as i32 - 16, y: cy as i32 - 30, w: 32, h: 6, angle_deg: 0 }], &[]);
     for _ in 0..900 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     let ((_, cy1, _), _, _) = s.body_state(0).unwrap();
     let ((_, py, _), _, _) = s.body_state(1).unwrap();
@@ -676,22 +676,22 @@ fn heap_on_floating_crate_pushes_it_down() {
         Op::SpawnBody { material: WOOD, x: 30, y: 40, w: 16, h: 12, angle_deg: 0 },
     ]);
     for _ in 0..900 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     let ((_, y0, _), _, _) = s.body_state(0).unwrap();
     let cells = body_cells(&s);
     let (x0, x1) = (cells.iter().map(|c| c.0).min().unwrap(), cells.iter().map(|c| c.0).max().unwrap());
     let top = cells.iter().map(|c| c.1).min().unwrap();
-    s.step(&[Op::Fill { material: 3, x0, y0: top - 4, x1, y1: top - 1 }]);
+    s.step(&[Op::Fill { material: 3, x0, y0: top - 4, x1, y1: top - 1 }], &[]);
     let mut max_y = f32::MIN;
     for _ in 0..120 {
-        s.step(&[]);
+        s.step(&[], &[]);
         let ((_, y, _), _, _) = s.body_state(0).unwrap();
         max_y = max_y.max(y);
     }
     assert!(max_y > y0 + 1.0, "顶上 4 行水应把箱子压下去：{y0:.1} → 最深 {max_y:.1}");
     for _ in 0..900 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     let ((_, y1, _), _, sleeping) = s.body_state(0).unwrap();
     assert!((y1 - y0).abs() < 2.5, "水滑掉后应回到原吃水附近：{y0:.1} → {y1:.1}");
@@ -721,14 +721,14 @@ fn explosion_throws_crate_beside_it() {
     let mut s = hard_wood_sim(83, 2, 2);
     s.apply_setup(&[floor(128, 128), Op::SpawnBody { material: WOOD, x: 60, y: 112, w: 16, h: 12, angle_deg: 0 }]);
     for _ in 0..300 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     let ((x0, _, _), _, sleeping) = s.body_state(0).unwrap();
     assert!(sleeping, "爆炸前应已入睡");
-    s.step(&[Op::Explode { x: 52, y: 123, r: 24, power: 100, max_durability: 10 }]);
+    s.step(&[Op::Explode { x: 52, y: 123, r: 24, power: 100, max_durability: 10 }], &[]);
     let (mut min_y, mut max_x) = (f32::MAX, f32::MIN);
     for _ in 0..90 {
-        s.step(&[]);
+        s.step(&[], &[]);
         let ((x, y, _), _, _) = s.body_state(0).unwrap();
         min_y = min_y.min(y);
         max_x = max_x.max(x);
@@ -736,7 +736,7 @@ fn explosion_throws_crate_beside_it() {
     assert!(max_x > x0 + 4.0, "应被向右推开：x {x0:.1} → {max_x:.1}");
     assert!(min_y < 117.5, "应离地（爆心与箱心同高时冲量近乎水平，只会小跳）：最高 y = {min_y:.1}（地上静止 = 118）");
     for _ in 0..600 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     let (_, _, sleeping) = s.body_state(0).unwrap();
     assert!(sleeping, "落回后应入睡");
@@ -752,13 +752,13 @@ fn explosion_impulse_falls_off_with_distance() {
         Op::SpawnBody { material: WOOD, x: 90, y: 112, w: 12, h: 12, angle_deg: 0 },
     ]);
     for _ in 0..300 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     let ((x_near0, _, _), _, _) = s.body_state(0).unwrap();
     let ((x_far0, _, _), _, _) = s.body_state(1).unwrap();
-    s.step(&[Op::Explode { x: 36, y: 118, r: 70, power: 100, max_durability: 10 }]);
+    s.step(&[Op::Explode { x: 36, y: 118, r: 70, power: 100, max_durability: 10 }], &[]);
     for _ in 0..120 {
-        s.step(&[]);
+        s.step(&[], &[]);
     }
     let ((x_near1, _, _), _, _) = s.body_state(0).unwrap();
     let ((x_far1, _, _), _, _) = s.body_state(1).unwrap();
