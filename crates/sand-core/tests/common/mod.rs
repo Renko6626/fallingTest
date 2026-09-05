@@ -354,6 +354,16 @@ fn test_spell_table(table: &MaterialTable) -> SpellTable {
             physics_impulse: 0,
             on_lifetime_out_explode: false,
         },
+        // `physics_impulse: 300`（= 系数 0.3）——**M4 Task 6 TDD 阶段从
+        // Task 5 的占位值 20.0 往下调过**：`Bodies::apply_projectile_impulse`
+        // 的公式（`body.rs` 文档）与 `apply_blast` 同款"Fx → 引擎格/秒"边界
+        // 换算（×60），系数 20 会让单点冲量 = 20 × 10 × 60 = 12000——对一个
+        // 12×12 木箱这么小的刚体，这个量级会在一两 tick 内把箱子推到打穿
+        // 世界边界、被墙弹回来，观测到的反而是净位移变负（TDD 阶段实测撞见，
+        // 不是纸面推演：见 Task 6 报告"物理稳定性"一节）。0.3 是实测验证过
+        // 的稳定值——`projectile_pushes_a_rigid_body_it_hits` 断言的 60 tick
+        // 窗口内位移方向正确、幅度不炸螺。`data/spells.ron` 同步调整（同一个
+        // 参数第一次被真正消费，两处都算"新定值"而非"改既定值"）。
         SpellDef {
             name: "expensive_bolt".to_string(),
             kind: SpellKind::Bolt { damage_milli: 30_000, knockback: Fx::from_int(6) },
@@ -372,7 +382,62 @@ fn test_spell_table(table: &MaterialTable) -> SpellTable {
             displace_liquid: false,
             bounces: 0,
             bounce_energy: Fx::ZERO,
-            physics_impulse: 20_000,
+            physics_impulse: 300,
+            on_lifetime_out_explode: false,
+        },
+        // M4 Task 6 追加：`digger` 供 pass_through（Step 2）与侵彻（Step 5）
+        // 两组测试共用同一条法术——两组测试撞的都是 Static 材质（stone/wall），
+        // `pass_through` 只对 Gas/Liquid 生效，互不干扰。**`dig_power` 刻意
+        // 取比 `data/spells.ron` 生产值（900）小得多的 90**：生产值配
+        // `stone.hp=6` 够打穿 150 格，而
+        // `digger_bores_into_stone_and_stops_when_energy_is_spent` 的石块只有
+        // 41 列宽（x 50..90），会被生产 `dig_power` 一口气打穿，让"能量有限，
+        // 不得挖穿整堵墙"这句断言落空——测试表与生产表刻意偏离数值是本文件
+        // 一贯体例（见 `test_spell_table` 头注第 2 条），这里是同一先例。
+        // `90 / stone.hp(6) = 15` 格，远小于 41 列，两条断言都稳稳成立。
+        SpellDef {
+            name: "digger".to_string(),
+            kind: SpellKind::Bolt { damage_milli: 1_000, knockback: Fx::ZERO },
+            mana: 15_000,
+            cooldown: 20,
+            speed: Fx::from_int(6),
+            life: 90,
+            gravity: Fx::ZERO,
+            spread_bam: 0,
+            grace: 4,
+            dig_power: 90,
+            max_durability: 12,
+            air_friction: Fx::from_int(1),
+            liquid_drag: Fx::from_int(1),
+            pass_through: Category::Gas.bit() | Category::Liquid.bit(),
+            displace_liquid: false,
+            bounces: 0,
+            bounce_energy: Fx::ZERO,
+            physics_impulse: 0,
+            on_lifetime_out_explode: false,
+        },
+        // `slow_bolt`：只用来验证 `air_friction < 1` 让速度逐 tick 衰减
+        // （Step 3 第一条测试），其余字段取中性值——不掺重力/散布/侵彻，
+        // 避免除摩擦以外的任何因素干扰"vx 单调下降"这条断言。
+        SpellDef {
+            name: "slow_bolt".to_string(),
+            kind: SpellKind::Bolt { damage_milli: 0, knockback: Fx::ZERO },
+            mana: 0,
+            cooldown: 0,
+            speed: Fx::from_int(8),
+            life: 120,
+            gravity: Fx::ZERO,
+            spread_bam: 0,
+            grace: 4,
+            dig_power: 0,
+            max_durability: 10,
+            air_friction: Fx::from_ratio(9, 10),
+            liquid_drag: Fx::from_int(1),
+            pass_through: 0,
+            displace_liquid: false,
+            bounces: 0,
+            bounce_energy: Fx::ZERO,
+            physics_impulse: 0,
             on_lifetime_out_explode: false,
         },
     ])
@@ -419,4 +484,104 @@ pub fn arena_with_loadout(names: &[&str]) -> Sim {
         loadout[i] = spells.id_by_name(name).unwrap_or_else(|| panic!("测试法术表没有名为 '{name}' 的法术"));
     }
     arena_wide_open_with_shooter(spells, loadout)
+}
+
+// ==================== M4 Task 6：不挂 loadout 的独立法术表 ====================
+
+/// 供 `common::arena_wide_open(spell_table())` + 直接 `queue_projectile`
+/// 注入用（不经 `cast_all`/loadout，同 `bolt_table()` 的用法体例）：只装两条
+/// 液体阻力（Step 3）与弹跳衰减精度（Step 6 第二条）测试各自需要的法术，
+/// **不是 `test_spell_table` 的子集或超集**——两张表刻意独立演化，"bomb"
+/// 同名不同值不是笔误（`test_spell_table` 头注第 2 条已有这个先例：同名
+/// 不代表同值，各自服务各自的断言）。
+///
+/// - `wet_bolt`：`pass_through` **必须**含 `liquid`——不给这一位，弹体会在
+///   入水第一格当场"命中"消失（`projectile.rs::blocks_projectile` 文档：
+///   液体默认挡弹体），`liquid_drag` 压根没有机会生效，
+///   `liquid_drag_slows_a_projectile_inside_water_more_than_in_air` 这条
+///   断言的因果链就断在这一步。
+/// - `bomb`：`gravity` 特意取 **0.1**，比 `test_spell_table` 里的 0.25 小——
+///   `bounce_energy_reduces_speed_each_time` 要求"反弹后速度 ≈ 反弹前 ×
+///   bounce_energy"精确到 1/16 格，但 spec §5.1 的顺序（`vy += gravity` 先于
+///   碰撞判定）意味着"反弹前速度"天然多算了**这一 tick**的重力增量——
+///   `gravity × bounce_energy` 必须小于测试容差 `1/16`，`0.25 × 0.4 = 0.1 >
+///   0.0625` 会让断言必挂（TDD 阶段实测撞见，不是纸面推演），`0.1 × 0.4 ≈
+///   0.04 < 0.0625` 留有余量。`dig_power: 0`（不侵彻，命中即按 durability
+///   门槛判定，`wall`/`stone` 都会立即判定"侵彻失败"进入弹跳/终结分支，
+///   不会被 digging 岔开）。
+#[allow(dead_code)]
+pub fn spell_table() -> SpellTable {
+    SpellTable::from_defs(vec![
+        SpellDef {
+            name: "wet_bolt".to_string(),
+            kind: SpellKind::Bolt { damage_milli: 0, knockback: Fx::ZERO },
+            mana: 0,
+            cooldown: 0,
+            speed: Fx::from_int(6),
+            life: 60,
+            gravity: Fx::ZERO,
+            spread_bam: 0,
+            grace: 0,
+            dig_power: 0,
+            max_durability: 10,
+            air_friction: Fx::from_int(1),
+            liquid_drag: Fx::from_ratio(7, 10),
+            pass_through: Category::Gas.bit() | Category::Liquid.bit(),
+            displace_liquid: false,
+            bounces: 0,
+            bounce_energy: Fx::ZERO,
+            physics_impulse: 0,
+            on_lifetime_out_explode: false,
+        },
+        SpellDef {
+            name: "bomb".to_string(),
+            kind: SpellKind::Blast { power: 1200, radius: 12, max_durability: 10 },
+            mana: 0,
+            cooldown: 0,
+            speed: Fx::from_int(5),
+            life: 180,
+            gravity: Fx::from_ratio(1, 10),
+            spread_bam: 0,
+            grace: 0,
+            dig_power: 0,
+            max_durability: 10,
+            air_friction: Fx::from_int(1),
+            liquid_drag: Fx::from_int(1),
+            pass_through: Category::Gas.bit(),
+            displace_liquid: false,
+            bounces: 2,
+            bounce_energy: Fx::from_ratio(4, 10),
+            physics_impulse: 0,
+            on_lifetime_out_explode: true,
+        },
+        // `timed_bomb`：验证"寿命耗尽也要炸"（Step 4），必须在**从未命中任何
+        // 东西**的前提下寿命归零——`life: 5` 配 `gravity: 0.25`、静止出生
+        // （调用方给 `vx = vy = 0`），5 tick 内累积下坠只有 3.75 格
+        // （0.25+0.5+0.75+1+1.25），实测钉死：落点离出生点不到 4 格，测试把
+        // 石块顶面摆在出生点下方 10 格处，安全帧内摸不到、但落在爆炸半径
+        // （12）内。`life: 5` 比 `bomb`/`wet_bolt` 短得多是刻意的——寿命耗尽
+        // 分支必须在"从未进入过命中判定的碰撞分支"这个前提下触发，值大了
+        // 反而增加"半路撞上别的什么"的偶然性。
+        SpellDef {
+            name: "timed_bomb".to_string(),
+            kind: SpellKind::Blast { power: 1200, radius: 12, max_durability: 10 },
+            mana: 0,
+            cooldown: 0,
+            speed: Fx::ZERO,
+            life: 5,
+            gravity: Fx::from_ratio(1, 4),
+            spread_bam: 0,
+            grace: 0,
+            dig_power: 0,
+            max_durability: 10,
+            air_friction: Fx::from_int(1),
+            liquid_drag: Fx::from_int(1),
+            pass_through: 0,
+            displace_liquid: false,
+            bounces: 0,
+            bounce_energy: Fx::ZERO,
+            physics_impulse: 0,
+            on_lifetime_out_explode: true,
+        },
+    ])
 }

@@ -92,6 +92,15 @@ fn x_crosses_first(ax: &AxisState, ay: &AxisState) -> bool {
     }
 }
 
+/// 单步跨越的是哪根轴（M4 Task 6 §5.4，弹跳法线）：`CellWalk::next()` 每次
+/// 跨格都天然知道这一步是 x 先跨还是 y 先跨（`x_crosses_first` 的返回值），
+/// 弹跳需要的"法线轴"正是这同一个布尔，只是之前没有对外暴露。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Axis {
+    X,
+    Y,
+}
+
 /// 纯几何格序列迭代器（**不含起点格**）：从 `pos` 出发按 `vel` 逐次跨越格线
 /// （与 [`trace`] 同一套 i64 交叉相乘算法），直到到达终点格
 /// `to_cell(pos+vel)`（含终点格，作为最后一个产出项）。不做任何越界/材质
@@ -106,6 +115,11 @@ pub(crate) struct CellWalk {
     target_cy: i32,
     ax: AxisState,
     ay: AxisState,
+    /// 上一次 `next()` 跨越的轴（M4 Task 6，[`Axis`] 文档）。初值 `X` 是任意
+    /// 占位——`last_axis()` 的契约是"只在至少成功调用过一次 `next()` 之后
+    /// 读取"，构造完成、尚未调用 `next()` 前读它没有产品调用点会这么做
+    /// （弹体侵彻/弹跳判定都是拿到 `Some((gx,gy))` 之后才查询）。
+    last_axis: Axis,
 }
 
 impl CellWalk {
@@ -118,7 +132,13 @@ impl CellWalk {
             target_cy: end.1.to_cell(),
             ax: axis_init(pos.0, vel.0),
             ay: axis_init(pos.1, vel.1),
+            last_axis: Axis::X,
         }
+    }
+
+    /// 上一次 `next()` 产出的格子是跨哪根轴到达的（[`Axis`] 文档）。
+    pub(crate) fn last_axis(&self) -> Axis {
+        self.last_axis
     }
 }
 
@@ -132,9 +152,11 @@ impl Iterator for CellWalk {
         if x_crosses_first(&self.ax, &self.ay) {
             self.cx += self.ax.step;
             self.ax.rem += CELL_RAW;
+            self.last_axis = Axis::X;
         } else {
             self.cy += self.ay.step;
             self.ay.rem += CELL_RAW;
+            self.last_axis = Axis::Y;
         }
         Some((self.cx, self.cy))
     }
@@ -365,5 +387,45 @@ mod tests {
         let a: Vec<(i32, i32)> = CellWalk::new(start, vel).collect();
         let b: Vec<(i32, i32)> = CellWalk::new(start, vel).collect();
         assert_eq!(a, b);
+    }
+
+    // ---- last_axis（M4 Task 6 §5.4：弹跳法线）----
+
+    #[test]
+    fn last_axis_matches_the_axis_that_was_actually_crossed() {
+        // 纯水平穿越：每一步都是跨 x 轴。
+        let mut w = CellWalk::new((fx(5), fx(5)), (fx(3), Fx::ZERO));
+        for _ in 0..3 {
+            assert!(w.next().is_some());
+            assert_eq!(w.last_axis(), Axis::X);
+        }
+        // 纯竖直穿越：每一步都是跨 y 轴。
+        let mut w = CellWalk::new((fx(5), fx(5)), (Fx::ZERO, fx(3)));
+        for _ in 0..3 {
+            assert!(w.next().is_some());
+            assert_eq!(w.last_axis(), Axis::Y);
+        }
+        // 对角穿越：`cell_walk_matches_trace_crossing_sequence_exactly` 手工
+        // 推演过的同一条序列 (6,5)(6,6)(7,6)(7,7)(8,7)(8,8)——从格心出发、
+        // tie-break 恒选 x 先跨，故序列在 x/y 之间严格交替，第一步是 x。
+        let start = (Fx((5 << 16) + 0x8000), Fx((5 << 16) + 0x8000));
+        let mut w = CellWalk::new(start, (fx(3), fx(3)));
+        let expect_axes = [Axis::X, Axis::Y, Axis::X, Axis::Y, Axis::X, Axis::Y];
+        for &want in &expect_axes {
+            assert!(w.next().is_some());
+            assert_eq!(w.last_axis(), want);
+        }
+    }
+
+    #[test]
+    fn cell_walk_two_existing_consumers_unaffected_by_last_axis_addition() {
+        // 头注承诺"既有两个调用方一行不改"：`trace()`（粒子阻挡）与
+        // `explode::fire_ray`（能量射线）都只消费 `Iterator::next()` 的
+        // `(i32,i32)` 产出，从不读 `last_axis()`——这里钉死前者的既有行为
+        // 在加了 `last_axis` 字段之后逐位不变（后者由 `explode.rs` 自己的
+        // 既有测试与 golden 场景把关）。
+        let w = world_with_walls(2, 2, &[(20, 5)]);
+        let r = trace((fx(15), fx(5)), (fx(10), Fx::ZERO), &w);
+        assert_eq!(r, Trace::Blocked { land_cell: (19, 5) });
     }
 }

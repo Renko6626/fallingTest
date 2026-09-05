@@ -2,7 +2,7 @@
 
 > 文档路径：`docs/tuning-knobs.md`
 > 运行时版本：Rust（内核）+ Godot 4 + gdext（表现层）
-> 最近更新：2026-09-03 (UTC+8)
+> 最近更新：2026-09-06 (UTC+8)
 > **Status**: Implemented（随内核同步维护）
 
 **这份文档的用途**：把散在 `sand-core` 各模块与 `data/materials.ron` 里的**可调参数**
@@ -163,4 +163,54 @@ SyncTest 六配置 + golden 重录（预期先落后验）+ bench 对照。这�
 | `MAX_BODIES` | 256 | 刚体上限（超限 SpawnBody 确定性拒绝） | A |
 | `GRAVITY_CELLS_PER_S2` | 900 | 引擎重力（= 网格 0.25 格/tick²） | **C**：与网格重力对齐，改它两套物理脱节 |
 | `DT` | 1/60 | 引擎步长 | **C**：与 tick 同步，不可改 |
+
+## 8. M4 生物与法术旋钮（`crates/sand-core/src/creature.rs`、`projectile.rs`、`spell.rs`、`data/creatures.ron`、`data/spells.ron`）
+
+### 8.1 核心常量
+
+| 常量 | 现值 | 管什么 | 类别 |
+|---|---|---|---|
+| `CREATURE_MAX_STEP` | 8 格 | 生物逐轴扫掠碰撞单 tick 最多检查/跨越的整格边界数（`creature.rs::sweep_axis`） | **B**：与 `MAX_SPEED`/DDA 步数上界同一纪律——生物单 tick 速度理论上不该超过这个格数，调大只是放宽安全网，调小会让高速生物"穿墙"（扫掠提前截断） |
+| `MAX_CREATURES` | 16 | 生物池上限（超限 `SpawnCreature` 确定性拒绝，粒子池同口径） | A（容量）：改了要同步 `spell.rs::SPRAY_OP_IDX_BASE` 的推导（`u16::MAX + 1 - MAX_CREATURES`），否则 Spray 的 RNG 盐值区间会跟着挪 |
+| `MAX_PROJECTILES` | 4096 | 弹体池上限（超限 `Projectiles::spawn` 确定性拒绝、不排队） | A（容量） |
+| `MAX_BOUNCE_RESTARTS` | 4（`projectile.rs`） | 弹跳（`bounces`）单 tick 最多重开几次 `dda::CellWalk`——安全网，不是常规路径（`bounces` 字段全部 ≤ 2） | **B**：太小会让高 `bounces` 法术在角落里提前"罢弹"（还有预算却不弹了）；太大是纯粹的最坏情形计算量上界，正常游戏数值下不可观测 |
+
+### 8.2 `data/creatures.ron`（生物模板，改动会改 `creatures_fp`，六份 golden 需重录）
+
+| 字段 | 现值（`player`） | 管什么 | 类别 |
+|---|---|---|---|
+| `half_w` / `half_h` | 2 / 5 | AABB 半宽半高（格）：碰撞体、排开扫描范围、命中判定框全用它 | A：改了连带影响出生点是否卡进地形、`muzzle_offset` 是否够用 |
+| `hp_max` / `mana_max` | 100.0 / 100.0 | 血量/蓝量上限（加载期 `quantize_milli` 量化成千分位整数） | A |
+| `mana_regen` | 20.0（点/秒） | 被动回蓝速率，加载期折成 `mana_regen_per_tick`（`quantize_milli_per_tick`，×1000/60 round） | A：与法术 `mana` 成本联动，决定"打完一发要等多久才能再打" |
+| `run_speed` / `jump_speed` | 0.67 / 2.9（格/tick） | 地面移动速度、起跳竖直速度 | A（手感） |
+| `accel_ground` / `accel_air` | 0.05 / 0.005（格/tick²） | 地面/空中加速度（空中远小于地面，符合"空中操控受限"的直觉） | A（手感） |
+| `climb_over_y` | 3 格 | 扫掠碰撞里"跨台阶"的最大高度差 | A：太大会把矮墙当台阶跨过去，太小连正常台阶都上不去 |
+| `swim_buoyancy_idle`/`_up`/`_down` | 1.2 / 1.4 / 0.7 | 三档浮力系数（不按键/按 `BTN_JUMP`/按 `BTN_DOWN`），净竖直加速度 = 本 tick 重力 − `GRAVITY × coeff` | A（手感）：**`_up` 必须 > `_idle`**（M4 Task 5 评审 Important 已裁决，不要"修正"回 Noita 原值 0.9——见 `creature.rs::CreatureTpl::swim_buoyancy_up` 文档，我们没有 Noita 那份独立喷射推力） |
+| `swim_drag` | 0.95 | 游泳时速度收敛系数，把浮力这个无界累积量收敛到有限终速度 | A：越小终速度越低（越"粘稠"） |
+| `damage_from` | `[("fire", 3.0)]`（点/秒，折算每 tick 千分位） | 材质接触伤害表，按材质 id 升序定序遍历 | A/数据驱动：材质名未知即加载报错；**当前只留 `fire` 一项**（`lava`/`acid` 缺口是范围裁剪不是缺陷，见文件头注） |
+| `min_cell_count` | 4 | AABB 内某接触材质格数达到此阈值才计伤害（防止蹭到一格火就扣血） | A |
+| `max_displace_per_tick` | 24 | 生物排开液体/粉末单 tick 最多处理几格（超限不排开、不排队，确定性拒绝） | A（性能/手感） |
+| `muzzle_offset` | 3 格 | 施法出生点沿瞄准方向偏移量（起步 = `half_w + 1`） | A：太小会在自己身体里出生（第一帧自撞），太大出枪口手感怪 |
+
+### 8.3 `data/spells.ron`（法术表，改动会改 `spells_fp`，六份 golden 需重录）
+
+三个 `kind`（`spark_bolt`/`digger`/`expensive_bolt` 是 `Bolt`，`bomb` 是 `Blast`，`oil_spray` 是 `Spray`）共享下面这组顶层字段；`kind` 自身的字段（`damage`/`knockback`、`power`/`radius`/`max_durability`、`material`/`count`/`speed`/`jitter`）不在此表——那是"打出去是什么"，这张表是"打出去怎么飞、怎么撞"。
+
+| 字段 | 现值举例 | 管什么 | 类别 |
+|---|---|---|---|
+| `mana` / `cooldown` | 8.0–90.0 / 6–90 tick | 施法双闸门（spec §6.1）：任一不满足即不出、无副作用 | A（数值平衡） |
+| `speed` | 5.0–10.0（格/tick） | 出射初速大小；出生点沿瞄准方向 ×`speed` | A（手感） |
+| `life` | 90–180 tick | 出生寿命，每 tick 未命中递减，归零销毁（或先炸，见 `on_lifetime_out_explode`） | A：定得太短会让弹体"莫名其妙消失"，太长则占满弹体池 |
+| `gravity` | 0.0（`spark_bolt`/`digger`/`expensive_bolt`）/ 0.25（`bomb`） | 每 tick 施加的竖直速度增量 | A：直射弹恒 0（不受重力影响，手感是"激光"），抛射弹非零（手感是"炮弹"）——**弹跳精度测试对这个值敏感**，见下方"弹跳" |
+| `spread_deg` | 0.0–2.0（BAM 量化，加载期校验 0..=180） | 出射散布半幅，`> 0` 才掷 `STREAM_SPREAD` 骰 | A（手感）：`0` 是精确瞄准（如 `digger`），非零是霰弹式散布 |
+| `grace` | 0–20 tick | 防自伤宽限：`owner` 在此窗口内跳过自身命中判定 | A：太短会出生瞬间自伤（尤其近战法术），太长会让"贴脸打自己"这个操作被过度容忍 |
+| `dig_power` | 0（普通弹）/ 900（`digger`，生产值） | 侵彻能量预算（Noita `ground_penetration_*`）：`= 0` 撞硬格立即终结（普通弹），越大能打穿的材质总 hp 越多 | A（手感）：**生产值与测试值刻意不同**——`common::test_spell_table` 的 `digger` 只给 90（见该文件头注：生产值配 `stone.hp=6` 够打穿 150 格，测试石块只有 41 列宽，会让"不得挖穿"这句断言落空） |
+| `max_durability` | 10–12 | 该弹自身的侵彻门槛：`目标 durability > 此值` ⇒ 门槛免疫，直接终结（不侵彻）——与 `SpellKind::Blast::max_durability`（爆炸自身的破坏门槛）是两个独立字段 | A：`digger` 取 12（> `stone` 的 8，能钻；< `wall` 的 15，钻不动） |
+| `air_friction` | 0.9（`slow_bolt`）/ 1.0（其余） | 每 tick 速度衰减乘子（Noita `air_friction`），`(vx,vy) *= air_friction`，`gravity` 之后立即生效 | A（手感）：`< 1` 才有衰减，`= 1` 是中性缺省（不衰减） |
+| `liquid_drag` | 0.7（`wet_bolt`）/ 0.8–0.9（其余非 1） | 若**本 tick 起点格**是 Liquid，再叠加一次的速度衰减乘子——只采样起点，不沿途逐格重采（`projectile.rs::advance` 文档"液体阻力采样口径"） | A（手感）：想让某法术"入水必停"就配合 `pass_through` 不含 `liquid`（见下） |
+| `pass_through` | `["gas"]`（多数）/ `["gas","liquid"]`（`digger`/`wet_bolt`） | 穿透掩码（`Category::bit()` 位或）：命中格材质的 `Category` 在掩码内就直接穿过，不算命中、也不排开 | A/**语义红线**：`projectile.rs::blocks_projectile` 文档——弹体对 Liquid/Gas **默认挡路**（不是 `material::is_solid` 那种天生豁免），不给 `"gas"` 会被烟雾/火焰当墙撞停，`data/spells.ron` 里每条法术因此都显式给了它 |
+| `displace_liquid` | `true`（`bomb`）/ `false`（其余） | 命中 Liquid/Powder 格（且未被 `pass_through` 豁免）时是否推开成粒子——**`pass_through` 优先于本字段**，穿过去就不推开 | A（手感）：`false` 时未 `pass_through` 的液体格会被当硬格处理（撞停/侵彻），不是"什么都不做地飞过去" |
+| `bounces` / `bounce_energy` | 2 / 0.4（`bomb`，其余为 0） | 剩余弹跳次数与每次反弹后速度保留比例（对应轴速度取反 × 此值，法线取自 DDA 撞击轴，纯整数） | A（手感）：`bounce_energy` 精度测试对 `gravity` 敏感——`gravity × bounce_energy` 必须显著小于测试容差（`1/16`），否则"反弹前速度多算一 tick 重力"的系统性偏差会把断言顶穿（`common::spell_table` 头注有完整推导，生产值 `gravity=0.25` 配 `bounce_energy=0.4` 时 `0.25×0.4=0.1 > 1/16`，仅用于"弹几次就死"这类不看精确数值的断言） |
+| `physics_impulse` | 0.3（`expensive_bolt`）/ 0（其余） | 命中刚体盖章格时的单点冲量系数（Noita `physics_impulse_coeff`：`Impulse = coeff × velocity`），不做半径加权、直接施于命中像素 | A（手感）：**量级敏感**——`body.rs::apply_projectile_impulse` 文档的教训：这不是"看着像 Noita 配置"就能照抄的数字，20.0 这种量级会在小刚体（十几像素）上把 `Δv = J/mass` 冲出合理范围，一两 tick 内推穿世界边界、被墙弹回来，观测到的位移方向反而是错的；调大前先跑 `projectile_pushes_a_rigid_body_it_hits` |
+| `on_lifetime_out_explode` | `true`（`bomb`）/ `false`（其余） | 寿命耗尽（`life` 归零、且此 tick 未命中任何东西）时是否补一次 `Blast` 结算 | A：只对 `Blast` kind 有实际效果（`Bolt` 的 `cid=None` 分支天然 no-op），`Bolt`/`Spray` 法术留 `false` |
 

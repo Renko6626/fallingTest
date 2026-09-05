@@ -14,6 +14,12 @@
 // 弹跳（Task 6 消费）：bounces、bounce_energy（Fx 量化）。
 // 与刚体（Task 6 消费）：physics_impulse（千分位量化）。
 // 死亡（Task 6 消费）：on_lifetime_out_explode。
+//
+// `slow_bolt`/`wet_bolt`（M4 Task 6 追加）：`crates/sand-core/tests/common/mod.rs`
+// 的核心测试不读本文件（"core 测试不读 data/"，该文件头注）、这两条纯粹是
+// production 侧的手感样例——`slow_bolt` 展示 air_friction < 1 的减速直射弹，
+// `wet_bolt` 展示 liquid_drag（配 pass_through 含 liquid，否则会在入水第一格
+// 就当场"命中"消失，见 `projectile.rs::blocks_projectile` 文档）。
 (
   spells: [
     (
@@ -73,7 +79,34 @@
       air_friction: 1.0, liquid_drag: 0.9, pass_through: ["gas"],
       displace_liquid: false,
       bounces: 0, bounce_energy: 0.0,
-      physics_impulse: 20.0,
+      // 0.3，不是 20.0——见 `body.rs::apply_projectile_impulse` 文档"coeff 的
+      // 量级"一段：这么小的刚体上，20.0 这种量级会把 Δv 冲出合理范围，一两
+      // tick 内推穿世界边界、被墙弹回来（TDD 阶段实测撞见）。
+      physics_impulse: 0.3,
+      on_lifetime_out_explode: false,
+    ),
+    (
+      name: "slow_bolt",
+      kind: Bolt( damage: 3.0, knockback: 1.0 ),
+      mana: 6.0, cooldown: 8,
+      speed: 8.0, life: 120, gravity: 0.0, spread_deg: 0.0, grace: 4,
+      dig_power: 0, max_durability: 10,
+      air_friction: 0.9, liquid_drag: 1.0, pass_through: ["gas"],
+      displace_liquid: false,
+      bounces: 0, bounce_energy: 0.0,
+      physics_impulse: 0.0,
+      on_lifetime_out_explode: false,
+    ),
+    (
+      name: "wet_bolt",
+      kind: Bolt( damage: 4.0, knockback: 1.5 ),
+      mana: 8.0, cooldown: 10,
+      speed: 8.0, life: 120, gravity: 0.0, spread_deg: 0.0, grace: 4,
+      dig_power: 0, max_durability: 10,
+      air_friction: 1.0, liquid_drag: 0.7, pass_through: ["gas", "liquid"],
+      displace_liquid: false,
+      bounces: 0, bounce_energy: 0.0,
+      physics_impulse: 0.0,
       on_lifetime_out_explode: false,
     ),
   ],

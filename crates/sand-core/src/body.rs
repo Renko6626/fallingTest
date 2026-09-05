@@ -388,6 +388,66 @@ impl Bodies {
         }
     }
 
+    /// 按 body id 序（`self.list` 本就按 id 升序）查"这一格属于哪个刚体"
+    /// （M4 Task 6 spec §5.5，弹体单点冲量落点反查）：线性扫描每个刚体的
+    /// 盖章清单——刚体数以十计、清单数以百计，且只在弹体命中格判定里按需
+    /// 调用一次（不是逐格热路径），不值得为它建一张坐标索引结构（CLAUDE.md
+    /// 红线 4：禁 HashMap，本函数天然不需要）。
+    fn body_index_at(&self, x: i32, y: i32) -> Option<usize> {
+        self.list.iter().position(|b| b.stamped.iter().any(|&(px, py, _)| px == x && py == y))
+    }
+
+    /// 单点冲量原语（M4 spec §5.5，Interfaces 一节点名的签名）：在网格坐标
+    /// `(x, y)` 施加 `(jx, jy)`（引擎单位，f32）——命中格属于哪个 body 由
+    /// [`body_index_at`] 反查，查不到（这一格不属于任何刚体的盖章清单，
+    /// 调用方判定有误或该刚体本 tick 刚好被对账剔除）即静默无操作，不 panic
+    /// ——与 `apply_blast` 对空清单的处理同一体例（`sw <= 0.0` 时 `continue`）。
+    /// 不做半径加权（`apply_blast` 才有"越靠爆心权重越高"的加权中心），
+    /// 单点直接施于命中像素中心 `(x+0.5, y+0.5)`。
+    pub(crate) fn apply_point_impulse(&mut self, phys: &mut PhysicsWorld, x: i32, y: i32, jx: f32, jy: f32) {
+        if let Some(bi) = self.body_index_at(x, y) {
+            phys.apply_impulse_at(self.list[bi].handle, (jx, jy), (x as f32 + 0.5, y as f32 + 0.5));
+        }
+    }
+
+    /// 弹体侧调用入口（M4 spec §5.5，Noita `physics_impulse_coeff`：
+    /// `Impulse = coeff × velocity`）：`coeff_milli` 是 `SpellDef::
+    /// physics_impulse`（千分位整数），`vel` 是命中那一刻的弹体速度（格/tick，
+    /// `Fx`）。**`Fx → f32` 的转换只发生在本函数内**（"浮点转换只发生在
+    /// physics 适配层边界"的落地——`body.rs` 是架构 §5 唯一同时接触 grid
+    /// 与 physics 的模块，调用方 `projectile.rs` 因此不需要、也不允许自己
+    /// 摸 f32），换算公式与 [`apply_blast`] 的 `per_pixel` 那行同一套边界
+    /// 常量：`Fx` 原始值 `/65536` 还原成"格/tick"的浮点值，再 `×60` 换成
+    /// 引擎的"格/秒"（`physics.rs` 头注：引擎单位 1 格 = 1 物理单位、tick
+    /// 与引擎步长同步 60Hz），最后乘上千分位系数还原成小数。算出的
+    /// `(jx, jy)` 交给 [`apply_point_impulse`] 这个不关心单位换算的原语。
+    ///
+    /// **`coeff` 的量级是这套换算公式的隐含契约，不是随便填的**（TDD 阶段
+    /// 实测撞见，写进来防止未来照抄 20.0 这种"看着像 Noita 配置"的数字）：
+    /// `apply_blast` 对一整个刚体求和、除以刚体质量后得到的是**平均**速度
+    /// 增量；单点冲量不做半径加权，`coeff × velocity` 是直接施于一个点的
+    /// 原始冲量，对小刚体（十几到几十像素）而言 `coeff` 稍大就会让
+    /// `Δv = J/mass` 冲出合理范围，一两 tick 内把刚体推穿世界边界、被墙
+    /// 弹回来，观测到的位移方向反而是错的。`data/spells.ron`/
+    /// `common::test_spell_table` 的 `expensive_bolt` 都定在 `0.3`——
+    /// `projectile_pushes_a_rigid_body_it_hits` 实测过这个值在 12×12 木箱上
+    /// 60 tick 内稳定、方向正确；调大前先跑一遍那条测试。
+    pub(crate) fn apply_projectile_impulse(
+        &mut self,
+        phys: &mut PhysicsWorld,
+        x: i32,
+        y: i32,
+        coeff_milli: i32,
+        vel: (Fx, Fx),
+    ) {
+        fn fx_to_engine_vel(v: Fx) -> f32 {
+            (v.0 as f32 / 65536.0) * 60.0
+        }
+        let coeff = coeff_milli as f32 / 1000.0;
+        let (jx, jy) = (coeff * fx_to_engine_vel(vel.0), coeff * fx_to_engine_vel(vel.1));
+        self.apply_point_impulse(phys, x, y, jx, jy);
+    }
+
     /// 第 7 步前半（spec §6 对账）：**含睡眠刚体**——凡清单上的格不再是
     /// `material | BODY_FLAG`（被炸成 air、烧尽、被别的刚体抢占）即像素被毁：清位图、
     /// 从清单剔除（否则反盖章会把别人的格写成 air）、标 dirty 入队（按 id 序保持）。

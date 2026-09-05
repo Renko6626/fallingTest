@@ -257,6 +257,7 @@ impl Sim {
             &self.spell_table,
             &mut self.creatures,
             &mut self.bodies,
+            &mut self.physics,
             stamp,
             fseed,
             &mut self.spawn_queue,

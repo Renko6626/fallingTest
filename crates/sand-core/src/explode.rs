@@ -211,47 +211,96 @@ fn fire_ray(
             continue; // 已是 air（原生或已被前序射线炸掉）：计零费、不重复溅射。
         }
 
-        // 近心汽化（vaporize_threshold，spec §6 汽化小节，用户裁决
-        // 2026-08-30）：`energy` 此刻已完成 `cost` 扣减——这正是下面
-        // `speed_ratio` 用的同一个"剩余能量"值，口径钉死不做区分（不存在
-        // "扣费前"的候选口径：`fire_ray_vaporize_*` 单测锁定这一点）。比例
-        // `energy/power` 一旦**严格超过**材质阈值 `threshold/255`，格子直接
-        // 删除、不产出 `SpawnRequest`（质量确定性蒸发，`vaporized_total`
-        // 计数，不入哈希）——纯整数比较避免除法：
-        // `energy/power > threshold/255` 等价于 `energy*255 > power*threshold`
-        // （`power != 0` 已由函数入口 `debug_assert` 保证，两侧同乘不改变
-        // 不等号方向；两边最大约 `u32::MAX * 255 ≈ 1.1e12`，`i64` 内不会溢出）。
-        // 严格大于是关键：`threshold=255`（RON 缺省 1.0）时条件退化为
-        // `energy > power`，而 `energy <= power` 恒成立（`cost` 是无符号扣减），
-        // 故缺省材质永不汽化，即便 `energy == power`（`cost == 0`）也不触发。
-        let threshold = table.vaporize_threshold(material);
-        if (energy as i64) * 255 > (power as i64) * (threshold as i64) {
-            world.set_cell_stamped(table, gx, gy, MAT_AIR, stamp);
-            world.vaporized_total += 1;
-            continue; // 汽化：不生成粒子，跳过下面的速度合成与 spawn。
-        }
-
-        let speed_ratio = Fx::from_ratio(energy as i32, power as i32);
-        // 冲量→速度按材质密度缩放（v ∝ 1/m，见 REF_BLAST_DENSITY）：
-        // from_ratio 是确定性整数除法，每摧毁格一次，成本可忽略。
-        let mass_factor =
-            Fx::from_ratio(REF_BLAST_DENSITY, table.density(material).max(1) as i32);
-        let speed_mag = EXPLODE_SPEED.mul(speed_ratio).mul(mass_factor);
-        let rx = rng::rng_u32(fseed, rng::STREAM_EXPLODE, gx, gy, salt, explode_attempt(stamp, EXPLODE_ROLL_VX));
-        let ry = rng::rng_u32(fseed, rng::STREAM_EXPLODE, gx, gy, salt, explode_attempt(stamp, EXPLODE_ROLL_VY));
-        let vx = clamp_speed(unit_dx.mul(speed_mag) + emit_jitter(rx, EXPLODE_JITTER));
-        let vy = clamp_speed(unit_dy.mul(speed_mag) + emit_jitter(ry, EXPLODE_JITTER));
-
-        world.set_cell_stamped(table, gx, gy, MAT_AIR, stamp);
-        // 碎屑材质（M3 目检修订）：Static 材质指向 Powder 碎屑，落地不成悬空静态格。
-        spawns.push(SpawnRequest {
-            material: table.debris_to(material),
-            x: Fx::from_int(gx) + HALF_CELL,
-            y: Fx::from_int(gy) + HALF_CELL,
-            vx,
-            vy,
-        });
+        destroy_cell(
+            world,
+            table,
+            gx,
+            gy,
+            material,
+            stamp,
+            fseed,
+            (unit_dx, unit_dy),
+            energy,
+            power,
+            salt,
+            explode_attempt(stamp, EXPLODE_ROLL_VX),
+            explode_attempt(stamp, EXPLODE_ROLL_VY),
+            spawns,
+        );
     }
+}
+
+/// 删格：判定近心汽化 vs 溅射成粒子（M4 Task 6，spec §5.2 "侵彻是能量射线
+/// 三兄弟的第四个同构用例"）。**从上面 `fire_ray` 的循环体内联段落纯搬移**
+/// ——`energy`/`power` 改名为更中性的 `remaining`/`budget`（侵彻弹没有
+/// "射线全局能量预算"这个说法，但数学完全一样：汽化判定的比例分子分母，
+/// 同时也是溅射速度合成的 `speed_ratio`），方向单位向量与 RNG 坐标全部
+/// 收成显式参数、不动一行算术——`fire_ray_vaporize_*`/`fire_ray_*` 全部
+/// 既有单测与 `explosion_ci`/`fire_oil_chain` 两条金值场景原样绿，是这条
+/// "纯搬移"声明的验收证据（Task 6 报告的"golden 验证"一节记录了这次跑）。
+///
+/// 调用方在此之前必须已完成：durability 门槛判定、能量是否够、`energy -=
+/// cost`、`material != air` 判定——本函数只做"删这一格"这一件事，不重复
+/// 上游的任何判定。
+///
+/// - `dir`：出射方向单位向量（`fire_ray` 传射线方向；`projectile.rs` 的
+///   侵彻分支传弹体飞行方向）。
+/// - `remaining`/`budget`：`remaining/budget` 既是汽化判定的比例（`fire_ray`
+///   钉死的口径：严格大于阈值才汽化），也是溅射速度合成的 `speed_ratio`
+///   ——`fire_ray` 传 `(扣费后的 energy, power)`；侵彻弹传 `(扣费后的剩余
+///   能量, 弹体出生时的能量预算)`，同一套"深入越多、溅得越慢/越容易汽化"
+///   衰减语义搬到侵彻上一样成立。
+/// - `salt`/`attempt_vx`/`attempt_vy`：调用方各自的 RNG 坐标（充分性论证
+///   见 `rng.rs::STREAM_EXPLODE` 文档 与 `projectile.rs::DIG_OP_IDX_BASE`
+///   文档），本函数不关心编码细节，原样透传给 `rng::rng_u32`——两个调用方
+///   的盐值区间互不相交，同一 `(stream, x, y)` 不会被两条独立的删格调用
+///   撞出同一个抖动（总纲 §11 翻案第 4 条）。
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn destroy_cell(
+    world: &mut World,
+    table: &MaterialTable,
+    gx: i32,
+    gy: i32,
+    material: u8,
+    stamp: u8,
+    fseed: u32,
+    dir: (Fx, Fx),
+    remaining: u32,
+    budget: u32,
+    salt: u32,
+    attempt_vx: u32,
+    attempt_vy: u32,
+    spawns: &mut Vec<SpawnRequest>,
+) {
+    // 近心汽化（vaporize_threshold，spec §6 汽化小节，用户裁决
+    // 2026-08-30）：口径与原 `fire_ray` 内联版本逐字相同，见本函数文档
+    // "remaining/budget" 一段。
+    let threshold = table.vaporize_threshold(material);
+    if (remaining as i64) * 255 > (budget as i64) * (threshold as i64) {
+        world.set_cell_stamped(table, gx, gy, MAT_AIR, stamp);
+        world.vaporized_total += 1;
+        return; // 汽化：不生成粒子，跳过下面的速度合成与 spawn。
+    }
+
+    let speed_ratio = Fx::from_ratio(remaining as i32, budget as i32);
+    // 冲量→速度按材质密度缩放（v ∝ 1/m，见 REF_BLAST_DENSITY）：
+    // from_ratio 是确定性整数除法，每摧毁格一次，成本可忽略。
+    let mass_factor = Fx::from_ratio(REF_BLAST_DENSITY, table.density(material).max(1) as i32);
+    let speed_mag = EXPLODE_SPEED.mul(speed_ratio).mul(mass_factor);
+    let rx = rng::rng_u32(fseed, rng::STREAM_EXPLODE, gx, gy, salt, attempt_vx);
+    let ry = rng::rng_u32(fseed, rng::STREAM_EXPLODE, gx, gy, salt, attempt_vy);
+    let vx = clamp_speed(dir.0.mul(speed_mag) + emit_jitter(rx, EXPLODE_JITTER));
+    let vy = clamp_speed(dir.1.mul(speed_mag) + emit_jitter(ry, EXPLODE_JITTER));
+
+    world.set_cell_stamped(table, gx, gy, MAT_AIR, stamp);
+    // 碎屑材质（M3 目检修订）：Static 材质指向 Powder 碎屑，落地不成悬空静态格。
+    spawns.push(SpawnRequest {
+        material: table.debris_to(material),
+        x: Fx::from_int(gx) + HALF_CELL,
+        y: Fx::from_int(gy) + HALF_CELL,
+        vx,
+        vy,
+    });
 }
 
 /// `Op::Explode` 分支体（从 `World::apply_op` 纯搬移）：圆周格定序遍历

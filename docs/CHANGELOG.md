@@ -8,6 +8,45 @@
 ## 2026-09-06
 
 ### Added
+- **M4 Task 6：弹体七项扩展**（`crates/sand-core/src/projectile.rs::advance` 逐条 TDD 补齐
+  spec §5.1/§5.2/§5.4/§5.5 全部七项：①`displace_liquid` 排开液体/粉末（复用 §4.3 生物排开
+  同一脱格通路）②`pass_through` 掩码（`Category::bit()` 位或，判定顺序**优先于**
+  `displace_liquid`）③`air_friction`/`liquid_drag`（`vy+=gravity`→`*=air_friction`→本 tick
+  起点格是 Liquid 才 `*=liquid_drag`，只采样起点不沿途重采）④`on_lifetime_out_explode`
+  （寿命归零时复用 `resolve_hit` 的 `cid=None` 支路，`Bolt` 天然 no-op）⑤侵彻（`dig_power`+
+  `max_durability`，"能量射线三兄弟"第四个同构用例，删格逻辑从 `explode::fire_ray` 抽出
+  `pub(crate) fn destroy_cell` 两处共享，纯搬移——`explode.rs` 全部 25 条既有单测原样绿）
+  ⑥弹跳（`bounces`+`bounce_energy`，法线取自新增 `dda::CellWalk::last_axis()`——`trace()`/
+  `fire_ray` 两个既有消费方零改动，本 tick 最多重开 `MAX_BOUNCE_RESTARTS=4` 次、超限当 tick
+  作废不欠账）⑦刚体单点冲量（`physics_impulse`，`Bodies::apply_point_impulse`+
+  `apply_projectile_impulse` 两个新方法，`Fx→f32` 换算与 `apply_blast` 同一边界公式）。
+  **弹体对 Liquid/Gas 默认挡路**是本 Task 唯一违反直觉、需要专门论证的设计点——新写
+  `blocks_projectile`（不复用 `material::is_solid`，那个谓词是为生物/刚体地形碰撞排除
+  Liquid/Gas 写的），`pass_through` 才是唯一豁免出口；`data/spells.ron` 每条法术都显式给
+  `pass_through:["gas",...]` 反证了这条。`advance` 签名再加 `phys: &mut PhysicsWorld`
+  （R8 裁决：新形参与其唯一用例——单点冲量——一起加，非未用形参）。
+  **物理稳定性教训**（TDD 阶段实测撞见，非纸面推演）：`expensive_bolt.physics_impulse` 若照抄
+  Task 5 占位值 20.0，套 `apply_blast` 同款 `×60` 边界换算会让单点冲量冲出合理范围——12×12
+  木箱一两 tick 内被推穿世界边界、撞墙弹回，观测位移方向反而是负的；调到 0.3 后 60 tick 内
+  稳定、方向正确（`data/spells.ron`/`common::test_spell_table` 同步改）。**既有 Task 5 测试
+  几何回归**：`blast_spell_explodes_on_impact_and_carves_terrain` 原水平射向石块侧面的几何，
+  在 `bomb.bounces=2` 首次被消费后会先弹开、飘回射手身边自伤，爆炸落点脱离石块——改为垂直
+  下落砸石块顶面（每次弹跳原地起落，第 3 次命中必落同一洞口）。**Controller carried
+  finding**：新增 `projectile_prioritizes_a_creature_over_a_wall_further_down_the_path`
+  （路径先生物后硬格的组合场景，Task 4 评审遗留、Task 6 插入四个新分支前补齐）。
+  行为测试 +11+1（`projectile_behavior.rs` 19→31）+ 单测多条（`dda.rs`/`projectile.rs`）。
+  **golden 重录**（本 Task 合法理由：`data/spells.ron` 新增 `slow_bolt`/`wet_bolt` 改
+  `spells_fp`）：core 改动落地、`spells.ron` 未改时六场景 `cargo test -p sand-harness --test
+  golden` 先验证逐字节全同（证明纯重构零行为变化）；改 `spells.ron` 后两侧
+  `diff <(grep -v '_fp' *) <(grep -v '_fp' *)` 六场景 "no diff"，仅 `spells_fp` 一行变化、
+  六场景数值相同，已按此重录，golden 测试重新全绿。
+  `cargo test --workspace` 全绿（含 SyncTest 六配置零分叉、`synctest.rs` 四场景）、
+  `cargo clippy --workspace --all-targets -- -D warnings` 零警告。
+  `docs/tuning-knobs.md` 新增 §8 M4 生物与法术旋钮（`creatures.ron`/`spells.ron` 逐字段）。
+  影响文件：`crates/sand-core/src/{dda,explode,body,projectile,lib}.rs`、
+  `crates/sand-core/tests/{common/mod,projectile_behavior}.rs`、`data/spells.ron`、
+  `crates/sand-harness/tests/golden/*.golden`（6 个，重录）、`docs/tuning-knobs.md`。
+
 - **M4 Task 5：法术表与施法**（`crates/sand-core/src/spell.rs` 补齐 `SpellKind::{Blast, Spray}`
   两变体 + `SpellDef` 全字段集（`mana`/`cooldown`/`spread_bam`/`max_durability`/`liquid_drag`/
   `pass_through`/`displace_liquid`/`bounce_energy`/`physics_impulse`/`on_lifetime_out_explode`，
