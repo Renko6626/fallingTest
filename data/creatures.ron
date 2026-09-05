@@ -1,0 +1,34 @@
+// 生物模板表（M4 spec §3.5）。加载器：sand-harness::scenario::load_creatures。
+//
+// hp_max / mana_max：千分位整数量化（quantize_milli，×1000 round）。
+// mana_regen（点/秒）与 damage_from 的 dps：加载期一次性折成每 tick 千分位
+// （quantize_milli_per_tick，×1000/60 round）——运行时 `step_world_interaction`
+// 因此是纯整数乘加，不做除法。
+//
+// damage_from 的材质名经 table.id_by_name 解析，未知名报错；解析后按材质 id
+// 升序排序（定序遍历红线，Noita mDamageMaterials 注释 "NOTE! Sorted!" 同款）。
+//
+// **已知缺口**（M4 Task 3 提交时的状态，留给后续 Task）：本表引用的 "lava" /
+// "acid" 两种材质目前不在 data/materials.ron 里——main.rs 尚未接线加载本文件
+// （Task 5 起才接，见 load_creatures 文档），此刻不会触发加载失败；一旦 Task 5
+// 把 load_creatures("data/creatures.ron", ..) 接进 main.rs，必须先给
+// data/materials.ron 补上这两种材质，否则会在加载期报错（这正是"未知材质
+// 报错、不静默丢弃"契约的预期行为，不是 bug）。
+(
+  templates: [
+    (
+      name: "player",
+      half_w: 2, half_h: 5,
+      hp_max: 100.0, mana_max: 100.0, mana_regen: 20.0,
+      run_speed: 0.67, jump_speed: 2.9,
+      accel_ground: 0.05, accel_air: 0.005,
+      climb_over_y: 3,
+      swim_buoyancy_idle: 1.2, swim_buoyancy_up: 0.9, swim_buoyancy_down: 0.7,
+      swim_drag: 0.95,
+      damage_from: [ ("fire", 3.0), ("lava", 30.0), ("acid", 8.0) ],
+      min_cell_count: 4,
+      max_displace_per_tick: 24,
+      muzzle_offset: 3,
+    ),
+  ],
+)

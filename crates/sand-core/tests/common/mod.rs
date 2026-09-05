@@ -7,6 +7,10 @@ use sand_core::{
 
 pub const SAND: u8 = 2;
 pub const WATER: u8 = 3;
+/// `materials()`（M4 Task 2/3 用表）里 `fire` 的固定 id——见该函数文档，
+/// `CreatureTable::default_player()` 的 `damage_from` 与此耦合。
+#[allow(dead_code)]
+pub const FIRE: u8 = 5;
 
 /// 自定义 water 色散距离的材料表（Layer G Task 1，spec §3）。**刻意绕过
 /// harness 的加载期校验**——core 侧的 clamp 是 P4 写域论证的最后防线
@@ -122,9 +126,23 @@ pub fn sim(width_chunks: usize, height_chunks: usize, seed: u64, threads: usize,
     Sim::new(&cfg, table, reactions, CreatureTable::empty(), SpellTable::empty()).unwrap()
 }
 
-/// 基线表 + wood（M4 Task 2，生物行为测试用）：air/wall/sand/water 同 `test_table`，
-/// 追加 `wood`（Static，供 `Op::SpawnBody` 验证"刚体盖章格对生物即地形"）。
-/// id 不写死在调用点——测试经 `table.id_by_name("wood")` 取（R6）。
+/// 基线表 + wood + fire（M4 Task 2/3，生物行为测试用）：air/wall/sand/water 同
+/// `test_table`，追加 `wood`（Static，供 `Op::SpawnBody` 验证"刚体盖章格对生物
+/// 即地形"）与 `fire`（Gas + `lifetime`）。
+/// id 不写死在调用点——测试经 `table.id_by_name(..)` 取（R6）。
+///
+/// **`fire` 固定落在 id 5**：`CreatureTable::default_player()`（`creature.rs`）
+/// 的 `damage_from` 硬编码了这个 id（该函数不接收 `MaterialTable`，查不了
+/// 名字）——挪动这张表里 `fire` 的位置必须同步改那边的注释与数值。
+///
+/// **`rise_chance: 0`，故意不照抄 `data/materials.ron` 的 0.5**：本表只服务
+/// 接触伤害/`min_cell_count` 门槛测试，不测气体上浮本身（那是 M2 的地盘）。
+/// 缺省/生产口径的 0.5 会让火格随机漂移+扩散，"2 格火反复补给 3600 tick"
+/// 这类测试因此会在概率意义上偶发触发"漂出去的旧火格恰好和补给的新火格
+/// 同时落在生物 AABB 里、瞬时凑够 4 格"的假阳性——`0` 让火格判定
+/// `rng_u32(..) % 255 >= 0` 恒真、`gas_step` 直接原地不动（`rules.rs::gas_step`
+/// 文档），把"接触格数"钉死成 `Op::Fill` 显式填的那几格，测试因此是结构性
+/// 确定的，不是"多数情况下大概率不撞"。
 #[allow(dead_code)]
 pub fn materials() -> MaterialTable {
     let def = |id: u8, name: &str, category: Category, density: u16, hp: u32| MaterialDef {
@@ -137,6 +155,12 @@ pub fn materials() -> MaterialTable {
         def(SAND, "sand", Category::Powder, 40, 2),
         def(WATER, "water", Category::Liquid, 16, 1),
         def(4, "wood", Category::Static, 12, 10),
+        MaterialDef {
+            lifetime: 40,
+            fire_temp: 100,
+            rise_chance: 0,
+            ..MaterialDef::base(FIRE, "fire", Category::Gas, 1)
+        },
     ])
     .unwrap()
 }

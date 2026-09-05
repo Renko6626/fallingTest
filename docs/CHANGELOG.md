@@ -8,6 +8,32 @@
 ## 2026-09-05
 
 ### Added
+- **M4 Task 3：生物与世界互动**（`crates/sand-core/src/creature.rs` 补齐 `CreatureTpl` 字段全集——
+  `hp_max`/`mana_max`/`mana_regen_per_tick` 千分位整数、`swim_buoyancy_idle/up/down`+`swim_drag`、
+  `damage_from: Vec<(u8, i32)>`（按材质 id 升序）、`min_cell_count`、`max_displace_per_tick`、
+  `muzzle_offset`；字段变长后 `CreatureTpl` 从 `Copy` 退化为仅 `Clone`）。新增
+  `Creatures::step_world_interaction`（`pub(crate)`，spec §4.3–§4.5）：① 排开液体/粉末——复用
+  M3 被盖液体脱格的同一条路径（`set_cell_stamped(AIR)` + `SpawnRequest` 进同一 `spawn_queue`），
+  按扫掠格序取前 `max_displace_per_tick` 个，超限不排开不排队；② 游泳——三档浮力系数由
+  `BTN_JUMP`/`BTN_DOWN` 按键直读选取（**对 brief 原始签名的偏离**：brief 建议按 `c.vy` 符号猜
+  竖直意图，实测证伪——`step_kinematics` 每 tick 无条件加重力，落地静止后 `vy` 几乎恒非负，
+  `vy` 符号法会把"完全没按键、纯粹被重力压着"永久误判成"意图向下"，`swim_buoyancy_idle`
+  （唯一 >1 的档位）因此实际上永远选不到，泡水 600 tick 只会沉底不浮——改为函数签名新增
+  `inputs: &[InputFrame]` 参数直读按键，问题消失）；③ 材质接触伤害——受害者侧 `damage_from`
+  表按 id 定序遍历，当帧接触格数 `< min_cell_count` 整项忽略；④ hp 归零 → `alive = false` 墓碑，
+  速度清零、id 永不回收。`sand-harness/src/scenario.rs` 新增 `load_creatures`（与
+  `load_materials`/`load_reactions` 同体例）+ `quantize_milli`/`quantize_milli_per_tick`
+  （`round(v*1000)`/`round(v*1000/60)`，一次性把每秒量折成每 tick 千分位，运行时零除法）；
+  新建 `data/creatures.ron`（`player` 模板，字段值取自 spec §3.5）。
+  **已知缺口**：`data/creatures.ron` 的 `damage_from` 引用 `"lava"`/`"acid"`，`data/materials.ron`
+  当前没有这两种材质——`load_creatures` 本 Task 未接入 `main.rs`/`runner.rs`（`Fingerprints.creatures`
+  仍固定 0），刻意留给 Task 5（该 Task 的既定交付物，见
+  `docs/superpowers/plans/2026-09-05-m4-player-and-spells-plan-task5.md` Step 8）——若现在接入，
+  CLI 会在缺失材质处直接加载失败；提前补材质又会改 `materials_fp` 强制重录全部 golden
+  （本 Task 明确禁止）。行为测试 +6（14→17，一条断言改用 `.is_empty()` 避开 clippy `len_zero`）；
+  6 个既有 golden 未重录（无场景生成生物，实体层哈希早退值不变）；SyncTest 六配置零分叉；
+  `cargo test --workspace` 全绿、`cargo clippy --workspace --all-targets -- -D warnings` 零警告。
+  详见 `.superpowers/sdd/2026-09-05-m4-player-and-spells-plan/task-3-report.md`。
 - **M4 Task 2：生物本体与运动学**（`crates/sand-core/src/creature.rs` 从 Task 1 空壳填实，437
   行；`material.rs` 抽出共用硬格谓词 `is_solid(cell, table, include_bodies)`，`body.rs::is_hard`
   改薄包装——纯搬移，`body_behavior` 26 条原样绿）。`CreatureTpl`/`CreatureTable::default_player()`

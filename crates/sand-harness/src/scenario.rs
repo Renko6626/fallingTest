@@ -10,8 +10,8 @@ use xxhash_rust::xxh3::{xxh3_64, Xxh3};
 use sand_core::{
     fixed::Bam,
     input::{BTN_DOWN, BTN_FIRE, BTN_JUMP, BTN_LEFT, BTN_RIGHT},
-    Category, Fx, InputFrame, MaterialDef, MaterialTable, Op, ReactionRule, ReactionTable, DISPERSION_MAX,
-    MAX_EMIT_JITTER_RAW, MIN_BODY_PIXELS,
+    Category, CreatureTable, CreatureTpl, Fx, InputFrame, MaterialDef, MaterialTable, Op, ReactionRule,
+    ReactionTable, DISPERSION_MAX, MAX_EMIT_JITTER_RAW, MIN_BODY_PIXELS,
 };
 
 /// `MatSpec::hp` 的 serde 缺省值（原 `blast_cost`，M2 spec §2.2："RON 缺省 1"）。
@@ -478,6 +478,139 @@ pub fn load_reactions(path: &str, table: &MaterialTable) -> Result<(ReactionTabl
         }
     }
     Ok((ReactionTable::new(table, rules)?, fp))
+}
+
+// ---------- creatures.ron（M4 spec §3.5）----------
+
+#[derive(Deserialize)]
+struct CreaturesFile {
+    templates: Vec<CreatureSpec>,
+}
+
+/// `data/creatures.ron` 一条模板的 RON 表面形式（spec §3.5 示例）。**本文件
+/// 是全新引入，不背 `materials.ron` 那种"老字段必须缺省安全"的历史包袱**，
+/// 故字段全部必填、不给 `#[serde(default)]`——沿用 `load_reactions` 的作风
+/// （`ReactionSpec` 同样全字段必填），而非 `MatSpec` 那套渐进式缺省。
+#[derive(Deserialize)]
+struct CreatureSpec {
+    name: String,
+    half_w: i32,
+    half_h: i32,
+    hp_max: f64,
+    mana_max: f64,
+    /// 点/秒（Noita 口径），加载期折成每 tick 千分位。
+    mana_regen: f64,
+    run_speed: f64,
+    jump_speed: f64,
+    accel_ground: f64,
+    accel_air: f64,
+    climb_over_y: i32,
+    swim_buoyancy_idle: f64,
+    swim_buoyancy_up: f64,
+    swim_buoyancy_down: f64,
+    swim_drag: f64,
+    /// `(材质名, dps)`——core 边界只见 id + 每 tick 千分位，本字段是全 core
+    /// 边界外唯一的字符串引用（同 `load_reactions` 的 `expand_reaction_side`
+    /// 先例）。
+    damage_from: Vec<(String, f64)>,
+    min_cell_count: u16,
+    max_displace_per_tick: usize,
+    muzzle_offset: i32,
+}
+
+/// hp/mana 千分位整数量化（spec §3.5"hp/mana 用整数千分位"）：
+/// `round(v * 1000.0)`。越界（`v < 0` 或 `v > 1e6`）报可读错误——上界纯粹是
+/// "配置离谱了"的可读性防线，千分位下 `i32` 能表达到约 214 万，远没到溢出线。
+pub fn quantize_milli(v: f64) -> Result<i32, String> {
+    if !v.is_finite() {
+        return Err(format!("千分位量化失败：{v} 不是有限数"));
+    }
+    if !(0.0..=1e6).contains(&v) {
+        return Err(format!("千分位量化失败：{v} 超出取值域 [0, 1e6]"));
+    }
+    Ok((v * 1000.0).round() as i32)
+}
+
+/// 每秒量 → 每 tick 千分位（spec §4"每秒量在加载期一次性折成每 tick 量，
+/// 运行时不再做除法"）：`round(v * 1000.0 / 60.0)`，`mana_regen`/
+/// `damage_from` 的 dps 共用本函数。**不经 `quantize_milli` 再整数除
+/// 60**——那样会先舍入到千分位整数、再做一次整数除法，两次量化误差比一步
+/// 到位的浮点表达式更大；必须在同一个 `round` 里一次算完。取值域校验同
+/// `quantize_milli`。
+pub fn quantize_milli_per_tick(v: f64) -> Result<i32, String> {
+    if !v.is_finite() {
+        return Err(format!("每 tick 千分位量化失败：{v} 不是有限数"));
+    }
+    if !(0.0..=1e6).contains(&v) {
+        return Err(format!("每 tick 千分位量化失败：{v} 超出取值域 [0, 1e6]"));
+    }
+    Ok((v * 1000.0 / 60.0).round() as i32)
+}
+
+/// 返回（生物模板表，文件内容指纹）。与 `load_materials`/`load_reactions`
+/// 同体例：指纹 = `xxh3_64(normalize_for_fingerprint(bytes))`。
+///
+/// **本 Task（M4 Task 3）不接线进 `main.rs`**——`sand-harness` CLI 仍传
+/// `CreatureTable::empty()`，指纹仍固定 0（`main.rs` 头注）；`main.rs` /
+/// `runner.rs` 的实际调用点是 M4 Task 5 的交付物（`load_creatures` 与
+/// `data/spells.ron` 的加载一并接线，避免 golden 为占位改动重录两次）。
+/// 本函数此刻只服务 `sand-core`/`sand-harness` 自身的单测。
+pub fn load_creatures(path: &str, table: &MaterialTable) -> Result<(CreatureTable, u64), String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("读 {path} 失败：{e}"))?;
+    let fp = xxh3_64(&normalize_for_fingerprint(&bytes));
+    let text = String::from_utf8(bytes).map_err(|e| format!("{path} 不是 UTF-8：{e}"))?;
+    let file: CreaturesFile = ron::from_str(&text).map_err(|e| format!("解析 {path} 失败：{e}"))?;
+    let tpls = file
+        .templates
+        .iter()
+        .enumerate()
+        .map(|(idx, spec)| -> Result<CreatureTpl, String> {
+            let ctx = |e: String| format!("生物模板 #{idx}（'{}'）：{e}", spec.name);
+            // damage_from：材质名解析成 id（未知名报错，同反应表契约——加载
+            // 期显式拒绝，不静默丢弃），dps 折成每 tick 千分位，随后**按
+            // 材质 id 升序排序**——定序遍历红线（CLAUDE.md §5 第 4 条），且
+            // 与 Noita `mDamageMaterials` 注释 "NOTE! Sorted!" 一致
+            // （`CreatureTpl::damage_from` 文档）。
+            let mut damage_from = spec
+                .damage_from
+                .iter()
+                .map(|(name, dps)| -> Result<(u8, i32), String> {
+                    let id = table
+                        .id_by_name(name)
+                        .ok_or_else(|| ctx(format!("damage_from 引用不存在的材质 '{name}'（加载期显式报错）")))?;
+                    let per_tick = quantize_milli_per_tick(*dps)
+                        .map_err(|e| ctx(format!("damage_from['{name}'] 的 dps 非法：{e}")))?;
+                    Ok((id, per_tick))
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            damage_from.sort_by_key(|&(id, _)| id);
+            Ok(CreatureTpl {
+                half_w: spec.half_w,
+                half_h: spec.half_h,
+                run_speed: quantize_fx(spec.run_speed).map_err(|e| ctx(format!("run_speed 非法：{e}")))?,
+                jump_speed: quantize_fx(spec.jump_speed).map_err(|e| ctx(format!("jump_speed 非法：{e}")))?,
+                accel_ground: quantize_fx(spec.accel_ground).map_err(|e| ctx(format!("accel_ground 非法：{e}")))?,
+                accel_air: quantize_fx(spec.accel_air).map_err(|e| ctx(format!("accel_air 非法：{e}")))?,
+                climb_over_y: spec.climb_over_y,
+                hp_max: quantize_milli(spec.hp_max).map_err(|e| ctx(format!("hp_max 非法：{e}")))?,
+                mana_max: quantize_milli(spec.mana_max).map_err(|e| ctx(format!("mana_max 非法：{e}")))?,
+                mana_regen_per_tick: quantize_milli_per_tick(spec.mana_regen)
+                    .map_err(|e| ctx(format!("mana_regen 非法：{e}")))?,
+                swim_buoyancy_idle: quantize_fx(spec.swim_buoyancy_idle)
+                    .map_err(|e| ctx(format!("swim_buoyancy_idle 非法：{e}")))?,
+                swim_buoyancy_up: quantize_fx(spec.swim_buoyancy_up)
+                    .map_err(|e| ctx(format!("swim_buoyancy_up 非法：{e}")))?,
+                swim_buoyancy_down: quantize_fx(spec.swim_buoyancy_down)
+                    .map_err(|e| ctx(format!("swim_buoyancy_down 非法：{e}")))?,
+                swim_drag: quantize_fx(spec.swim_drag).map_err(|e| ctx(format!("swim_drag 非法：{e}")))?,
+                damage_from,
+                min_cell_count: spec.min_cell_count,
+                max_displace_per_tick: spec.max_displace_per_tick,
+                muzzle_offset: spec.muzzle_offset,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok((CreatureTable::from_tpls(tpls), fp))
 }
 
 // ---------- 场景文件 ----------
@@ -1728,5 +1861,116 @@ mod tests {
         assert_eq!(f.buttons, BTN_RIGHT);
         assert_eq!(f.aim, 16384);
         assert_eq!(f.slot, 1);
+    }
+
+    // ==================== M4 Task 3：creatures.ron 加载（spec §3.5）====================
+
+    /// air/wall + fire/lava/acid 三种伤害材质，供 `load_creatures` 测试专用
+    /// （不复用 `table_with_water`——那张表没有这三种材质，`damage_from` 解析
+    /// 会失败）。
+    fn table_with_damage_materials() -> MaterialTable {
+        MaterialTable::new(vec![
+            MaterialDef::base(0, "air", Category::Static, 0),
+            MaterialDef::base(1, "wall", Category::Static, 100),
+            MaterialDef::base(2, "fire", Category::Gas, 1),
+            MaterialDef::base(3, "lava", Category::Liquid, 300),
+            MaterialDef::base(4, "acid", Category::Liquid, 20),
+        ])
+        .unwrap()
+    }
+
+    fn write_temp_creatures(tag: &str, body: &str) -> std::path::PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("sand_harness_test_creatures_{}_{tag}.ron", std::process::id()));
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    const PLAYER_RON: &str = "(templates:[(\
+        name:\"player\",half_w:2,half_h:5,\
+        hp_max:100.0,mana_max:100.0,mana_regen:20.0,\
+        run_speed:0.67,jump_speed:2.9,accel_ground:0.05,accel_air:0.005,climb_over_y:3,\
+        swim_buoyancy_idle:1.2,swim_buoyancy_up:0.9,swim_buoyancy_down:0.7,swim_drag:0.95,\
+        damage_from:[(\"lava\",30.0),(\"fire\",3.0),(\"acid\",8.0)],\
+        min_cell_count:4,max_displace_per_tick:24,muzzle_offset:3,\
+    )])";
+
+    #[test]
+    fn load_creatures_parses_data_creatures_ron_shape_and_quantizes() {
+        let t = table_with_damage_materials();
+        let path = write_temp_creatures("player", PLAYER_RON);
+        let (tpls, fp) = load_creatures(path.to_str().unwrap(), &t).unwrap();
+        std::fs::remove_file(&path).ok();
+        assert_ne!(fp, 0, "非空文件指纹不应为 0");
+        let p = tpls.get(0);
+        assert_eq!(p.half_w, 2);
+        assert_eq!(p.half_h, 5);
+        assert_eq!(p.hp_max, 100_000, "hp_max 千分位量化");
+        assert_eq!(p.mana_max, 100_000);
+        assert_eq!(p.mana_regen_per_tick, 333, "round(20.0*1000/60)");
+        assert_eq!(p.climb_over_y, 3);
+        assert_eq!(p.min_cell_count, 4);
+        assert_eq!(p.max_displace_per_tick, 24);
+        assert_eq!(p.muzzle_offset, 3);
+        assert_eq!(p.run_speed, quantize_fx(0.67).unwrap());
+        assert_eq!(p.swim_drag, quantize_fx(0.95).unwrap());
+    }
+
+    #[test]
+    fn load_creatures_sorts_damage_from_by_material_id_ascending() {
+        // RON 里故意乱序（lava, fire, acid），加载后必须按 id 升序（本表里
+        // fire=2 < lava=3 < acid=4）——定序遍历红线（CLAUDE.md §5 第 4 条）。
+        let t = table_with_damage_materials();
+        let path = write_temp_creatures("sort", PLAYER_RON);
+        let (tpls, _fp) = load_creatures(path.to_str().unwrap(), &t).unwrap();
+        std::fs::remove_file(&path).ok();
+        let ids: Vec<u8> = tpls.get(0).damage_from.iter().map(|&(id, _)| id).collect();
+        let fire = t.id_by_name("fire").unwrap();
+        let lava = t.id_by_name("lava").unwrap();
+        let acid = t.id_by_name("acid").unwrap();
+        assert_eq!(ids, vec![fire, lava, acid], "必须按材质 id 升序排列");
+    }
+
+    #[test]
+    fn load_creatures_folds_dps_into_per_tick_milli() {
+        let t = table_with_damage_materials();
+        let path = write_temp_creatures("dps", PLAYER_RON);
+        let (tpls, _fp) = load_creatures(path.to_str().unwrap(), &t).unwrap();
+        std::fs::remove_file(&path).ok();
+        let fire = t.id_by_name("fire").unwrap();
+        let (_, per_tick) = tpls.get(0).damage_from.iter().find(|&&(id, _)| id == fire).unwrap();
+        assert_eq!(*per_tick, 50, "round(3.0*1000/60)");
+    }
+
+    #[test]
+    fn load_creatures_rejects_unknown_damage_material() {
+        let t = table_with_damage_materials();
+        let bad = "(templates:[(\
+            name:\"p\",half_w:2,half_h:5,hp_max:1.0,mana_max:1.0,mana_regen:1.0,\
+            run_speed:0.1,jump_speed:0.1,accel_ground:0.1,accel_air:0.1,climb_over_y:1,\
+            swim_buoyancy_idle:1.0,swim_buoyancy_up:1.0,swim_buoyancy_down:1.0,swim_drag:1.0,\
+            damage_from:[(\"steam\",1.0)],min_cell_count:1,max_displace_per_tick:1,muzzle_offset:0,\
+        )])";
+        let path = write_temp_creatures("unknown", bad);
+        let r = load_creatures(path.to_str().unwrap(), &t);
+        std::fs::remove_file(&path).ok();
+        assert!(r.is_err(), "damage_from 引用不存在材质必须在加载期报错");
+    }
+
+    #[test]
+    fn quantize_milli_round_trips_and_rejects_out_of_range() {
+        assert_eq!(quantize_milli(100.0).unwrap(), 100_000);
+        assert_eq!(quantize_milli(0.0).unwrap(), 0);
+        assert!(quantize_milli(-0.001).is_err(), "负值必须拒绝");
+        assert!(quantize_milli(1e6 + 1.0).is_err(), "超上界必须拒绝");
+        assert!(quantize_milli(f64::NAN).is_err());
+    }
+
+    #[test]
+    fn quantize_milli_per_tick_folds_per_second_value() {
+        assert_eq!(quantize_milli_per_tick(20.0).unwrap(), 333, "round(20.0*1000/60)");
+        assert_eq!(quantize_milli_per_tick(3.0).unwrap(), 50, "round(3.0*1000/60)");
+        assert!(quantize_milli_per_tick(-1.0).is_err());
+        assert!(quantize_milli_per_tick(f64::INFINITY).is_err());
     }
 }

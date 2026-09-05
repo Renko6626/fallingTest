@@ -187,11 +187,21 @@ impl Sim {
         for (op_idx, op) in ops.iter().enumerate() {
             self.apply_one(op, stamp, fseed, op_idx);
         }
-        // 2. 实体与法术（架构 §4，M4 起生效）：2a+2b 生物相前半——输入应用
-        //    + 运动学，读本 tick 起始网格（与刚体相(3)、网格四相(4)所见的
-        //    网格状态一致，spec §1.1 定序理由）。2c 弹体积分 / 2d 施法结算
-        //    留 Task 4/5 接线，此刻无代码可跑。
+        // 2. 实体与法术（架构 §4，M4 起生效）：2a+2b 生物相——输入应用 + 运动学，
+        //    读本 tick 起始网格（与刚体相(3)、网格四相(4)所见的网格状态一致，
+        //    spec §1.1 定序理由）；紧接着 2b 后半（Task 3 起）——排开液体/粉末、
+        //    游泳、材质接触伤害与 HP 墓碑（spec §4.3–§4.5），复用 ops 阶段同一个
+        //    `spawn_queue`，本 tick 粒子相（第 5 步）按追加序统一 drain。
+        //    2c 弹体积分 / 2d 施法结算留 Task 4/5 接线，此刻无代码可跑。
         self.creatures.step_kinematics(&self.world, &self.table, &self.creature_table, inputs);
+        self.creatures.step_world_interaction(
+            &mut self.world,
+            &self.table,
+            &self.creature_table,
+            inputs,
+            stamp,
+            &mut self.spawn_queue,
+        );
         // 3. 刚体相（M3 spec §2）：物理步进 → 变换变化者反盖章/盖章（被盖液体/粉末
         //    脱格进 spawn_queue，与 ops 的生成请求同队列、追加序即入队序）。
         //    地形（B′ 按 chunk 缓存）与浮力（水面线阿基米德）在步进前施加。

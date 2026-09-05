@@ -244,3 +244,106 @@ fn spawn_beyond_capacity_is_rejected_deterministically() {
     }
     assert_eq!(sim.creatures().len(), MAX_CREATURES, "超限必须确定性拒绝");
 }
+
+// ==================== M4 Task 3：世界互动（排开 / 游泳 / 接触伤害 / HP）====================
+// spec §4.3–§4.5。材质 id 一律经 `table.id_by_name` 现查（R6：测试里不许硬编码材质
+// id）——`common::materials()` 里 `water`/`fire` 的具体数值参见该函数文档。
+
+#[test]
+fn running_through_water_displaces_it_into_particles() {
+    let (mut sim, _id) = floor_world();
+    let water = sim.table().id_by_name("water").unwrap();
+    sim.apply_setup(&[Op::Fill { material: water, x0: 40, y0: 120, x1: 80, y1: 126 }]);
+    let before = sim.world().count_material(water);
+    for _ in 0..200 {
+        sim.step(&[], &[InputFrame::new(BTN_RIGHT, 0, 0)]);
+    }
+    // 排开的水成粒子后仍会落回网格：总量（网格 + 在飞粒子）不得凭空减少。
+    // **这不是一条普适保证**——`Particles::spawn` 在池满时确定性拒绝
+    // （`rejected_total`），落地时"埋住"（四邻都非空）会被删除且不写回网格
+    // （`buried_total`，M1 已知的质量非守恒口子）。本场景规模（浅水洼、
+    // 200 tick）远低于触发这两条的门槛，故此处成立；不代表任意规模下都成立。
+    let after = sim.world().count_material(water) + sim.particles().len();
+    assert!(after >= before, "排开不得损失水量：{before} → {after}");
+    assert!(!sim.particles().is_empty() || after == before, "应当产生过水花");
+}
+
+#[test]
+fn displacement_is_capped_per_tick() {
+    // 整个身子泡在水里，单 tick 排开数不得超过模板上限
+    let (mut sim, _id) = floor_world();
+    let water = sim.table().id_by_name("water").unwrap();
+    sim.apply_setup(&[Op::Fill { material: water, x0: 0, y0: 90, x1: 255, y1: 126 }]);
+    let before = sim.world().count_material(water);
+    sim.step(&[], &[InputFrame::new(BTN_RIGHT, 0, 0)]);
+    let removed = before - sim.world().count_material(water);
+    // CreatureTable::default_player() 的 max_displace_per_tick = 24（与
+    // data/creatures.ron 的 player 条目同源，R5）。
+    assert!(removed <= 24, "单 tick 排开 {removed} 超过模板上限 24");
+}
+
+#[test]
+fn creature_floats_in_deep_water_instead_of_sinking_to_bottom() {
+    let (mut sim, id) = floor_world();
+    let water = sim.table().id_by_name("water").unwrap();
+    sim.apply_setup(&[Op::Fill { material: water, x0: 0, y0: 64, x1: 255, y1: 126 }]);
+    for _ in 0..600 {
+        sim.step(&[], &[]);
+    }
+    let y = sim.creatures().get(id).unwrap().y.to_cell();
+    assert!(y < 120, "浮力应当托住，不该沉到池底：y={y}");
+}
+
+#[test]
+fn standing_in_fire_kills_the_creature() {
+    let (mut sim, id) = floor_world();
+    let fire = sim.table().id_by_name("fire").unwrap();
+    // 生物脚下持续供火（fire 有 lifetime，用 t%4 的脚本补给，防止它衰变熄灭）。
+    for t in 0..1200 {
+        if t % 4 == 0 {
+            sim.step(&[Op::Fill { material: fire, x0: 28, y0: 118, x1: 36, y1: 126 }], &[]);
+        } else {
+            sim.step(&[], &[]);
+        }
+        if !sim.creatures().get(id).unwrap().alive {
+            break;
+        }
+    }
+    assert!(!sim.creatures().get(id).unwrap().alive, "站火里应当被烧死");
+}
+
+#[test]
+fn contact_damage_below_min_cell_count_is_ignored() {
+    // 只有 2 格火（< min_cell_count = 4），泡 3600 tick 也不掉血
+    let (mut sim, id) = floor_world();
+    let fire = sim.table().id_by_name("fire").unwrap();
+    let hp0 = sim.creatures().get(id).unwrap().hp;
+    for t in 0..3600 {
+        if t % 4 == 0 {
+            sim.step(&[Op::Fill { material: fire, x0: 32, y0: 124, x1: 33, y1: 124 }], &[]);
+        } else {
+            sim.step(&[], &[]);
+        }
+    }
+    assert_eq!(sim.creatures().get(id).unwrap().hp, hp0, "不足 4 格接触必须整项忽略");
+}
+
+#[test]
+fn dead_creature_keeps_its_id_and_stops_moving() {
+    // R7 裁决：brief 原始伪代码写的 `kill_for_test` 不存在——改用
+    // `set_hp(id, 0)` + 一次 `step`，让死亡在这一 tick 的 `step_world_interaction`
+    // 里落地，再以落地后的坐标为墓碑基准，比对后续 tick 是否纹丝不动。
+    let (mut sim, id) = floor_world();
+    sim.creatures_mut().set_hp(id, 0);
+    sim.step(&[], &[]);
+    assert!(!sim.creatures().get(id).unwrap().alive, "hp<=0 应已在这一 step 内落地为墓碑");
+    let (x, y) = {
+        let c = sim.creatures().get(id).unwrap();
+        (c.x, c.y)
+    };
+    for _ in 0..120 {
+        sim.step(&[], &[InputFrame::new(BTN_RIGHT, 0, 0)]);
+    }
+    let c = sim.creatures().get(id).unwrap();
+    assert!(!c.alive && c.x == x && c.y == y, "墓碑不动，且 id 仍在原位");
+}

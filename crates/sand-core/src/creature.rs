@@ -1,16 +1,17 @@
 //! 生物：模板表 + 运行时状态（spec §3.2、§4）。M4 Task 2 填运动学——扫掠碰撞
-//! （刚体盖章格天然可站立）、跨台阶、起跳闸门；排开/游泳/接触伤害留 Task 3。
+//! （刚体盖章格天然可站立）、跨台阶、起跳闸门；M4 Task 3 补世界互动——排开
+//! 液体/粉末、游泳浮力、材质接触伤害与死亡墓碑（spec §4.3–§4.5）。
 //!
 //! **AoS**（`particle.rs` 的 SoA 相反）：生物数量个位数，AoS 比 SoA 清楚（spec
 //! §3.2）。**id = 下标，永不回收**——`InputFrame` 按 controller 序号索引、
-//! loadout/cooldown 按 id 关联，压缩会错位；死亡（Task 3）走 `alive = false`
-//! 墓碑，不做保序压缩（与 `Particles::compact` 刻意不同体例）。
+//! loadout/cooldown 按 id 关联，压缩会错位；死亡走 `alive = false` 墓碑，
+//! 不做保序压缩（与 `Particles::compact` 刻意不同体例）。
 
-use crate::fixed::{Bam, Fx};
-use crate::input::{InputFrame, BTN_JUMP, BTN_LEFT, BTN_RIGHT, MAX_SLOTS};
-use crate::material::{self, MaterialTable};
+use crate::fixed::{self, Bam, Fx};
+use crate::input::{InputFrame, BTN_DOWN, BTN_JUMP, BTN_LEFT, BTN_RIGHT, MAX_SLOTS};
+use crate::material::{self, Category, MaterialTable};
 use crate::particle::GRAVITY;
-use crate::world::World;
+use crate::world::{SpawnRequest, World};
 use xxhash_rust::xxh3::Xxh3;
 
 /// 生物数上限（spec §3.2）：超限 `Op::SpawnCreature` 确定性拒绝，不排队。
@@ -20,10 +21,16 @@ pub const MAX_CREATURES: usize = 16;
 /// 位移）+ 界定 `aabb_blocked` 单 tick 最坏调用次数的上界。
 pub const CREATURE_MAX_STEP: i32 = 8;
 
-/// 生物模板（M4 spec §3.5 的运动学子集，R5 裁决）：本 Task 只建运动学需要的
-/// 字段——`swim_*`/`damage_from`/`min_cell_count`/`max_displace_per_tick`/
-/// `muzzle_offset`/`mana_*` 留 Task 3 追加，RON 加载器同留 Task 3。
-#[derive(Clone, Copy, Debug)]
+/// 生物模板（M4 spec §3.5）：Task 2 建了运动学子集，本 Task（3）补齐世界互动
+/// 需要的字段全集——`swim_*`/`damage_from`/`min_cell_count`/
+/// `max_displace_per_tick`/`muzzle_offset`/`mana_*`（R5 裁决）。
+///
+/// **不再 `Copy`**（Task 2 时是）：`damage_from` 是变长 `Vec`，加了它之后
+/// `CreatureTpl` 天然只能 `Clone`。唯一受影响的调用点是
+/// `step_kinematics` 的 `let t = *tpl.get(..)`——改成持有引用
+/// （`let t = tpl.get(..)`），不再解引用拷贝整个模板；`spawn`/`get` 本就只
+/// 借用，未受影响。
+#[derive(Clone, Debug)]
 pub struct CreatureTpl {
     pub half_w: i32,
     pub half_h: i32,
@@ -37,7 +44,42 @@ pub struct CreatureTpl {
     pub accel_air: Fx,
     /// 自动跨台阶的最大高度（格，spec §4.2 Noita `climb_over_y`）。
     pub climb_over_y: i32,
+    /// 满血值，千分位整数（spec §3.2："hp 用整数千分位"——`Creature::hp` 出生
+    /// 即拷贝本字段，单位必须同源）。RON 侧写十进制点数，加载期经
+    /// `sand-harness::scenario::quantize_milli` 一次性 `×1000 round`。
     pub hp_max: i32,
+    /// 满蓝值，同 `hp_max` 千分位口径。Task 3 尚不消费（施法结算留 Task 5），
+    /// 提前建好字段只为哈希结构/模板结构一次到位。
+    pub mana_max: i32,
+    /// 每 tick 回蓝量，千分位整数（spec §4"每秒量加载期一次性折成每 tick
+    /// 量"）：RON 写点/秒，加载期经 `round(v * 1000.0 / 60.0)` 一次性折算，
+    /// 运行时不再做除法。Task 5 前不消费。
+    pub mana_regen_per_tick: i32,
+    /// 静止（无竖直意图）时的浮力系数（spec §4.4，Noita `swim_idle_buoyancy_coeff`）。
+    pub swim_buoyancy_idle: Fx,
+    /// 竖直意图向上时的浮力系数（Noita `swim_up_buoyancy_coeff`）。
+    pub swim_buoyancy_up: Fx,
+    /// 竖直意图向下时的浮力系数（Noita `swim_down_buoyancy_coeff`）。
+    pub swim_buoyancy_down: Fx,
+    /// 游泳中对 `(vx, vy)` 的统一阻力乘子（每 tick，spec §4.4）。
+    pub swim_drag: Fx,
+    /// 受害者侧材质接触伤害表（spec §4.5，Noita `DamageModelComponent
+    /// .materials_that_damage` 口径：怕什么写在受害者身上，不动材质表）。
+    /// `(材质 id, 每 tick 千分位伤害)`，**按材质 id 升序**存放——定序遍历
+    /// 红线（CLAUDE.md §5 第 4 条），且与 Noita 源码 `mDamageMaterials`
+    /// 注释 "NOTE! Sorted!" 一致。伤害值加载期已把 RON 的 dps 折成
+    /// 每 tick 千分位（`round(v * 1000.0 / 60.0)`），运行时纯整数乘加。
+    pub damage_from: Vec<(u8, i32)>,
+    /// 接触伤害生效的最小格数门槛（spec §4.5，Noita
+    /// `material_damage_min_cell_count`）：当帧某材质接触格数低于此值，
+    /// 该材质整项伤害忽略（不累加、不四舍五入到 0，是"这一 tick 完全没有
+    /// 这项伤害来源"）。
+    pub min_cell_count: u16,
+    /// 单 tick 单生物最大排开格数（spec §4.3）：超限的软格**不排开、不排队**
+    /// ——排队需要跨 tick 状态，会把限流变成状态机（同 M1 溅射限流先例）。
+    pub max_displace_per_tick: usize,
+    /// 施法口出射点相对生物中心的偏移（格，Task 5 消费）。Task 3 只建字段。
+    pub muzzle_offset: i32,
 }
 
 /// 生物模板表（与 `MaterialTable` 同体例：加载期构造、只读）。
@@ -61,9 +103,17 @@ impl CreatureTable {
         &self.tpls[template as usize]
     }
 
-    /// 测试/harness 起步用默认玩家模板（R5：数值取 spec §3.5 的起步猜测值，
-    /// 与 `data/creatures.ron`——Task 3 起才建——的 `player` 条目同源，
-    /// 但本 Task 尚无 RON 加载器，直接在 Rust 侧构造）。
+    /// 测试/harness 起步用默认玩家模板（R5：数值取 spec §3.5 `data/creatures.ron`
+    /// 的 `player` 条目同源，直接在 Rust 侧构造——生产路径经 `load_creatures`
+    /// 从 RON 加载，本函数只服务测试/harness 起步）。
+    ///
+    /// `damage_from` 只镜像 `("fire", 3.0)` 一项，**材质 id 硬编码为 5**：
+    /// 本函数不接收 `MaterialTable`（无法经 `id_by_name` 查名），而
+    /// `crates/sand-core/tests/common/mod.rs::materials()` 特意把 `fire`
+    /// 摆在 id 5 与此对齐——两处都要改就一起改。`data/creatures.ron` 里的
+    /// `lava`/`acid` 两项不在这里镜像：它们此刻在任何测试材质表里都不存在，
+    /// 硬编码一个凑数 id 只会制造"看着有、其实测不到"的假覆盖；生产路径的
+    /// 真实值经 `load_creatures` 按名解析，不吃这个硬编码。
     pub fn default_player() -> CreatureTable {
         CreatureTable::from_tpls(vec![CreatureTpl {
             half_w: 2,
@@ -73,7 +123,17 @@ impl CreatureTable {
             accel_ground: Fx::from_ratio(5, 100),
             accel_air: Fx::from_ratio(5, 1000),
             climb_over_y: 3,
-            hp_max: 100,
+            hp_max: 100_000,
+            mana_max: 100_000,
+            mana_regen_per_tick: 333, // round(20.0 * 1000.0 / 60.0)
+            swim_buoyancy_idle: Fx::from_ratio(12, 10),
+            swim_buoyancy_up: Fx::from_ratio(9, 10),
+            swim_buoyancy_down: Fx::from_ratio(7, 10),
+            swim_drag: Fx::from_ratio(95, 100),
+            damage_from: vec![(5, 50)], // fire(id 5) dps 3.0 → round(3000/60)=50
+            min_cell_count: 4,
+            max_displace_per_tick: 24,
+            muzzle_offset: 3,
         }])
     }
 }
@@ -207,7 +267,10 @@ impl Creatures {
                 continue;
             }
             let inp = self.input_of(i, inputs);
-            let t = *tpl.get(self.list[i].template);
+            // 引用而非拷贝（`CreatureTpl` 自 Task 3 起因 `damage_from: Vec<_>`
+            // 不再 `Copy`）：`t` 借自 `tpl`（与 `self` 无关），下面 `&mut
+            // self.list[i]` 不与它冲突。
+            let t = tpl.get(self.list[i].template);
             let c = &mut self.list[i];
 
             // ① 水平意图：按住方向键朝 run_speed 加速；无意图（或两键同按，
@@ -247,12 +310,151 @@ impl Creatures {
             // 触发就无条件把 `on_ground` 收口为 `false`，不依赖查询结果、
             // 不依赖 `jump_speed` 数值——比"存上一 tick 按键做边沿触发"更
             // 简单（不需要新增字段进哈希），也不依赖调参凑巧躲开这个坑。
-            sweep_x(c, world, table, &t);
+            sweep_x(c, world, table, t);
             sweep_y(c, world, table);
             if jumped {
                 c.on_ground = false;
             }
             c.aim = inp.aim;
+        }
+    }
+
+    /// 第 2 步后半（架构 §4，spec §4.3–§4.5）：排开液体/粉末 → 游泳 → 材质
+    /// 接触伤害 → HP 归零墓碑。按 id 序（架构 §7.1 定序铁律，与
+    /// `step_kinematics` 同一遍历口径）；跳过已死亡的墓碑（`alive == false`
+    /// 的生物既不再移动也不再受二次伤害，spec §4.5"不做 ragdoll"的直接推论）。
+    ///
+    /// 读本 tick `step_kinematics` 之后的网格/生物状态——与 `lib.rs::step`
+    /// 里紧跟在 `step_kinematics` 之后调用同一口径（spec §1.1）。
+    ///
+    /// `pub(crate)`（不是 `pub`）：出参 `spawns: &mut Vec<SpawnRequest>` 的
+    /// `SpawnRequest` 本身就是 `pub(crate)`（world.rs 文档："外部 crate 拿不到
+    /// 能传的实参"），与 `Bodies::stamp_all` 同一体例——`pub` 只会产生
+    /// "公开但不可调用"的私有类型泄漏警告（`private_interfaces`）。
+    ///
+    /// **`inputs` 是对 brief 原始签名（Interfaces 一节）的一处偏离**：brief
+    /// 列的签名不带 `inputs`，游泳档位改按"本 tick `c.vy` 的符号"猜竖直意图
+    /// ——实测证伪（见 `creature_floats_in_deep_water_instead_of_sinking_to_bottom`
+    /// 调试记录）：`step_kinematics` 每 tick 无条件加重力，落地静止后 `vy`
+    /// 几乎恒为"刚好非负"，`vy` 符号法会把"完全没按键、纯粹被重力压着"永久
+    /// 误判成"竖直意图向下"，`swim_buoyancy_idle`（唯一 >1 的档位，本该让人
+    /// 停止不动时也能浮起来）因此实际上永远选不到，泡水 600 tick 只会静静
+    /// 沉在池底——与 spec §4.4"档位由本 tick 的竖直意图（上/下/无）选取"的
+    /// 字面意思矛盾（意图不该等于"重力刚好把速度压成正数"）。改为直接读
+    /// `BTN_JUMP`/`BTN_DOWN`（与 `step_kinematics` 读 `BTN_JUMP` 触发起跳
+    /// 同一个按键语义，游泳时复用为"划水向上"；`BTN_DOWN` 现在唯一的消费点）。
+    pub(crate) fn step_world_interaction(
+        &mut self,
+        world: &mut World,
+        table: &MaterialTable,
+        tpl: &CreatureTable,
+        inputs: &[InputFrame],
+        stamp: u8,
+        spawns: &mut Vec<SpawnRequest>,
+    ) {
+        for i in 0..self.list.len() {
+            if !self.list[i].alive {
+                continue;
+            }
+            let inp = self.input_of(i, inputs);
+            // 取一份运行时状态的拷贝（`Creature: Copy`）：本函数全程只需要
+            // 这一份"读取时刻快照"，AABB 扫描、`world` 读写都不再牵动
+            // `self.list` 的借用，函数末尾一次性写回——比"先拿不可变引用、
+            // 中途再拿可变引用"（brief 原始伪代码 `let c = &self.list[i]`
+            // 那条路）更简单，也不会让借用检查器在同一循环体里两难。
+            let mut c = self.list[i];
+            let t = tpl.get(c.template);
+            let (cx, cy) = (c.x.to_cell(), c.y.to_cell());
+
+            // ① 扫 AABB 一遍，同时收集"可排开格坐标"与"各材质格数"。格序
+            // 自上而下、自左而右——即下面②的排开序，确定；`counts` 是定长
+            // 数组（材质数上限 256 = u8 全域）而非 HashMap（红线 4）。
+            let mut soft_cells: Vec<(i32, i32, u8)> = Vec::new();
+            let mut counts = [0u16; 256];
+            let mut submerged: u16 = 0;
+            for gy in (cy - c.half_h)..=(cy + c.half_h) {
+                for gx in (cx - c.half_w)..=(cx + c.half_w) {
+                    if !world.in_bounds(gx, gy) {
+                        continue;
+                    }
+                    let m = world.cell(gx, gy).material();
+                    counts[m as usize] = counts[m as usize].saturating_add(1);
+                    match table.category(m) {
+                        Category::Liquid => {
+                            submerged += 1;
+                            soft_cells.push((gx, gy, m));
+                        }
+                        Category::Powder => soft_cells.push((gx, gy, m)),
+                        _ => {}
+                    }
+                }
+            }
+
+            // ② 排开：取前 max_displace_per_tick 个，置 air + 脱格成粒子。
+            // 复用 M3 被盖液体脱格的同一条路径（`body.rs::stamp_body`）：
+            // `set_cell_stamped(AIR)` + 追加 `SpawnRequest` 进同一个
+            // `spawn_queue`，本 tick 粒子相按追加序 drain——与 `Op::Emit`/
+            // 刚体盖章完全同一通路，脏矩形合并与 chunk 唤醒一视同仁。
+            // 超过上限的软格**不排开、不排队**（确定性拒绝，同 M1 溅射限流
+            // 先例：排队需要跨 tick 状态，会把限流变成状态机）。
+            for &(gx, gy, m) in soft_cells.iter().take(t.max_displace_per_tick) {
+                world.set_cell_stamped(table, gx, gy, material::MAT_AIR, stamp);
+                spawns.push(SpawnRequest {
+                    material: m,
+                    x: Fx::from_int(gx) + fixed::HALF_CELL,
+                    y: Fx::from_int(gy) + fixed::HALF_CELL,
+                    vx: c.vx,
+                    vy: c.vy,
+                });
+            }
+
+            // ③ 游泳（spec §4.4）：AABB 内液体格数 > 0 即视为"在水里"。三档
+            // 浮力系数由本 tick 的竖直意图选取——直接读按键（`BTN_JUMP` =
+            // 向上划水，复用起跳键；`BTN_DOWN` = 向下潜；都不按 = 空档
+            // `_idle`，函数头注解释了为什么不能用 `c.vy` 的符号当代理）。
+            // 净竖直加速度 = 本 tick 已加的重力 − `GRAVITY * coeff`：idle
+            // 系数（1.2）> 1 时净上浮，其余两档系数 < 1 仍净下沉但比空中慢
+            // （潜水比自由落体慢，仍能主动下潜）——`swim_drag` 把本来无界
+            // 累积的速度收敛到有限终速度。
+            if submerged > 0 {
+                let coeff = if inp.held(BTN_JUMP) {
+                    t.swim_buoyancy_up
+                } else if inp.held(BTN_DOWN) {
+                    t.swim_buoyancy_down
+                } else {
+                    t.swim_buoyancy_idle
+                };
+                c.vy = c.vy - GRAVITY.mul(coeff);
+                c.vx = c.vx.mul(t.swim_drag);
+                c.vy = c.vy.mul(t.swim_drag);
+            }
+
+            // ④ 材质接触伤害（spec §4.5，Noita 口径：怕什么写在受害者模板上，
+            // 不动材质表）。`t.damage_from` 加载期已按材质 id 升序排好——遍历
+            // 本身就是定序遍历（红线 4），不需要运行期再排。当帧接触格数
+            // `< min_cell_count` 该材质整项忽略（不是"伤害算出来是 0"，是
+            // "这项伤害源本身当帧不生效"，Noita `material_damage_min_cell_count`
+            // 原意）。伤害值加载期已折成每 tick 千分位，这里是纯整数乘加。
+            for &(m, dmg_per_tick_milli) in &t.damage_from {
+                let n = counts[m as usize];
+                if n >= t.min_cell_count {
+                    c.hp -= n as i32 * dmg_per_tick_milli;
+                }
+            }
+
+            // ⑤ HP 归零 → 墓碑（spec §4.5"不做 ragdoll、不做尸体、不掉落"）：
+            // `alive = false`，速度清零使其此刻起不再有位移倾向；`id` 不
+            // 回收——`self.list` 从不做保序压缩，下一 tick `step_kinematics`
+            // 顶部的 `if !alive { continue; }` 让墓碑连重力都不再吃，位置
+            // 因此永久冻结在死亡瞬间（`dead_creature_keeps_its_id_and_stops_moving`
+            // 钉死）。
+            if c.hp <= 0 {
+                c.alive = false;
+                c.vx = Fx::ZERO;
+                c.vy = Fx::ZERO;
+            }
+
+            self.list[i] = c;
         }
     }
 
