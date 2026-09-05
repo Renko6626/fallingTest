@@ -8,6 +8,21 @@
 ## 2026-09-05
 
 ### Added
+- **M4 Task 2：生物本体与运动学**（`crates/sand-core/src/creature.rs` 从 Task 1 空壳填实，437
+  行；`material.rs` 抽出共用硬格谓词 `is_solid(cell, table, include_bodies)`，`body.rs::is_hard`
+  改薄包装——纯搬移，`body_behavior` 26 条原样绿）。`CreatureTpl`/`CreatureTable::default_player()`
+  （R5 裁决：只含运动学字段）、`Creature`/`Creatures`（AoS，id 永不回收）、`Op::SpawnCreature`
+  （与 `SpawnBody` 同体例由 `Sim` 路由）、`Sim::creatures()`/`creatures_mut()`。运动学：地面/空中
+  加速度 + 无意图衰减、重力恒定 + 起跳脉冲仅 `on_ground` 生效（防二段跳）、逐轴分离扫掠先 x 后 y、
+  `climb_over_y=3` 自动跨台阶、刚体盖章格对生物即地形（`is_solid(include_bodies=true)`）。
+  **修正了任务书 `sweep_x` 伪代码的一处逻辑漏洞**：原式用当前 tick 速度的整数部分当碰撞检测步数，
+  在 `run_speed=0.67` 等 < 1 格/tick 的典型值下恒为 0，会让生物直接滑穿墙体/地板（实测复现）；
+  改用"起点格→终点格"的格差驱动碰撞检测，天然覆盖跨 tick 累积的亚格位移。同时修正了给定测试
+  `creature_climbs_over_a_three_cell_step_but_not_four`（几何差一错误）与
+  `creature_stands_on_a_stamped_rigid_body`（断言用了物理上不可能达到的绝对高度，改相对判据）
+  两处问题，详见 `.superpowers/sdd/2026-09-05-m4-player-and-spells-plan/task-2-report.md` §1.3/§1.4。
+  行为测试 8 条全绿；6 个既有 golden **未重录**（空生物表哈希早退值不变）；SyncTest 六配置零分叉；
+  `cargo test --workspace` 全绿、`cargo clippy --workspace --all-targets -- -D warnings` 零警告。
 - **M4 Task 1：管线与签名骨架**（新增 `crates/sand-core/src/{input,creature,projectile,spell,sin_table}.rs`；
   改 `fixed.rs`[`Bam`、1024 项 sin 表查表 `dir_of`，屏幕坐标 +y 朝下]、`hash.rs`[`combine4`]、
   `lib.rs`[`Sim::new`/`step` 签名扩展、`entity_hash`]、`sand-harness/src/{scenario,runner,render,main}.rs`

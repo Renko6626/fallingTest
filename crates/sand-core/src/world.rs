@@ -6,6 +6,7 @@ use crate::chunk::{Chunk, CHUNK, DirtyRect};
 use crate::emit;
 use crate::explode;
 use crate::fixed::Fx;
+use crate::input::MAX_SLOTS;
 use crate::material::{MaterialTable, Category, MAT_WALL};
 
 pub const WALL_SENTINEL: Cell = Cell::pack(MAT_WALL, 0);
@@ -36,6 +37,10 @@ pub enum Op {
     /// 缺省 0——整数进、`f32` 弧度出，转换在 `physics` 边界一次完成）。
     /// 由 `Sim` 路由到 `Bodies::spawn_rect`（World 不持有刚体）。
     SpawnBody { material: u8, x: i32, y: i32, w: u16, h: u16, angle_deg: i16 },
+    /// 生成一个生物（M4 spec §3.6）：`(x, y)` 为 AABB 中心整格坐标，`template`
+    /// 指回 `CreatureTable`，`controller = 255` 表示不吃输入。与 `SpawnBody`
+    /// 同体例：由 `Sim` 路由到 `Creatures::spawn`（World 不持有生物）。
+    SpawnCreature { x: i32, y: i32, template: u8, team: u8, controller: u8, loadout: [u8; MAX_SLOTS] },
 }
 
 /// 生成队列条目（M1 spec §4 第 3 步 a）：由 `Op::Emit`/`Op::Explode`
@@ -230,6 +235,8 @@ impl World {
             }
             // 由 Sim 在调用本函数之前截走（刚体不住在 World 里）；到这里即调用方漏路由。
             Op::SpawnBody { .. } => unreachable!("Op::SpawnBody 必须由 Sim 路由到 Bodies"),
+            // 同上，生物不住在 World 里，由 Sim 路由到 Creatures。
+            Op::SpawnCreature { .. } => unreachable!("Op::SpawnCreature 必须由 Sim 路由到 Creatures"),
         }
     }
 

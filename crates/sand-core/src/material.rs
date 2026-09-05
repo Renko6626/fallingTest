@@ -1,6 +1,8 @@
 //! 材料表（spec §2）。数据由 harness 从 `data/materials.ron` 加载后注入——
 //! Ring 0 不碰文件系统。id 显式声明（load-order 确定性，R1 教训）。
 
+use crate::cell::Cell;
+
 /// 核心语义依赖的两个固定 id（spec §1.2 加载校验强制）。
 pub const MAT_AIR: u8 = 0;
 pub const MAT_WALL: u8 = 1;
@@ -329,6 +331,22 @@ impl MaterialTable {
     pub fn debris_to(&self, id: u8) -> u8 {
         self.defs[id as usize].debris_to
     }
+}
+
+/// 硬格判定，刚体与生物共用（M4 spec §2）：非 air、非 Gas/Liquid、材质非
+/// `body_passable`。原为 `body.rs` 私有的 `is_hard`（M3），M4 抽到此处并加
+/// `include_bodies` 参数——纯搬移 + 参数化，语义不变。
+///
+/// `include_bodies`：刚体自己做地形缓存时传 `false`（body 不与自身碰撞，
+/// M3 既有行为）；**生物碰撞传 `true`**——刚体盖章格对生物就是可站立平台，
+/// 这是 M3 木箱免费变地形的来源（M4 spec §2/§4.2）。`body_passable` 语义
+/// 两侧共享（能让刚体穿过的软材质，生物同样穿过）。
+pub fn is_solid(cell: Cell, table: &MaterialTable, include_bodies: bool) -> bool {
+    let m = cell.material();
+    m != MAT_AIR
+        && (include_bodies || !cell.is_body())
+        && !matches!(table.category(m), Category::Gas | Category::Liquid)
+        && !table.body_passable(m)
 }
 
 #[cfg(test)]

@@ -37,7 +37,7 @@ pub mod world;
 
 pub use body::{Bodies, Body, MAX_BODIES, MAX_REEXTRACT_PER_TICK, MIN_BODY_PIXELS};
 pub use cell::{Cell, G_ACCEL, VEL_ONE, V_MAX_CELL};
-pub use creature::{CreatureTable, Creatures};
+pub use creature::{Creature, CreatureTable, CreatureTpl, Creatures, MAX_CREATURES};
 pub use emit::MAX_EMIT_JITTER_RAW;
 pub use fixed::Fx;
 pub use input::{InputFrame, MAX_SLOTS};
@@ -86,7 +86,8 @@ pub struct Sim {
     /// M3 刚体层：同步态本体 + 引擎世界（spec §2）。
     bodies: Bodies,
     physics: physics::PhysicsWorld,
-    /// M4 实体层：模板表（加载期构造、只读）+ 运行时状态（Task 1 恒为空表）。
+    /// M4 实体层：模板表（加载期构造、只读）+ 运行时状态（Task 2 起生物表接
+    /// 运动学，弹体表仍恒空，留 Task 4）。
     creature_table: creature::CreatureTable,
     spell_table: spell::SpellTable,
     creatures: creature::Creatures,
@@ -132,11 +133,15 @@ impl Sim {
         })
     }
 
-    /// 应用一个输入 op（第 1 步）：`Op::SpawnBody` 路由到刚体层，`Op::Explode` 网格与刚体两侧都做，其余交给 `World`。
+    /// 应用一个输入 op（第 1 步）：`Op::SpawnBody` 路由到刚体层，`Op::SpawnCreature`
+    /// 路由到生物层，`Op::Explode` 网格与刚体两侧都做，其余交给 `World`。
     fn apply_one(&mut self, op: &Op, stamp: u8, fseed: u32, op_idx: usize) {
         match *op {
             Op::SpawnBody { material, x, y, w, h, angle_deg } => {
                 self.bodies.spawn_rect(&mut self.physics, &self.table, material, x, y, w, h, angle_deg);
+            }
+            Op::SpawnCreature { x, y, template, team, controller, loadout } => {
+                self.creatures.spawn(&self.creature_table, template, x, y, team, controller, loadout);
             }
             Op::Explode { x, y, r, .. } => {
                 // 网格侧：射线删格、碎屑成粒子；刚体侧：记下，第 7 步重提取后再给冲量（决策记录第 17 条）。
@@ -171,11 +176,9 @@ impl Sim {
     }
 
     /// `inputs`：本 tick 生效的玩家意图，按 controller 序号索引（spec §3.1）。
-    /// Task 1 只把它收进签名、暂不消费——第 2 步的四个子步骤（输入应用 → 生物
-    /// 运动学 → 弹体积分 → 施法结算）留在 Task 2/4/5 逐一接线，此刻生物表恒
-    /// 为空，`inputs` 无处可用（不产生任何行为差异——本 Task 的既定性质）。
+    /// Task 2 起接线其中的 2a+2b（输入应用 + 生物运动学）；2c 弹体积分 / 2d
+    /// 施法结算留 Task 4/5。
     pub fn step(&mut self, ops: &[Op], inputs: &[InputFrame]) {
-        let _ = inputs;
         let tick = self.world.tick;
         let stamp = (tick % 256) as u8;
         let fseed = rng::frame_seed(self.world.seed, tick);
@@ -184,9 +187,11 @@ impl Sim {
         for (op_idx, op) in ops.iter().enumerate() {
             self.apply_one(op, stamp, fseed, op_idx);
         }
-        // 2. 实体与法术（架构 §4，M4 起生效；Task 1 只留位置——生物/弹体表恒空，
-        //    四个子步骤（2a 输入应用 / 2b 生物运动学 / 2c 弹体积分 / 2d 施法结算）
-        //    分别在 Task 2/2/4/5 接线，此刻无代码可跑）。
+        // 2. 实体与法术（架构 §4，M4 起生效）：2a+2b 生物相前半——输入应用
+        //    + 运动学，读本 tick 起始网格（与刚体相(3)、网格四相(4)所见的
+        //    网格状态一致，spec §1.1 定序理由）。2c 弹体积分 / 2d 施法结算
+        //    留 Task 4/5 接线，此刻无代码可跑。
+        self.creatures.step_kinematics(&self.world, &self.table, &self.creature_table, inputs);
         // 3. 刚体相（M3 spec §2）：物理步进 → 变换变化者反盖章/盖章（被盖液体/粉末
         //    脱格进 spawn_queue，与 ops 的生成请求同队列、追加序即入队序）。
         //    地形（B′ 按 chunk 缓存）与浮力（水面线阿基米德）在步进前施加。
@@ -194,10 +199,10 @@ impl Sim {
         self.bodies.apply_buoyancy(&self.world, &self.table, &mut self.physics);
         self.physics.step();
         self.bodies.stamp_all(&mut self.world, &self.table, &mut self.physics, stamp, &mut self.spawn_queue);
-        // 2. 网格四相 + 封帧
+        // 4. 网格四相 + 封帧（M0–M2，不变）。
         scheduler::step(&mut self.world, &self.table, &self.reactions, &self.pool, self.scan, &mut self.spawn_queue);
 
-        // 粒子相（M1 spec §4 第 3 步）：a. 生成（drain 入队序 + 容量拒绝，
+        // 5. 粒子相（M1 spec §4）：a. 生成（drain 入队序 + 容量拒绝，
         // Particles::spawn 内置）——队列此刻已包含测试代码经 queue_spawn
         // 的历史积压 *与* 本 tick ops 阶段里 Op::Emit 刚追加的请求，追加序
         // 即入队序；b/c/d. 并行积分 → 串行提交 → 保序压缩，整体委托
@@ -209,6 +214,7 @@ impl Sim {
         particle::advance(&mut self.particles, &mut self.world, &self.table, &self.pool, stamp);
         // 7. 刚体对账 + 限额重提取（M3 spec §6）：爆炸/燃烧毁掉的盖章格 → 位图更新 →
         //    分量分解；碎片脱格进 spawn_queue（下一 tick 粒子相 drain）。
+        //    （6 号在架构 §4 里已删，不重用，见 lib.rs 头注 / CLAUDE.md 惯例。）
         self.bodies.reconcile(&self.world);
         self.bodies.reextract(&mut self.world, &self.table, &mut self.physics, stamp, &mut self.spawn_queue);
         // 7'. 本 tick 爆炸的刚体冲量（切开之后各半各自受力；入队序）。
@@ -256,10 +262,11 @@ impl Sim {
     }
 
     /// 总哈希 = `combine4(网格哈希树根, 粒子层, 刚体层, 实体层)`（M1 spec §9 +
-    /// M3 spec §7 + M4 spec §1.3）。实体层此刻恒 0（生物/弹体表恒空），
-    /// 与 M4 之前的 `combine3` 输出**不**逐位相同——这是本 Task 唯一刻意的
-    /// 哈希结构变更，golden 因此重录一次（`--grid-only` 取证网格哈希流本身
-    /// 不受影响）。
+    /// M3 spec §7 + M4 spec §1.3）。无生物/弹体的场景实体层仍恒 0
+    /// （`Creatures`/`Projectiles::hash_into` 空表早退），与 M4 之前的
+    /// `combine3` 输出**不**逐位相同——这是 Task 1 golden 重录一次的唯一
+    /// 刻意哈希结构变更（`--grid-only` 取证网格哈希流本身不受影响）；
+    /// Task 2 起生物表可非空，实体层随之变化，但既有（无生物）场景不受影响。
     pub fn state_hash(&self) -> u64 {
         hash::combine4(
             self.grid_hash(),
@@ -285,7 +292,8 @@ impl Sim {
         &self.table
     }
 
-    /// 生物模板表只读视图（加载期构造，Task 3 前恒空）。
+    /// 生物模板表只读视图（加载期构造；空表还是有模板由调用方经 `Sim::new`
+    /// 决定，`CreatureTable::empty()` 或 `default_player()`/`from_tpls()`）。
     pub fn creature_table(&self) -> &creature::CreatureTable {
         &self.creature_table
     }
@@ -293,5 +301,16 @@ impl Sim {
     /// 法术表只读视图（加载期构造，Task 5 前恒空）。
     pub fn spell_table(&self) -> &spell::SpellTable {
         &self.spell_table
+    }
+
+    /// 生物表只读视图（M4 Task 2）：行为测试经此读运动学结果。
+    pub fn creatures(&self) -> &creature::Creatures {
+        &self.creatures
+    }
+
+    /// 生物表可写视图。与既有 `Sim::queue_spawn` 同体例：`pub`，仅供测试与诊断
+    /// （`Creatures::set_hp`/`set_mana` 走这里；生产路径一律经 `Op::SpawnCreature`）。
+    pub fn creatures_mut(&mut self) -> &mut creature::Creatures {
+        &mut self.creatures
     }
 }

@@ -1,7 +1,8 @@
 //! 测试公用：内联材料表（core 测试不读 data/，保持 crate 自包含）。
 
 use sand_core::{
-    Category, CreatureTable, InitConfig, MaterialDef, MaterialTable, ReactionTable, ScanMode, Sim, SpellTable,
+    input::MAX_SLOTS, Category, CreatureTable, InitConfig, MaterialDef, MaterialTable, Op, ReactionTable, ScanMode,
+    Sim, SpellTable,
 };
 
 pub const SAND: u8 = 2;
@@ -119,4 +120,39 @@ pub fn sim(width_chunks: usize, height_chunks: usize, seed: u64, threads: usize,
     let table = test_table();
     let reactions = ReactionTable::empty(&table);
     Sim::new(&cfg, table, reactions, CreatureTable::empty(), SpellTable::empty()).unwrap()
+}
+
+/// 基线表 + wood（M4 Task 2，生物行为测试用）：air/wall/sand/water 同 `test_table`，
+/// 追加 `wood`（Static，供 `Op::SpawnBody` 验证"刚体盖章格对生物即地形"）。
+/// id 不写死在调用点——测试经 `table.id_by_name("wood")` 取（R6）。
+#[allow(dead_code)]
+pub fn materials() -> MaterialTable {
+    let def = |id: u8, name: &str, category: Category, density: u16, hp: u32| MaterialDef {
+        hp,
+        ..MaterialDef::base(id, name, category, density)
+    };
+    MaterialTable::new(vec![
+        def(0, "air", Category::Static, 0, 0),
+        MaterialDef { hp: 100, durability: 15, ..MaterialDef::base(1, "wall", Category::Static, 100) },
+        def(SAND, "sand", Category::Powder, 40, 2),
+        def(WATER, "water", Category::Liquid, 16, 1),
+        def(4, "wood", Category::Static, 12, 10),
+    ])
+    .unwrap()
+}
+
+/// 4×2 chunk（256×128）的世界，底行 wall；在 (32, 100) 放一个 controller 0 的生物
+/// （M4 Task 2 生物行为测试用，spec `creature_behavior.rs` Step 4）。
+#[allow(dead_code)]
+pub fn floor_world_with_creature(tbl: CreatureTable) -> (Sim, u8) {
+    let table = materials();
+    let wall = table.id_by_name("wall").unwrap();
+    let cfg = InitConfig { width_chunks: 4, height_chunks: 2, seed: 42, threads: 1, scan: ScanMode::LiveRect };
+    let reactions = ReactionTable::empty(&table);
+    let mut sim = Sim::new(&cfg, table, reactions, tbl, SpellTable::empty()).unwrap();
+    sim.apply_setup(&[
+        Op::Fill { material: wall, x0: 0, y0: 127, x1: 255, y1: 127 },
+        Op::SpawnCreature { x: 32, y: 100, template: 0, team: 0, controller: 0, loadout: [255; MAX_SLOTS] },
+    ]);
+    (sim, 0)
 }

@@ -16,7 +16,7 @@ use crate::cell::Cell;
 use crate::fixed::{Fx, HALF_CELL};
 use crate::geom::{components4, rect_cover, Rect};
 use crate::chunk::CHUNK;
-use crate::material::{Category, MaterialTable, MAT_AIR};
+use crate::material::{self, Category, MaterialTable, MAT_AIR};
 use crate::physics::GRAVITY_CELLS_PER_S2;
 use crate::particle::clamp_speed;
 use crate::physics::{BodyHandle, PhysicsWorld};
@@ -538,12 +538,11 @@ impl Bodies {
 }
 
 /// 硬格判定（spec §4，B′）：非 air、非 Gas、非 Liquid、非刚体格、材质非 `body_passable`。
+/// 薄包装：本体已抽到 `material::is_solid`（M4 spec §2，与生物碰撞共用），
+/// 这里固定传 `include_bodies = false`——刚体做自己的地形缓存时不与自身格碰撞
+/// （M3 既定语义，纯搬移不改行为）。
 fn is_hard(cell: Cell, table: &MaterialTable) -> bool {
-    let m = cell.material();
-    m != MAT_AIR
-        && !cell.is_body()
-        && !matches!(table.category(m), Category::Gas | Category::Liquid)
-        && !table.body_passable(m)
+    material::is_solid(cell, table, false)
 }
 
 /// 某 chunk 的硬格 → 世界坐标矩形覆盖。
