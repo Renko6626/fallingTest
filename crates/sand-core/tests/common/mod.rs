@@ -167,16 +167,80 @@ pub fn materials() -> MaterialTable {
 
 /// 4×2 chunk（256×128）的世界，底行 wall；在 (32, 100) 放一个 controller 0 的生物
 /// （M4 Task 2 生物行为测试用，spec `creature_behavior.rs` Step 4）。
+///
+/// **M4 Task 4 签名变更**：追加 `spells: SpellTable` 形参——`Sim::new` 自 Task 1
+/// 起就要求法术表，本 helper 之前一直悄悄塞 `SpellTable::empty()`，Task 4 的
+/// 弹体测试需要一张非空表，索性把它交给调用方（"helper 一次定型，后续 Task
+/// 只加参数不改语义"，本文件 Task 4 brief Step 3）。既有调用点（Task 2/3 的
+/// `creature_behavior.rs::floor_world`）同步改传 `SpellTable::empty()`，语义
+/// 不变。
 #[allow(dead_code)]
-pub fn floor_world_with_creature(tbl: CreatureTable) -> (Sim, u8) {
+pub fn floor_world_with_creature(tbl: CreatureTable, spells: SpellTable) -> (Sim, u8) {
     let table = materials();
     let wall = table.id_by_name("wall").unwrap();
     let cfg = InitConfig { width_chunks: 4, height_chunks: 2, seed: 42, threads: 1, scan: ScanMode::LiveRect };
     let reactions = ReactionTable::empty(&table);
-    let mut sim = Sim::new(&cfg, table, reactions, tbl, SpellTable::empty()).unwrap();
+    let mut sim = Sim::new(&cfg, table, reactions, tbl, spells).unwrap();
     sim.apply_setup(&[
         Op::Fill { material: wall, x0: 0, y0: 127, x1: 255, y1: 127 },
         Op::SpawnCreature { x: 32, y: 100, template: 0, team: 0, controller: 0, loadout: [255; MAX_SLOTS] },
     ]);
     (sim, 0)
+}
+
+/// 256×128 空场（4×2 chunk），四周 wall 一圈；无生物（M4 Task 4 弹体行为测试
+/// 用，spec `projectile_behavior.rs`）。法术表由调用方给——core 侧程序化构表
+/// （`SpellTable::from_defs`），不依赖 `spells.ron`。
+#[allow(dead_code)]
+pub fn arena_wide_open(spells: SpellTable) -> Sim {
+    let table = materials();
+    let wall = table.id_by_name("wall").unwrap();
+    let cfg = InitConfig { width_chunks: 4, height_chunks: 2, seed: 42, threads: 1, scan: ScanMode::LiveRect };
+    let reactions = ReactionTable::empty(&table);
+    let mut sim = Sim::new(&cfg, table, reactions, CreatureTable::empty(), spells).unwrap();
+    sim.apply_setup(&[
+        Op::Fill { material: wall, x0: 0, y0: 0, x1: 255, y1: 0 },
+        Op::Fill { material: wall, x0: 0, y0: 127, x1: 255, y1: 127 },
+        Op::Fill { material: wall, x0: 0, y0: 0, x1: 0, y1: 127 },
+        Op::Fill { material: wall, x0: 255, y0: 0, x1: 255, y1: 127 },
+    ]);
+    sim
+}
+
+/// 两个生物的弹体命中测试场地（M4 Task 4）：id 0 在 (20,64) team `team0`、
+/// id 1 在 (200,64) team `team1`，两者 controller 均为 255（不吃输入）。
+///
+/// **不是简单"`arena_wide_open` + 两条 `Op::SpawnCreature`"**：`arena_wide_open`
+/// 内部除了四周边框墙一无所有，生物出生在 y=64 会自由落体几十格才落到
+/// y=127 的世界边界，重力累积几个 tick 就能把生物的 AABB 甩出弹体水平
+/// 飞行的那一行——"命中生物"系列测试因此会全体假阴性（实测验证过，不是
+/// 纸面推测）。这里额外铺一条紧贴生物脚下的地板（y=70，生物 `half_h=5`、
+/// 出生 y=64 → 脚跟 69，第一 tick 重力介入时几乎不下坠），把生物钉在
+/// 弹体飞行的 y=64 附近，同时仍然验证的是"生物落地静止"这一正常状态，
+/// 不是靠关掉重力作弊。
+fn two_creature_arena(spells: SpellTable, team0: u8, team1: u8) -> Sim {
+    let table = materials();
+    let wall = table.id_by_name("wall").unwrap();
+    let cfg = InitConfig { width_chunks: 4, height_chunks: 2, seed: 42, threads: 1, scan: ScanMode::LiveRect };
+    let reactions = ReactionTable::empty(&table);
+    let tpl = CreatureTable::default_player();
+    let mut sim = Sim::new(&cfg, table, reactions, tpl, spells).unwrap();
+    sim.apply_setup(&[
+        Op::Fill { material: wall, x0: 0, y0: 70, x1: 255, y1: 70 },
+        Op::SpawnCreature { x: 20, y: 64, template: 0, team: team0, controller: 255, loadout: [255; MAX_SLOTS] },
+        Op::SpawnCreature { x: 200, y: 64, template: 0, team: team1, controller: 255, loadout: [255; MAX_SLOTS] },
+    ]);
+    sim
+}
+
+/// `two_creature_arena`，两个生物分属 team 0 / team 1（跨队命中测试用）。
+#[allow(dead_code)]
+pub fn arena_with_two_creatures(spells: SpellTable) -> Sim {
+    two_creature_arena(spells, 0, 1)
+}
+
+/// `two_creature_arena`，两个生物同属 team 0（同队免疫测试用）。
+#[allow(dead_code)]
+pub fn arena_with_two_creatures_same_team(spells: SpellTable) -> Sim {
+    two_creature_arena(spells, 0, 0)
 }

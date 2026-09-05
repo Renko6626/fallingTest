@@ -45,9 +45,9 @@ pub use material::{
     Category, MaterialDef, MaterialTable, DISPERSION_MAX, MAT_AIR, MAT_WALL,
 };
 pub use particle::{Particles, MAX_PARTICLES};
-pub use projectile::Projectiles;
+pub use projectile::{Projectiles, MAX_PROJECTILES};
 pub use reaction::{ReactionRule, ReactionTable};
-pub use spell::SpellTable;
+pub use spell::{SpellDef, SpellKind, SpellTable};
 pub use world::{Op, World};
 
 /// 扫描模式（O1 spec §2.1）。三种模式**语义逐位等价**（SyncTest 六配置执法）；
@@ -87,7 +87,7 @@ pub struct Sim {
     bodies: Bodies,
     physics: physics::PhysicsWorld,
     /// M4 实体层：模板表（加载期构造、只读）+ 运行时状态（Task 2 起生物表接
-    /// 运动学，弹体表仍恒空，留 Task 4）。
+    /// 运动学，Task 4 起弹体表接直线飞行 + 命中判定）。
     creature_table: creature::CreatureTable,
     spell_table: spell::SpellTable,
     creatures: creature::Creatures,
@@ -159,8 +159,37 @@ impl Sim {
         self.spawn_queue.push(world::SpawnRequest { material, x, y, vx, vy });
     }
 
+    /// 压入一个弹体生成请求，直接落地（不像 `queue_spawn` 那样过队列——弹体
+    /// 没有粒子池那种"本 tick 统一 drain"的语义要求，`Projectiles::spawn`
+    /// 本身就是幂等的确定性写入）。`pub`，文档标注供测试与未来的诊断工具；
+    /// 生产路径是 Task 5 的施法结算，届时会调用同一个 `Projectiles::spawn`
+    /// ——测试注入与产品代码走同一入口，不是另开一条平行通路。
+    ///
+    /// `life`/`energy`/`grace`/`bounces` 四个字段从 `spell_table` 取（法术
+    /// 定义了一颗弹该活多久、能打穿多硬的东西、防自伤宽限多长、能弹几次），
+    /// 调用方只给出射点与初速——与 brief Interfaces 一节"其余字段从法术表
+    /// 取"一致。`spell` 越界即调用方漏配置，与 `SpellTable::get` 同一体例，
+    /// 不做脏值防御。
+    pub fn queue_projectile(
+        &mut self,
+        spell: u8,
+        x: fixed::Fx,
+        y: fixed::Fx,
+        vx: fixed::Fx,
+        vy: fixed::Fx,
+        owner: u8,
+    ) -> bool {
+        let s = self.spell_table.get(spell);
+        self.projectiles.spawn(spell, x, y, vx, vy, s.life, s.dig_power, owner, s.grace, s.bounces)
+    }
+
     pub fn particles(&self) -> &Particles {
         &self.particles
+    }
+
+    /// 弹体表只读视图（M4 Task 4）：行为测试经此读飞行结果。
+    pub fn projectiles(&self) -> &Projectiles {
+        &self.projectiles
     }
 
     /// 场景 setup（仅 tick 0 之前调用）；与脚本 brush 共用同一确定性写入路径。
@@ -176,8 +205,8 @@ impl Sim {
     }
 
     /// `inputs`：本 tick 生效的玩家意图，按 controller 序号索引（spec §3.1）。
-    /// Task 2 起接线其中的 2a+2b（输入应用 + 生物运动学）；2c 弹体积分 / 2d
-    /// 施法结算留 Task 4/5。
+    /// Task 2 起接线其中的 2a+2b（输入应用 + 生物运动学）；Task 4 起接线 2c
+    /// （弹体积分）；2d 施法结算留 Task 5。
     pub fn step(&mut self, ops: &[Op], inputs: &[InputFrame]) {
         let tick = self.world.tick;
         let stamp = (tick % 256) as u8;
@@ -192,7 +221,8 @@ impl Sim {
         //    spec §1.1 定序理由）；紧接着 2b 后半（Task 3 起）——排开液体/粉末、
         //    游泳、材质接触伤害与 HP 墓碑（spec §4.3–§4.5），复用 ops 阶段同一个
         //    `spawn_queue`，本 tick 粒子相（第 5 步）按追加序统一 drain。
-        //    2c 弹体积分 / 2d 施法结算留 Task 4/5 接线，此刻无代码可跑。
+        //    2c 弹体积分（Task 4 起接线）：读本 tick 已移动的生物位置（spec §1.1
+        //    "弹体命中的是生物本 tick 移动后的位置"）。2d 施法结算留 Task 5。
         self.creatures.step_kinematics(&self.world, &self.table, &self.creature_table, inputs);
         self.creatures.step_world_interaction(
             &mut self.world,
@@ -202,6 +232,7 @@ impl Sim {
             stamp,
             &mut self.spawn_queue,
         );
+        self.projectiles.advance(&self.world, &self.table, &self.spell_table, &mut self.creatures);
         // 3. 刚体相（M3 spec §2）：物理步进 → 变换变化者反盖章/盖章（被盖液体/粉末
         //    脱格进 spawn_queue，与 ops 的生成请求同队列、追加序即入队序）。
         //    地形（B′ 按 chunk 缓存）与浮力（水面线阿基米德）在步进前施加。

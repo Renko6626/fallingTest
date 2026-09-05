@@ -476,6 +476,72 @@ impl Creatures {
         }
     }
 
+    /// 弹体命中判定（M4 Task 4 spec §5.1"① 命中生物"）：按 id 升序找第一个
+    /// 存活且 AABB 覆盖 `(gx, gy)` 的生物，返回其 id。
+    ///
+    /// **owner 与同队的判定分两条独立规则**（spec §5.3"防自伤：owner 在
+    /// grace 帧内跳过；同 team 跳过"——字面上是两件事，不是一件事的两种
+    /// 说法）：`owner` 自身只在 `grace > 0` 的窗口内被跳过，`grace` 耗尽后
+    /// **可以打到自己**（"防自伤"这个措辞本身就意味着保护是有时限的，过期
+    /// 后自伤重新成立）；而"同队跳过"对非 owner 的队友是**无时限**的。若把
+    /// owner 也套进"同队跳过"这条通用规则（owner 显然与自己同队），grace
+    /// 窗口就会被同队规则永久盖过、变成死代码——`owner` 分支必须在同队检查
+    /// **之前**单独处理，且判定为"不跳过"时才继续走到下面的同队分支（用
+    /// `if..else if` 而非两个独立 `if continue`，否则 owner 会被同队分支
+    /// 二次拦下，回到刚才那个死代码陷阱）。
+    ///
+    /// `owner_team` 由调用方传入而非本函数反查 `owner`——`owner == 255`
+    /// （无归属，测试注入弹体）时反查会越界；调用方（`projectile.rs::advance`）
+    /// 已经在查询失败时给了"不等于任何真实 team"的哨兵值。
+    pub fn first_hit_at(&self, gx: i32, gy: i32, owner: u8, grace: u8, owner_team: u8) -> Option<u8> {
+        for (id, c) in self.list.iter().enumerate() {
+            if !c.alive {
+                continue;
+            }
+            let id = id as u8;
+            if id == owner {
+                if grace > 0 {
+                    continue;
+                }
+            } else if c.team == owner_team {
+                continue;
+            }
+            let (cx, cy) = (c.x.to_cell(), c.y.to_cell());
+            if gx >= cx - c.half_w && gx <= cx + c.half_w && gy >= cy - c.half_h && gy <= cy + c.half_h {
+                return Some(id);
+            }
+        }
+        None
+    }
+
+    /// 弹体命中结算的落点（`projectile.rs::resolve_hit_creature` 唯一调用
+    /// 点）：一次性扣血 + 沿弹体飞行方向的击退速度；hp 归零同样墓碑化
+    /// （与 `step_world_interaction` 的材质接触伤害走同一条收口，spec
+    /// §4.5"不做 ragdoll、不做尸体"）。`id` 越界或目标已死亡静默忽略——
+    /// 与 `set_hp`/`set_mana` 同一体例，调用方保证。
+    ///
+    /// `pub(crate)`（不是 `pub`）：弹体表与生物表同一 crate 内部协作，不
+    /// 额外开放"外部直接改生物速度"这个入口——生产路径上生物速度只应经
+    /// `step_kinematics`/`step_world_interaction`/本方法三处写，都在 core
+    /// 内部；`Sim` 不代理转发它。
+    pub(crate) fn apply_hit(&mut self, id: u8, damage_milli: i32, knockback: Fx, dir: (Fx, Fx)) {
+        if let Some(c) = self.list.get_mut(id as usize) {
+            if !c.alive {
+                return;
+            }
+            // wrapping：伤害值来自数据驱动法术表，未做域校验，同 §4.5 材质
+            // 接触伤害那条 Important #1 修复的理由（本文件上方 ④ 的注释）。
+            c.hp = c.hp.wrapping_sub(damage_milli);
+            c.vx = c.vx + dir.0.mul(knockback);
+            c.vy = c.vy + dir.1.mul(knockback);
+            if c.hp <= 0 {
+                c.alive = false;
+                c.vx = Fx::ZERO;
+                c.vy = Fx::ZERO;
+            }
+        }
+    }
+
     /// 实体层哈希的生物部分（架构 spec §1.3/§7.1）：空表恒 0（早退，Task 1
     /// 零行为变化的依据），非空按 id 序折叠全字段（含 `cooldowns`/`mana`/
     /// `hp`/`aim`，即便本 Task 尚不写它们，也一并入哈希——避免哈希结构在

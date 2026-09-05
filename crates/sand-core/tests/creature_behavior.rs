@@ -13,7 +13,7 @@ use sand_core::{
 /// 4×2 chunk 的世界，底行 wall；(32, 100) 一个 controller 0 的生物，模板走
 /// `CreatureTable::default_player()`（R5：本 Task 建的测试专用模板）。
 fn floor_world() -> (sand_core::Sim, u8) {
-    floor_world_with_creature(CreatureTable::default_player())
+    floor_world_with_creature(CreatureTable::default_player(), SpellTable::empty())
 }
 
 /// 造一个有台沿的世界（`on_ground_is_false_whenever_the_aabb_has_fully_left_the_ledge`
