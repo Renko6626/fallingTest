@@ -5,12 +5,49 @@
 mod common;
 
 use common::floor_world_with_creature;
-use sand_core::{input::*, world::Op, CreatureTable, Fx, MAX_CREATURES, MAT_WALL};
+use sand_core::{
+    input::*, world::Op, CreatureTable, Fx, InitConfig, ReactionTable, ScanMode, Sim, SpellTable, MAX_CREATURES,
+    MAT_WALL,
+};
 
 /// 4×2 chunk 的世界，底行 wall；(32, 100) 一个 controller 0 的生物，模板走
 /// `CreatureTable::default_player()`（R5：本 Task 建的测试专用模板）。
 fn floor_world() -> (sand_core::Sim, u8) {
     floor_world_with_creature(CreatureTable::default_player())
+}
+
+/// 造一个有台沿的世界（`on_ground_is_false_whenever_the_aabb_has_fully_left_the_ledge`
+/// 专用）：台面只铺到 x=32，x>=33 悬空；生物出生在台面正上方很高处
+/// （y=5），先长距离自由落体再走出台沿。
+///
+/// **这组具体数值不是随手取的**：bug 只在"横向刚好在离台的那个 tick 跨过
+/// 整格边界"与"竖向刚好处在落地后的 stale 窗口内"两件事重合时才会现形
+/// （见 `sweep_y` 头注——旧代码在 `crossing == 0` 时原样保留旧
+/// `on_ground`，而 `crossing` 完全独立于横向位置，只由竖向速度的累积历史
+/// 决定），二者本无必然联系。从出生点直接贴着台面（如 `floor_world` 的
+/// (32,100)/row 127）落地几乎不产生水平位移（`accel_air` 很弱，短距离
+/// 下坠攒不出可观的 `vx`），bug 窗口和"横向跨格"这两件事永远碰不上；
+/// 从很高处（y=5）一路按右下坠，`accel_air` 有更长时间积累水平速度，
+/// 落地时已经带着可观的横向动量，紧邻台沿的最后一次跨格更可能落进落地
+/// 后的短暂 stale 窗口——2026-09-05 评审复审第二轮通过遍历出生高度/台沿
+/// 位置实测搜出这组数值，用 `git stash` 反复对照旧代码确认稳定复现。
+///
+/// 世界比 `floor_world` 高得多（4×6 chunk = 384 行）：`floor_world` 的
+/// 128 行世界里地板贴着世界竖直边界，生物真掉出台面后下坠一两格就会先
+/// 撞上**世界边界哨兵**（`World::cell` 越界读返回 WALL，`world.rs` 头注
+/// "越界读返回 WALL 哨兵"）这个隐式地板，把"离台悬空"和"摔到世界盒子底"
+/// 这两件不同的事混在一起。
+fn ledge_world() -> (Sim, u8) {
+    let table = common::materials();
+    let wall = table.id_by_name("wall").unwrap();
+    let cfg = InitConfig { width_chunks: 4, height_chunks: 6, seed: 42, threads: 1, scan: ScanMode::LiveRect };
+    let reactions = ReactionTable::empty(&table);
+    let mut sim = Sim::new(&cfg, table, reactions, CreatureTable::default_player(), SpellTable::empty()).unwrap();
+    sim.apply_setup(&[
+        Op::Fill { material: wall, x0: 0, y0: 127, x1: 32, y1: 127 },
+        Op::SpawnCreature { x: 32, y: 5, template: 0, team: 0, controller: 0, loadout: [255; MAX_SLOTS] },
+    ]);
+    (sim, 0)
 }
 
 #[test]
@@ -45,6 +82,72 @@ fn on_ground_does_not_flicker_after_landing() {
         }
     }
     assert!(landed, "150 tick 内应该已经落地");
+}
+
+/// 回归测试（评审复审：Important #1 修复引入的镜像回归）：`sweep_y` 在
+/// "未跨格因而跳过检测"时原样保留上一 tick 的 `on_ground`——这个等价只在
+/// **纯竖直运动**时成立。`sweep_x` 先于 `sweep_y` 执行，只改 `c.x`，从不碰
+/// `on_ground`：生物若在这个"未跨格"的窗口里水平走出台阶边缘，footprint
+/// 其实已经变了，旧代码却继续沿用"站在旧 x 位置时"验证过的 `true`。
+///
+/// 挖空地板右半制造台沿，从高处落体按右走出台沿后**逐 tick**（不止看第
+/// 一次翻转的那一 tick——bug 窗口只在竖向 stale 期间才存在，只看单点容易
+/// 漏判）检查一条不变量：**AABB 已经完全脱离台面时，`on_ground` 不得为
+/// `true`**——这与"起跳闸门会不会在这个窗口内误放行"是同一件事的另一种
+/// （更直接、不依赖具体按键时机）表述，覆盖面比"当场按一下跳"更彻底。
+#[test]
+fn on_ground_is_false_whenever_the_aabb_has_fully_left_the_ledge() {
+    let (mut sim, id) = ledge_world();
+
+    let half_w = 2; // CreatureTable::default_player() 的 half_w
+    // 台沿在 x=33（`ledge_world` 只铺到 x=32），AABB 左边缘越过它才是彻底
+    // 脱离台面——半只脚还搭在台沿上时 on_ground=true 依然合法。
+    let ledge_x = 33;
+    let mut fully_cleared_at_least_once = false;
+    // 离台后只再观察 20 tick：生物竖直速度不设上限，久等只会等到它摔穿
+    // `ledge_world` 的净空触底（那也会被判定成 on_ground=true，但那是"摔
+    // 到世界盒子底"，不是本测试要抓的"离台瞬间"那类 bug），窗口需要卡在
+    // 离台事件附近而不是放到底。
+    let mut ticks_since_cleared: Option<u32> = None;
+    for tick in 0..80 {
+        sim.step(&[], &[InputFrame::new(BTN_RIGHT, 0, 0)]);
+        let c = sim.creatures().get(id).unwrap();
+        if c.x.to_cell() - half_w >= ledge_x {
+            fully_cleared_at_least_once = true;
+            assert!(!c.on_ground, "tick {tick}: AABB 已完全离开台面，on_ground 却仍是 true");
+            let elapsed = *ticks_since_cleared.get_or_insert(0);
+            if elapsed >= 20 {
+                break;
+            }
+            ticks_since_cleared = Some(elapsed + 1);
+        }
+    }
+    assert!(fully_cleared_at_least_once, "80 tick 内应该已经完全走出台沿");
+}
+
+/// 回归测试（防止本轮修复引入的另一坑：`on_ground` 若改成"纯查询"，起跳
+/// 那一 tick 生物仍紧贴地面，查询会继续读到 `true`，`held(BTN_JUMP)` 是电平
+/// 触发，按住不放会每 tick 重新施加起跳速度 → 悬浮/连跳）。落地后持续按住
+/// 跳跃键：起跳后 `vy` 应该只受重力单调回升，不得被跳跃键在仍处于本次跳跃
+/// 弧线中途时重新拍回 `-jump_speed` 附近的大冲量。
+#[test]
+fn holding_jump_launches_only_once_not_every_tick() {
+    let (mut sim, id) = floor_world();
+    for _ in 0..120 {
+        sim.step(&[], &[]);
+    } // 先落地站稳
+    let mut prev_vy: Option<Fx> = None;
+    for tick in 0..15 {
+        // 15 tick 远小于 jump_speed=2.9 / GRAVITY=0.25 折返地面所需的 tick 数，
+        // 全程应保持在同一次跳跃弧线内，不涉及"落地后按住是否该再跳一次"
+        // 这类另有取舍的场景。
+        sim.step(&[], &[InputFrame::new(BTN_JUMP, 0, 0)]); // 持续按住
+        let vy = sim.creatures().get(id).unwrap().vy;
+        if let Some(p) = prev_vy {
+            assert!(vy >= p, "tick {tick}: vy 从 {p:?} 变成 {vy:?}——疑似悬空中被跳跃键重新施加起跳速度");
+        }
+        prev_vy = Some(vy);
+    }
 }
 
 #[test]

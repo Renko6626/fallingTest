@@ -229,13 +229,29 @@ impl Creatures {
             // 避免起跳/落地两条路径各写一遍重力开关）；起跳只在 on_ground
             // 时生效，直接把 vy 置为起跳速度（覆盖而非叠加——脉冲语义）。
             c.vy = c.vy + GRAVITY;
-            if inp.held(BTN_JUMP) && c.on_ground {
+            let jumped = inp.held(BTN_JUMP) && c.on_ground;
+            if jumped {
                 c.vy = -t.jump_speed;
             }
 
-            // ③ 逐轴分离扫掠：先 x 后 y。
+            // ③ 逐轴分离扫掠：先 x 后 y。`sweep_y` 把 `on_ground` 算成对**当前**
+            // footprint 的查询（评审复审第二轮修复，见其头注），天然覆盖
+            // "水平走出台面"这类 `sweep_x` 改了 `c.x` 但 `sweep_y` 本 tick
+            // 未跨格的情形。唯一的例外是本 tick 起跳：查询是粗粒度的整格
+            // 判定，`jump_speed` 若调得很小（< 1 格/tick，本模板的 2.9 不会
+            // 触发但不能假设永远如此）理论上查询仍可能读到"脚下还是硬格"，
+            // 那样 `held(BTN_JUMP)`（电平触发，不是边沿触发）会在下一 tick
+            // 重新满足闸门条件、每 tick 重新施加起跳速度 → 悬浮/连跳
+            // （`holding_jump_launches_only_once_not_every_tick` 钉死这一条）。
+            // 起跳在物理意图上就是"这一 tick 主动离地"的脉冲，因此只要闸门
+            // 触发就无条件把 `on_ground` 收口为 `false`，不依赖查询结果、
+            // 不依赖 `jump_speed` 数值——比"存上一 tick 按键做边沿触发"更
+            // 简单（不需要新增字段进哈希），也不依赖调参凑巧躲开这个坑。
             sweep_x(c, world, table, &t);
             sweep_y(c, world, table);
+            if jumped {
+                c.on_ground = false;
+            }
             c.aim = inp.aim;
         }
     }
@@ -363,15 +379,29 @@ fn sweep_x(c: &mut Creature, world: &World, table: &MaterialTable, t: &CreatureT
     // else：本 tick 被步数上限截断，多出的位移作废（见函数头注）。
 }
 
-/// 沿 y 轴扫掠，同 `sweep_x` 但无跨台阶分支。撞到即 `vy = 0`；**向下**撞停
-/// （`dir > 0`）时 `on_ground = true`；确认跑过检测且未撞（本 tick 真的跨越
-/// 过至少一个格边界、逐格测过 `aabb_blocked` 全部畅通）时置 `false`；
-/// **本 tick 未跨越任何格边界**（`crossing == 0`，典型情形：重力刚把 `vy`
-/// 从 0 推到一个还不足一格的小正值）则完全跳过检测——不产生任何新证据，
-/// `on_ground` 原样保留上一 tick 的判定（评审 Important #1：这里若无条件置
-/// `false`，静止在地面上的生物会在这类 tick 里凭空"悬空"一瞬，起跳判定
-/// 仅 `on_ground` 时生效，会把这个窗口内的跳跃输入静默吃掉——已用
-/// `on_ground_does_not_flicker_after_landing` 钉死）。
+/// 沿 y 轴扫掠，同 `sweep_x` 但无跨台阶分支；撞到即 `vy = 0`。
+///
+/// **`on_ground` 是查询，不是"扫掠的副作用"**（评审复审第二轮修复）：第一版
+/// 实现（Important #1 修复）在"本 tick 未跨格、跳过检测"时原样保留上一 tick
+/// 的 `on_ground`，隐含假设"未跨格 ⇒ footprint 未变化"——这个假设只对**纯
+/// 竖直运动**成立。`step_kinematics` 先 `sweep_x` 后 `sweep_y`，`sweep_x`
+/// 只改 `c.x`、从不碰 `on_ground`：生物若在"未跨格"的窗口里被 `sweep_x`
+/// 水平移出了原来的支撑格（比如走出台阶边缘），旧值就是在描述一个已经不
+/// 存在的 footprint，会让起跳闸门在离台后的短暂窗口里误放行一次空中跳
+/// （`on_ground_is_false_whenever_the_aabb_has_fully_left_the_ledge` 钉死）。
+///
+/// 改为：位置积分（跨格检测 + 逐格碰撞响应）与 `on_ground` 判定彻底分离，
+/// 后者在函数末尾用**当前**（本函数可能已经更新过的）`c.x`/`c.y` 显式探测
+/// "脚下紧邻一格是否为硬格"——与 `aabb_blocked` 在别处的用法同一语义
+/// （"再往 `dir=+1` 走一格会不会被挡"），不依赖运动历史，水平/竖直两个方向
+/// 的 footprint 变化都天然覆盖。
+///
+/// 起跳的脉冲语义（"这一 tick 主动离地，即便查询结果还判定脚下贴地也不算
+/// 数"）不在本函数处理——查询是粗粒度整格判定，`jump_speed` 若调得很小
+/// 理论上本 tick 仍可能查到"脚下是硬格"，那样 `step_kinematics` 里电平触发
+/// 的 `held(BTN_JUMP)` 会每 tick 重新满足闸门条件；这一条由调用方
+/// `step_kinematics` 在起跳分支里显式收口（见其内联注释），不塞进这里让
+/// 本函数身兼"积分"与"起跳特例"两个职责。
 fn sweep_y(c: &mut Creature, world: &World, table: &MaterialTable) {
     let (hw, hh) = (c.half_w, c.half_h);
     let dir: i32 = if c.vy.0 > 0 {
@@ -379,31 +409,29 @@ fn sweep_y(c: &mut Creature, world: &World, table: &MaterialTable) {
     } else if c.vy.0 < 0 {
         -1
     } else {
-        return;
+        0
     };
-    let target = c.y + c.vy;
-    let crossing =
-        if dir > 0 { target.to_cell() - c.y.to_cell() } else { c.y.to_cell() - target.to_cell() }.max(0);
-    let steps = crossing.min(CREATURE_MAX_STEP);
-    if steps == 0 {
-        // 未跨格：footprint 与上 tick 完全相同（`aabb_blocked` 只依赖
-        // `to_cell()`），亚格位移原样应用，`on_ground` 不动——见函数头注。
-        c.y = target;
-        return;
-    }
-    for _ in 0..steps {
-        let ny = c.y + Fx::from_int(dir);
-        if aabb_blocked(world, table, c.x, ny, hw, hh) {
-            c.vy = Fx::ZERO;
-            c.on_ground = dir > 0;
-            return;
+    if dir != 0 {
+        let target = c.y + c.vy;
+        let crossing =
+            if dir > 0 { target.to_cell() - c.y.to_cell() } else { c.y.to_cell() - target.to_cell() }.max(0);
+        let steps = crossing.min(CREATURE_MAX_STEP);
+        let mut blocked = false;
+        for _ in 0..steps {
+            let ny = c.y + Fx::from_int(dir);
+            if aabb_blocked(world, table, c.x, ny, hw, hh) {
+                blocked = true;
+                break;
+            }
+            c.y = ny;
         }
-        c.y = ny;
+        if blocked {
+            c.vy = Fx::ZERO;
+        } else if steps == crossing {
+            c.y = target;
+        }
     }
-    if steps == crossing {
-        c.y = target;
-    }
-    c.on_ground = false;
+    c.on_ground = aabb_blocked(world, table, c.x, c.y + Fx::from_int(1), hw, hh);
 }
 
 #[cfg(test)]
