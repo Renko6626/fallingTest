@@ -5,6 +5,29 @@
 
 ## [Unreleased]
 
+## 2026-09-05
+
+### Proposed
+- **M4 玩家与法术 spec**（`docs/superpowers/specs/2026-09-05-m4-player-and-spells-design.md`，
+  Status: Proposed）。brainstorm 七问用户逐一裁决：① M4 **范围收窄**为"会动的生物 + 会飞的投射物"，
+  Noita 式施法状态机（牌堆抽取/多重/trigger/shuffle/法杖构筑）整块推后；② 弹体**独立于粒子池**
+  （复用 `dda`/`fixed` 模块而非 `Particles`，总纲 §4"挂 payload 的粒子"措辞澄清、非翻案）；
+  ③ 玩家对世界有写能力（碰撞 + 排开液体 + 游泳，不做影子刚体）；④ 法术表**扁平三原语**
+  Bolt/Blast/Spray、无脚本（总纲 §11 待决"法术 VM"本轮判定不升级）；⑤ HP + **材质接触伤害**
+  （Noita 口径：写受害者侧 `damage_from` + 4 格门槛）；⑥ **InputFrame 正式立起来**，harness 场景
+  新增 `inputs` 时间线，不立 session/bridge；⑦ 施法节流 = cooldown + mana 双闸门。
+  管线第 2 步从占位变生效（2a 输入 → 2b 生物 → 2c 弹体 → 2d 施法），属**协议版本变更**；
+  `state_hash` 由 `combine3` 变 `combine4`，6 个 golden 待重录。
+- **Noita `ProjectileComponent` 字段全表过筛**（spec §5.6 + `docs/reference/noita-deep-dive.md`
+  待追记）：~80 字段剔除表现层后逐条裁决，**收 7 条**——`displace_liquid` / `on_lifetime_out_explode` /
+  `air_friction` / `liquid_drag` / `pass_through`（改造成 `Category` 掩码）/ `physics_impulse`
+  （补上 M3 缺口：箱子能被炸飞却不能被射中）/ `bounces`+`bounce_energy`；**侵彻**
+  （`ground_penetration_*`）确认为"能量射线三兄弟"的第四个同构用例，复用 `explode::fire_ray`。
+  明确不做清单 20 余条同记。
+- **两条宪法级开关保持关闭**：不触发总纲 §11 翻案第 6 条复议（M4 法术无连续温度量，Layer F 维持删除）；
+  stain 状态效果顺延（M4 范围收窄，非翻案）。**已知限制**：水流推人做不了（网格无水平速度场，
+  `tuning-knobs.md` §6 缺口 #2），M4 的水只做阻力 + 浮力。
+
 ## 2026-09-03
 
 ### Added
