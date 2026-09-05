@@ -1,7 +1,12 @@
 //! 弹体：SoA 表（spec §3.3、§5）。M4 Task 4 填字段与 `advance`——**只实现直线
 //! 飞行 + DDA 命中判定 + `Bolt` 结算**；侵彻（能量消耗）、弹跳、阻力、穿透、
 //! 排开液体、刚体冲量、定时爆全部是 Task 6 的地盘（spec §5.6 明列），本文件
-//! 里凡是它们的插入点都留了注释锚点，不提前实现半成品。
+//! 里凡是它们的插入点都留了注释锚点，不提前实现半成品。M4 Task 5 在 Task 4
+//! 的骨架上追加 `Blast` 命中结算（走现有 `explode::apply_explode` +
+//! `Bodies::pending_blasts`，零新增通路）；`advance` 因此从 Task 4 的窄签名
+//! （`world: &World`、无 `bodies`/`stamp`/`fseed`/`spawns`）**按需**放宽到
+//! `world: &mut World` + 四个新形参——Task 4 头注早已预告"各自在真正长出
+//! 用例的那个 Task 里加"，这里就是那个 Task。
 //!
 //! **体例完全照抄 `particle.rs`**：SoA、下标即 id、`compact` 走 `retain`
 //! 语义的保序压缩、容量拒绝计数器**不入哈希**只供诊断。**与 `Particles` 刻意
@@ -15,12 +20,14 @@
 
 use xxhash_rust::xxh3::Xxh3;
 
+use crate::body::Bodies;
 use crate::creature::Creatures;
 use crate::dda;
-use crate::fixed::Fx;
+use crate::explode;
+use crate::fixed::{isqrt, Fx};
 use crate::material::{self, MaterialTable};
-use crate::spell::{SpellDef, SpellKind, SpellTable};
-use crate::world::World;
+use crate::spell::{SpellDef, SpellKind, SpellTable, BLAST_OP_IDX_BASE};
+use crate::world::{SpawnRequest, World};
 
 /// 弹体池容量上限（Global Constraints 表：`MAX_PROJECTILES = 4096`）。超限
 /// `Projectiles::spawn` 确定性拒绝、不排队（同粒子池口径）。
@@ -195,22 +202,25 @@ impl Projectiles {
     /// 弹体相主入口（架构 §4 第 2c 步，spec §5.1）：按下标序（= id 序，
     /// 架构 §7.1 定序铁律）积分 + DDA 命中判定。
     ///
-    /// **签名对 brief 字面接口的一处收窄**：brief 的 Interfaces 一节列了
-    /// `bodies: &mut Bodies`、`stamp: u8`、`fseed: u32`、`spawns: &mut
-    /// Vec<SpawnRequest>` 四个额外参数——但 Task 4 只有 `Bolt` 且命中硬格
-    /// 就是"消失"（spec §5.3 表，无侵彻/无溅射/无刚体冲量），这四个参数在
-    /// 本 Task 的函数体里完全不会被读。`cargo clippy -D warnings` 对纯粹
-    /// 未使用的形参零容忍（`unused_variables`），对未被 `&mut` 方法调用过
-    /// 的 `&mut` 引用形参同样零容忍（`clippy::needless_pass_by_ref_mut`）
-    /// ——原样照抄会直接编译失败。R8 已经对 `phys: &mut PhysicsWorld` 一项
-    /// 明确裁定"这个 Task 不加、Task 6 跟用途一起加"；这里把同一条理由
-    /// 延伸到 `bodies`/`stamp`/`fseed`/`spawns`：Task 5（施法闸门）用得到
-    /// `stamp`/`fseed`（散布掷骰），Task 6（侵彻/弹跳/排开/冲量）用得到
-    /// `bodies`/`spawns`，各自在真正长出用例的那个 Task 里加，不提前搭一个
-    /// 没有调用点的空架子。`world` 保留但收成 `&World`（不可变）——本 Task
-    /// 只读它（`is_solid`/DDA 都是只读查询），同一条 `needless_pass_by_ref_mut`
-    /// 红线；Task 6 加侵彻删格时改回 `&mut World`。
-    pub fn advance(&mut self, world: &World, table: &MaterialTable, spells: &SpellTable, creatures: &mut Creatures) {
+    /// **签名相对 Task 4 放宽**（Task 4 头注"各自在真正长出用例的那个 Task
+    /// 里加"兑现的第一步）：`world` 从 `&World` 改回 `&mut World`，新增
+    /// `bodies`/`stamp`/`fseed`/`spawns` 四个参数——`Blast` 命中结算需要
+    /// 删格（`world`）、判材质（`table` 不变）、推刚体（`bodies`）、走
+    /// `apply_explode` 的抖动骰（`stamp`/`fseed`）、把溅射粒子交回队列
+    /// （`spawns`）。`Bolt` 分支不读这四个新参数，但函数整体（因 `Blast`
+    /// 分支的存在）确实用到了它们，不算未用形参。
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn advance(
+        &mut self,
+        world: &mut World,
+        table: &MaterialTable,
+        spells: &SpellTable,
+        creatures: &mut Creatures,
+        bodies: &mut Bodies,
+        stamp: u8,
+        fseed: u32,
+        spawns: &mut Vec<SpawnRequest>,
+    ) {
         for i in 0..self.x.len() {
             let s = spells.get(self.spell[i]);
             self.vy[i] = self.vy[i] + s.gravity;
@@ -234,13 +244,15 @@ impl Projectiles {
                 // 因此不会误判"无主弹体"与某个 team 0 的生物同队。
                 let owner_team = creatures.get(owner).map(|c| c.team).unwrap_or(255);
                 if let Some(cid) = creatures.first_hit_at(gx, gy, owner, self.grace[i], owner_team) {
-                    resolve_hit_creature(s, (self.vx[i], self.vy[i]), cid, creatures);
+                    resolve_hit(s, vel, Some(cid), gx, gy, world, table, creatures, bodies, stamp, fseed, i, spawns);
                     alive = false;
                     break;
                 }
                 if material::is_solid(world.cell(gx, gy), table, true) {
-                    // 本 Task 只有 Bolt：命中硬格直接消失，无侵彻判定（能量/
-                    // 门槛免疫留 Task 6 的 §5.2），也不删格、不溅射。
+                    // 命中硬格：Bolt 无侵彻判定（能量/门槛免疫留 Task 6 的
+                    // §5.2），直接消失、不删格；Blast 在此触发爆炸——见
+                    // `resolve_hit`。
+                    resolve_hit(s, vel, None, gx, gy, world, table, creatures, bodies, stamp, fseed, i, spawns);
                     alive = false;
                     break;
                 }
@@ -263,27 +275,78 @@ impl Projectiles {
     }
 }
 
-/// Bolt 命中生物的结算（spec §5.3）：一次性扣血 + 沿弹体本 tick 速度方向的
-/// 击退。方向只取速度分量符号（-1/0/+1），**不做真正的单位向量归一化**——
-/// 核心禁超越函数，归一化需要 `isqrt` 除法链，diagonal 命中的击退幅度会偏大
-/// 至多 √2 倍；Task 4 的测试只覆盖水平/竖直发射，这条简化先记在这里，
-/// 真正跑到斜向弹道场景（法术出射方向查 BAM 表，Task 5）时再按需收紧。
-fn resolve_hit_creature(s: &SpellDef, vel: (Fx, Fx), cid: u8, creatures: &mut Creatures) {
+/// 命中结算（spec §5.3）：`cid = Some(id)` 是命中生物，`cid = None` 是命中
+/// 硬格；`(gx, gy)` 是 DDA 撞停的那一格，两种命中共用同一坐标——`Blast` 的
+/// 爆心恒取这个坐标，无论撞到的是生物还是墙。
+///
+/// - `Bolt`：只在命中生物时扣血 + 击退；命中硬格什么都不做（本 Task 无
+///   侵彻，Task 6 地盘）。
+/// - `Blast`：命中生物与命中硬格走**完全相同**的一支——都在 `(gx, gy)`
+///   触发一次现有 `explode::apply_explode` + 追加 `bodies.pending_blasts`
+///   （spec §5.3"命中生物：同上 + 触发爆炸"，`SpellKind::Blast` 文档已
+///   澄清"同上"不含独立的直接扣血/击退，伤害完全来自爆炸本身）。
+/// - `Spray`：`Projectiles` 从不为它 spawn 弹体（`spell::cast_all` 直接
+///   emit），这条分支在产品路径上不可达。
+#[allow(clippy::too_many_arguments)]
+fn resolve_hit(
+    s: &SpellDef,
+    vel: (Fx, Fx),
+    cid: Option<u8>,
+    gx: i32,
+    gy: i32,
+    world: &mut World,
+    table: &MaterialTable,
+    creatures: &mut Creatures,
+    bodies: &mut Bodies,
+    stamp: u8,
+    fseed: u32,
+    op_idx: usize,
+    spawns: &mut Vec<SpawnRequest>,
+) {
     match s.kind {
         SpellKind::Bolt { damage_milli, knockback } => {
-            let dir = (axis_sign(vel.0), axis_sign(vel.1));
-            creatures.apply_hit(cid, damage_milli, knockback, dir);
+            if let Some(cid) = cid {
+                let dir = normalize(vel.0, vel.1);
+                creatures.apply_hit(cid, damage_milli, knockback, dir);
+            }
+        }
+        SpellKind::Blast { power, radius, max_durability } => {
+            explode::apply_explode(
+                world,
+                table,
+                gx,
+                gy,
+                radius,
+                power,
+                max_durability,
+                stamp,
+                fseed,
+                BLAST_OP_IDX_BASE + op_idx,
+                spawns,
+            );
+            bodies.pending_blasts.push((gx, gy, radius));
+        }
+        SpellKind::Spray { .. } => {
+            unreachable!("Spray 不产生弹体：cast_all 直接走 emit 通路，advance() 里不会出现 Spray 弹体")
         }
     }
 }
 
-fn axis_sign(v: Fx) -> Fx {
-    if v.0 > 0 {
-        Fx::from_int(1)
-    } else if v.0 < 0 {
-        Fx::from_int(-1)
+/// 弹体命中生物的击退方向：把本 tick 弹体速度 `(vx, vy)` 归一化成单位向量
+/// （评审遗留项收紧，Task 4 头注承诺"真正跑到斜向弹道场景时再按需收紧"，
+/// Task 5 的施法出射方向查 BAM 表正是那个场景）。用 `isqrt` 定点归一——
+/// `explode.rs::fire_ray` 对爆炸射线方向做的是同一件事，这里原样复用同一套
+/// 数学，不引入新的近似，核心也不因此多一处超越函数依赖。
+///
+/// `mag == 0`（零速命中：生产路径弹体初速来自 `spell.speed`，恒 > 0，这里
+/// 纯属防御）返回零向量，同 `fire_ray` 的处理。
+fn normalize(vx: Fx, vy: Fx) -> (Fx, Fx) {
+    let mag_sq = (vx.0 as i64) * (vx.0 as i64) + (vy.0 as i64) * (vy.0 as i64);
+    let mag = isqrt(mag_sq as u64) as i32;
+    if mag == 0 {
+        (Fx::ZERO, Fx::ZERO)
     } else {
-        Fx::ZERO
+        (Fx::from_ratio(vx.0, mag), Fx::from_ratio(vy.0, mag))
     }
 }
 

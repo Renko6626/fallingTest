@@ -7,7 +7,7 @@
 //! 运算的运行期残留（例如量化写错、每次重新计算），六配置比对会立刻暴露。
 
 use sand_harness::runner;
-use sand_harness::scenario::{load_materials, load_reactions, load_scenario};
+use sand_harness::scenario::{load_creatures, load_materials, load_reactions, load_scenario, load_spells};
 
 fn repo_path(rel: &str) -> String {
     format!("{}/../../{rel}", env!("CARGO_MANIFEST_DIR"))
@@ -17,9 +17,9 @@ fn repo_path(rel: &str) -> String {
 fn waterfall_ci_six_configs_zero_divergence() {
     let (table, _materials_fp) = load_materials(&repo_path("data/materials.ron")).unwrap();
     let (reactions, _fp) = load_reactions(&repo_path("data/reactions.ron"), &table).unwrap();
-    let sc = load_scenario(&repo_path("data/scenarios/waterfall_ci.ron"), &table).unwrap();
-    let creature_table = sand_core::CreatureTable::empty();
-    let spell_table = sand_core::SpellTable::empty();
+    let (creature_table, _creatures_fp) = load_creatures(&repo_path("data/creatures.ron"), &table).unwrap();
+    let (spell_table, _spells_fp) = load_spells(&repo_path("data/spells.ron"), &table).unwrap();
+    let sc = load_scenario(&repo_path("data/scenarios/waterfall_ci.ron"), &table, &spell_table).unwrap();
     let tables = runner::Tables {
         materials: &table,
         reactions: &reactions,
@@ -37,9 +37,9 @@ fn waterfall_ci_six_configs_zero_divergence() {
 fn explosion_ci_six_configs_zero_divergence() {
     let (table, _materials_fp) = load_materials(&repo_path("data/materials.ron")).unwrap();
     let (reactions, _fp) = load_reactions(&repo_path("data/reactions.ron"), &table).unwrap();
-    let sc = load_scenario(&repo_path("data/scenarios/explosion_ci.ron"), &table).unwrap();
-    let creature_table = sand_core::CreatureTable::empty();
-    let spell_table = sand_core::SpellTable::empty();
+    let (creature_table, _creatures_fp) = load_creatures(&repo_path("data/creatures.ron"), &table).unwrap();
+    let (spell_table, _spells_fp) = load_spells(&repo_path("data/spells.ron"), &table).unwrap();
+    let sc = load_scenario(&repo_path("data/scenarios/explosion_ci.ron"), &table, &spell_table).unwrap();
     let tables = runner::Tables {
         materials: &table,
         reactions: &reactions,
@@ -56,9 +56,9 @@ fn explosion_ci_six_configs_zero_divergence() {
 fn fire_oil_chain_six_configs_zero_divergence() {
     let (table, _materials_fp) = load_materials(&repo_path("data/materials.ron")).unwrap();
     let (reactions, _fp) = load_reactions(&repo_path("data/reactions.ron"), &table).unwrap();
-    let sc = load_scenario(&repo_path("data/scenarios/fire_oil_chain.ron"), &table).unwrap();
-    let creature_table = sand_core::CreatureTable::empty();
-    let spell_table = sand_core::SpellTable::empty();
+    let (creature_table, _creatures_fp) = load_creatures(&repo_path("data/creatures.ron"), &table).unwrap();
+    let (spell_table, _spells_fp) = load_spells(&repo_path("data/spells.ron"), &table).unwrap();
+    let sc = load_scenario(&repo_path("data/scenarios/fire_oil_chain.ron"), &table, &spell_table).unwrap();
     let tables = runner::Tables {
         materials: &table,
         reactions: &reactions,
@@ -75,9 +75,9 @@ fn fire_oil_chain_six_configs_zero_divergence() {
 fn crate_yard_six_configs_zero_divergence() {
     let (table, _materials_fp) = load_materials(&repo_path("data/materials.ron")).unwrap();
     let (reactions, _fp) = load_reactions(&repo_path("data/reactions.ron"), &table).unwrap();
-    let sc = load_scenario(&repo_path("data/scenarios/crate_yard.ron"), &table).unwrap();
-    let creature_table = sand_core::CreatureTable::empty();
-    let spell_table = sand_core::SpellTable::empty();
+    let (creature_table, _creatures_fp) = load_creatures(&repo_path("data/creatures.ron"), &table).unwrap();
+    let (spell_table, _spells_fp) = load_spells(&repo_path("data/spells.ron"), &table).unwrap();
+    let sc = load_scenario(&repo_path("data/scenarios/crate_yard.ron"), &table, &spell_table).unwrap();
     let tables = runner::Tables {
         materials: &table,
         reactions: &reactions,

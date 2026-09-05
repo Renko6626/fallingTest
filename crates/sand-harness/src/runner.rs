@@ -55,10 +55,11 @@ pub fn build_sim(sc: &Scenario, t: &Tables, threads: usize, scan: ScanMode) -> R
 }
 
 /// 数据表指纹组（P5 握手语义）：golden 报告头逐行输出。M2 起反应表与材料表
-/// 同等待遇（spec §2.4"指纹"条）。`creatures`/`spells`：M4 起随 `Tables` 同步
-/// 扩容——**Task 1 里恒 0 且不进 golden 输出行**（两张表恒空，指纹 0 不携带
-/// 任何信息；Task 5 接真表时才连指纹一起打印，避免 golden 为一次占位重录
-/// 两次）。
+/// 同等待遇（spec §2.4"指纹"条）。`creatures`/`spells`：Task 1–4 期间随
+/// `Tables` 同步扩容但恒 0、不进 golden 输出行（两张表恒空，指纹 0 不携带
+/// 任何信息）；**Task 5 起两者随 `data/creatures.ron`/`data/spells.ron`
+/// 真实加载，指纹一并打印**（`run` 函数体的 `lines` 构造）——这是 golden
+/// 因本 Task 再重录一次的唯一理由，避免为占位改动重录两次。
 #[derive(Clone, Copy, Debug)]
 pub struct Fingerprints {
     pub materials: u64,
@@ -97,6 +98,8 @@ pub fn run(
         format!("scenario_fp {:016x}", sc.fingerprint),
         format!("materials_fp {:016x}", fps.materials),
         format!("reactions_fp {:016x}", fps.reactions),
+        format!("creatures_fp {:016x}", fps.creatures),
+        format!("spells_fp {:016x}", fps.spells),
         format!("world {}x{} seed {} ticks {}", sc.world.0 * 64, sc.world.1 * 64, sc.seed, ticks),
     ];
     let hash_of = |sim: &sand_core::Sim| if hs.grid_only { sim.grid_hash() } else { sim.state_hash() };

@@ -27,6 +27,27 @@ pub enum Category {
     Gas,
 }
 
+/// `SpellDef::pass_through` 位掩码的位定义（M4 spec §3.4）：canonical 编码
+/// 住在 core（`Category::bit`），harness 加载器（`scenario::load_spells`）与
+/// 未来 Task 6 的消费方（`projectile.rs` 侵彻判定）共享同一份，不各自定义
+/// 一遍各改各的。
+pub const CATEGORY_STATIC_BIT: u8 = 1 << 0;
+pub const CATEGORY_POWDER_BIT: u8 = 1 << 1;
+pub const CATEGORY_LIQUID_BIT: u8 = 1 << 2;
+pub const CATEGORY_GAS_BIT: u8 = 1 << 3;
+
+impl Category {
+    /// 本类别在 `pass_through` 掩码里对应的位。
+    pub fn bit(self) -> u8 {
+        match self {
+            Category::Static => CATEGORY_STATIC_BIT,
+            Category::Powder => CATEGORY_POWDER_BIT,
+            Category::Liquid => CATEGORY_LIQUID_BIT,
+            Category::Gas => CATEGORY_GAS_BIT,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct MaterialDef {
     pub id: u8,

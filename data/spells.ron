@@ -1,0 +1,80 @@
+// 法术表（M4 Task 5，spec §3.4）。加载器：sand-harness::scenario::load_spells。
+//
+// 扁平记录，无引用无递归（用户裁决："只三原语"）。三个 kind：
+//   Bolt  ( damage, knockback )                    直射弹，命中生物扣血+击退
+//   Blast ( power, radius, max_durability )         爆炸弹，命中即炸（网格+刚体）
+//   Spray ( material, count, speed, jitter )        喷射，不产生弹体，当帧走 emit
+//
+// 双闸门字段：mana（千分位量化）、cooldown（tick）。
+// 出射：speed/gravity（Fx 量化）、spread_deg（BAM 量化，校验 0..=180）、grace（tick）。
+// 侵彻公共字段（Task 6 消费）：dig_power、max_durability（顶层，弹体自身的侵彻
+// 门槛，与 Blast::max_durability——爆炸自身的破坏门槛——是两个独立字段）。
+// 运动修饰（Task 6 消费）：air_friction、liquid_drag（Fx 量化）、pass_through
+// （Category 名列表 → 位掩码，未知名报错）、displace_liquid。
+// 弹跳（Task 6 消费）：bounces、bounce_energy（Fx 量化）。
+// 与刚体（Task 6 消费）：physics_impulse（千分位量化）。
+// 死亡（Task 6 消费）：on_lifetime_out_explode。
+(
+  spells: [
+    (
+      name: "spark_bolt",
+      kind: Bolt( damage: 5.0, knockback: 2.0 ),
+      mana: 10.0, cooldown: 12,
+      speed: 8.0, life: 120, gravity: 0.0, spread_deg: 2.0, grace: 4,
+      dig_power: 0, max_durability: 10,
+      air_friction: 1.0, liquid_drag: 0.9, pass_through: ["gas"],
+      displace_liquid: false,
+      bounces: 0, bounce_energy: 0.5,
+      physics_impulse: 0.0,
+      on_lifetime_out_explode: false,
+    ),
+    (
+      name: "bomb",
+      kind: Blast( power: 1200, radius: 12, max_durability: 10 ),
+      mana: 35.0, cooldown: 60,
+      speed: 5.0, life: 180, gravity: 0.25, spread_deg: 0.0, grace: 20,
+      dig_power: 0, max_durability: 10,
+      air_friction: 1.0, liquid_drag: 0.8, pass_through: ["gas"],
+      displace_liquid: true,
+      bounces: 2, bounce_energy: 0.4,
+      physics_impulse: 0.0,
+      on_lifetime_out_explode: true,
+    ),
+    (
+      name: "oil_spray",
+      kind: Spray( material: "oil", count: 12, speed: 4.0, jitter: 0.6 ),
+      mana: 8.0, cooldown: 6,
+      speed: 0.0, life: 0, gravity: 0.0, spread_deg: 0.0, grace: 0,
+      dig_power: 0, max_durability: 10,
+      air_friction: 1.0, liquid_drag: 1.0, pass_through: [],
+      displace_liquid: false,
+      bounces: 0, bounce_energy: 0.0,
+      physics_impulse: 0.0,
+      on_lifetime_out_explode: false,
+    ),
+    (
+      name: "digger",
+      kind: Bolt( damage: 1.0, knockback: 0.0 ),
+      mana: 15.0, cooldown: 20,
+      speed: 6.0, life: 90, gravity: 0.0, spread_deg: 0.0, grace: 4,
+      dig_power: 900, max_durability: 12,
+      air_friction: 1.0, liquid_drag: 1.0, pass_through: ["gas", "liquid"],
+      displace_liquid: false,
+      bounces: 0, bounce_energy: 0.0,
+      physics_impulse: 0.0,
+      on_lifetime_out_explode: false,
+    ),
+    (
+      name: "expensive_bolt",
+      kind: Bolt( damage: 30.0, knockback: 6.0 ),
+      mana: 90.0, cooldown: 90,
+      speed: 10.0, life: 120, gravity: 0.0, spread_deg: 0.0, grace: 4,
+      dig_power: 0, max_durability: 10,
+      air_friction: 1.0, liquid_drag: 0.9, pass_through: ["gas"],
+      displace_liquid: false,
+      bounces: 0, bounce_energy: 0.0,
+      physics_impulse: 20.0,
+      on_lifetime_out_explode: false,
+    ),
+  ],
+)

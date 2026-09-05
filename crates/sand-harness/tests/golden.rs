@@ -3,7 +3,7 @@
 //! 仅允许在显式声明"语义变更、hash 序列作废"的变更里更新。
 
 use sand_harness::runner;
-use sand_harness::scenario::{load_materials, load_reactions, load_scenario};
+use sand_harness::scenario::{load_creatures, load_materials, load_reactions, load_scenario, load_spells};
 
 fn repo_path(rel: &str) -> String {
     format!("{}/../../{rel}", env!("CARGO_MANIFEST_DIR"))
@@ -12,9 +12,13 @@ fn repo_path(rel: &str) -> String {
 fn check(scenario: &str, golden: &str) {
     let (table, materials_fp) = load_materials(&repo_path("data/materials.ron")).unwrap();
     let (reactions, reactions_fp) = load_reactions(&repo_path("data/reactions.ron"), &table).unwrap();
-    let sc = load_scenario(&repo_path(scenario), &table).unwrap();
-    let creature_table = sand_core::CreatureTable::empty();
-    let spell_table = sand_core::SpellTable::empty();
+    // M4 Task 5 起真实加载（与 main.rs 同路径）：这两张表本身对本文件覆盖的
+    // 6 个既有场景无行为影响（它们都不含 `Op::SpawnCreature`，`entity_hash`
+    // 恒为空表早退的 0），但指纹必须跟 `main.rs hashrun` 打出来的 golden 逐字
+    // 一致，才能通过下面的文本比对——这正是本 Task 把 golden 重录一次的理由。
+    let (creature_table, creatures_fp) = load_creatures(&repo_path("data/creatures.ron"), &table).unwrap();
+    let (spell_table, spells_fp) = load_spells(&repo_path("data/spells.ron"), &table).unwrap();
+    let sc = load_scenario(&repo_path(scenario), &table, &spell_table).unwrap();
     let tables = runner::Tables {
         materials: &table,
         reactions: &reactions,
@@ -25,7 +29,12 @@ fn check(scenario: &str, golden: &str) {
     let report = runner::run(
         &sc,
         &tables,
-        runner::Fingerprints { materials: materials_fp, reactions: reactions_fp, creatures: 0, spells: 0 },
+        runner::Fingerprints {
+            materials: materials_fp,
+            reactions: reactions_fp,
+            creatures: creatures_fp,
+            spells: spells_fp,
+        },
         4,
         sand_core::ScanMode::LiveRect,
         sc.ticks,

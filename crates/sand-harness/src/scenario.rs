@@ -9,7 +9,8 @@ use xxhash_rust::xxh3::{xxh3_64, Xxh3};
 
 use sand_core::{
     fixed::Bam,
-    input::{BTN_DOWN, BTN_FIRE, BTN_JUMP, BTN_LEFT, BTN_RIGHT},
+    input::{BTN_DOWN, BTN_FIRE, BTN_JUMP, BTN_LEFT, BTN_RIGHT, MAX_SLOTS},
+    spell::{SpellDef, SpellKind, SpellTable, SPELL_NONE},
     Category, CreatureTable, CreatureTpl, Fx, InputFrame, MaterialDef, MaterialTable, Op, ReactionRule,
     ReactionTable, DISPERSION_MAX, MAX_EMIT_JITTER_RAW, MIN_BODY_PIXELS,
 };
@@ -613,6 +614,141 @@ pub fn load_creatures(path: &str, table: &MaterialTable) -> Result<(CreatureTabl
     Ok((CreatureTable::from_tpls(tpls), fp))
 }
 
+// ---------- spells.ron（M4 spec §3.4）----------
+
+#[derive(Deserialize)]
+struct SpellsFile {
+    spells: Vec<SpellSpec>,
+}
+
+/// `kind` 的 RON 表面形式——三个变体字段名与 core 侧 `SpellKind` 完全一致，
+/// 唯二差异是 `damage`/`knockback`/`speed`/`jitter` 在这里是原始十进制小数，
+/// 加载期才量化；`Spray::material` 在这里是材质名字符串，加载期才解析成 id。
+#[derive(Deserialize)]
+enum SpellKindSpec {
+    Bolt { damage: f64, knockback: f64 },
+    Blast { power: u32, radius: i32, max_durability: u8 },
+    Spray { material: String, count: u16, speed: f64, jitter: f64 },
+}
+
+/// `data/spells.ron` 一条法术的 RON 表面形式（spec §3.4 示例）。同
+/// `CreatureSpec` 的作风：本文件全新引入，字段全部必填、不给
+/// `#[serde(default)]`（`ReactionSpec`/`CreatureSpec` 同一先例）。
+#[derive(Deserialize)]
+struct SpellSpec {
+    name: String,
+    kind: SpellKindSpec,
+    mana: f64,
+    cooldown: u16,
+    speed: f64,
+    life: u16,
+    gravity: f64,
+    spread_deg: f64,
+    grace: u8,
+    dig_power: u32,
+    max_durability: u8,
+    air_friction: f64,
+    liquid_drag: f64,
+    pass_through: Vec<String>,
+    displace_liquid: bool,
+    bounces: u8,
+    bounce_energy: f64,
+    physics_impulse: f64,
+    on_lifetime_out_explode: bool,
+}
+
+/// `pass_through` 的单个 `Category` 名 → 位（`Category::bit`，core 侧
+/// canonical 编码，见其文档）。未知名报错。
+fn category_bit(name: &str) -> Result<u8, String> {
+    Ok(match name {
+        "static" => Category::Static.bit(),
+        "powder" => Category::Powder.bit(),
+        "liquid" => Category::Liquid.bit(),
+        "gas" => Category::Gas.bit(),
+        other => return Err(format!("pass_through 引用未知 Category '{other}'（合法值：static/powder/liquid/gas）")),
+    })
+}
+
+/// 返回（法术表，文件内容指纹）。与 `load_materials`/`load_reactions`/
+/// `load_creatures` 同体例：指纹 = `xxh3_64(normalize_for_fingerprint(bytes))`。
+///
+/// 加载期契约（spec §3.4 + brief Step 5）：
+/// - `name` 不得重复——ron 0.8 对结构体 `Vec` 字段本身没有"重复键"这回事
+///   （不像 map），但两条同名法术会让 `SpellTable::id_by_name` 只能返回
+///   第一条、第二条永远查不到，属于隐藏的配置错误，故显式扫描拒绝
+///   （同 `GridSpec.legend` 的教训——那边是 map 重复键静默覆盖，这里是
+///   list 重复值静默"排在前面的赢"，性质相同：都是"配置手滑了却不报错"）。
+/// - 法术数不得超过 255（id 是 `u8`，255 保留给 `SPELL_NONE`）。
+/// - `spread_deg` 必须落在 `[0, 180]`（散布是双边的，> 180 无意义）。
+/// - `Spray::material` 经 `table.id_by_name` 解析，未知材质报错。
+/// - `pass_through` 的每个 `Category` 名经 [`category_bit`] 解析，未知名报错。
+pub fn load_spells(path: &str, table: &MaterialTable) -> Result<(SpellTable, u64), String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("读 {path} 失败：{e}"))?;
+    let fp = xxh3_64(&normalize_for_fingerprint(&bytes));
+    let text = String::from_utf8(bytes).map_err(|e| format!("{path} 不是 UTF-8：{e}"))?;
+    let file: SpellsFile = ron::from_str(&text).map_err(|e| format!("解析 {path} 失败：{e}"))?;
+    if file.spells.len() > SPELL_NONE as usize {
+        return Err(format!(
+            "法术数 {} 超过 255（id 是 u8，255 保留为 SPELL_NONE 空槽哨兵）",
+            file.spells.len()
+        ));
+    }
+    let mut defs: Vec<SpellDef> = Vec::with_capacity(file.spells.len());
+    for (idx, spec) in file.spells.iter().enumerate() {
+        let ctx = |e: String| format!("法术条目 #{idx}（'{}'）：{e}", spec.name);
+        if defs.iter().any(|d| d.name == spec.name) {
+            return Err(ctx("法术名重复（加载期显式拒绝）".to_string()));
+        }
+        if !(0.0..=180.0).contains(&spec.spread_deg) {
+            return Err(ctx(format!("spread_deg 必须落在 [0, 180]（散布是双边的），实际 {}", spec.spread_deg)));
+        }
+        let kind = match &spec.kind {
+            SpellKindSpec::Bolt { damage, knockback } => SpellKind::Bolt {
+                damage_milli: quantize_milli(*damage).map_err(|e| ctx(format!("damage 非法：{e}")))?,
+                knockback: quantize_fx(*knockback).map_err(|e| ctx(format!("knockback 非法：{e}")))?,
+            },
+            SpellKindSpec::Blast { power, radius, max_durability } => {
+                SpellKind::Blast { power: *power, radius: *radius, max_durability: *max_durability }
+            }
+            SpellKindSpec::Spray { material, count, speed, jitter } => SpellKind::Spray {
+                material: table
+                    .id_by_name(material)
+                    .ok_or_else(|| ctx(format!("Spray 引用不存在的材质 '{material}'（加载期显式报错）")))?,
+                count: *count,
+                speed: quantize_fx(*speed).map_err(|e| ctx(format!("Spray.speed 非法：{e}")))?,
+                jitter: quantize_fx(*jitter).map_err(|e| ctx(format!("Spray.jitter 非法：{e}")))?,
+            },
+        };
+        let mut pass_through = 0u8;
+        for name in &spec.pass_through {
+            pass_through |= category_bit(name).map_err(ctx)?;
+        }
+        defs.push(SpellDef {
+            name: spec.name.clone(),
+            kind,
+            mana: quantize_milli(spec.mana).map_err(|e| ctx(format!("mana 非法：{e}")))?,
+            cooldown: spec.cooldown,
+            speed: quantize_fx(spec.speed).map_err(|e| ctx(format!("speed 非法：{e}")))?,
+            life: spec.life,
+            gravity: quantize_fx(spec.gravity).map_err(|e| ctx(format!("gravity 非法：{e}")))?,
+            spread_bam: quantize_bam(spec.spread_deg).map_err(|e| ctx(format!("spread_deg 非法：{e}")))?,
+            grace: spec.grace,
+            dig_power: spec.dig_power,
+            max_durability: spec.max_durability,
+            air_friction: quantize_fx(spec.air_friction).map_err(|e| ctx(format!("air_friction 非法：{e}")))?,
+            liquid_drag: quantize_fx(spec.liquid_drag).map_err(|e| ctx(format!("liquid_drag 非法：{e}")))?,
+            pass_through,
+            displace_liquid: spec.displace_liquid,
+            bounces: spec.bounces,
+            bounce_energy: quantize_fx(spec.bounce_energy).map_err(|e| ctx(format!("bounce_energy 非法：{e}")))?,
+            physics_impulse: quantize_milli(spec.physics_impulse)
+                .map_err(|e| ctx(format!("physics_impulse 非法：{e}")))?,
+            on_lifetime_out_explode: spec.on_lifetime_out_explode,
+        });
+    }
+    Ok((SpellTable::from_defs(defs), fp))
+}
+
 // ---------- 场景文件 ----------
 
 #[derive(Deserialize)]
@@ -843,6 +979,21 @@ pub enum OpSpec {
         #[serde(default)]
         angle_deg: i16,
     },
+    /// `Op::SpawnCreature` 的 RON 表面形式（M4 spec §3.6/Task 5 brief Step 8）：
+    /// `template` 是 `CreatureTable` 里的**原始下标**，不是名字——`CreatureTpl`
+    /// 本身不携带 `name` 字段（`load_creatures` 解析时就把 RON 的 `name` 丢了，
+    /// 只用来生成错误信息），生产内容目前只有一个模板（`data/creatures.ron`
+    /// 的 "player"，下标 0），给它加一层名字索引是本 Task 范围外的翻案；
+    /// `loadout` 写法术名列表，加载期经 `SpellTable::id_by_name` 解析成 id
+    /// 数组，长度不足的槽位补 `SPELL_NONE`。
+    SpawnCreature {
+        x: i32,
+        y: i32,
+        template: u8,
+        team: u8,
+        controller: u8,
+        loadout: Vec<String>,
+    },
 }
 
 /// 场景 RON 里的十进制小数 → Q16.16 定点（`Fx`），**round**（非截断）语义：
@@ -941,7 +1092,10 @@ pub enum ScheduleKind {
     Every { from: u64, until: u64, step: u64 },
 }
 
-fn resolve_op(spec: &OpSpec, table: &MaterialTable) -> Result<Op, String> {
+/// `spells`：`OpSpec::SpawnCreature.loadout` 按名解析要用（M4 Task 5）。
+/// 其余变体不读它——`table`（材质表）自 M0 起就以同样的方式对全部变体
+/// 共享传入，`spells` 是同一先例的延伸，不为它单独拆一个函数。
+fn resolve_op(spec: &OpSpec, table: &MaterialTable, spells: &SpellTable) -> Result<Op, String> {
     let id = |name: &str| {
         table.id_by_name(name).ok_or_else(|| format!("场景引用未知材料 '{name}'"))
     };
@@ -1019,6 +1173,30 @@ fn resolve_op(spec: &OpSpec, table: &MaterialTable) -> Result<Op, String> {
             }
             Op::SpawnBody { material: mid, x: *x, y: *y, w: *w, h: *h, angle_deg: *angle_deg }
         }
+        OpSpec::SpawnCreature { x, y, template, team, controller, loadout } => {
+            // team == 255 是 owner_team 查询失败的哨兵（`creature.rs::
+            // Creatures::first_hit_at` 文档："用一个不等于任何真实 team 的
+            // 哨兵顶上"）——场景配置一个真实 team 撞上这个值，会让"无归属
+            // 弹体"与这个 team 的生物错误免疫，故加载期显式拒绝（Task 4
+            // 评审遗留项）。
+            if *team == 255 {
+                return Err(
+                    "SpawnCreature.team 不得为 255（255 是 owner_team 查询失败的哨兵，\
+                     撞上会让无归属弹体对这个 team 误判为同队，见 creature.rs::first_hit_at 文档）"
+                        .to_string(),
+                );
+            }
+            if loadout.len() > MAX_SLOTS {
+                return Err(format!("SpawnCreature.loadout 长度 {} 超过 MAX_SLOTS={MAX_SLOTS}", loadout.len()));
+            }
+            let mut resolved = [SPELL_NONE; MAX_SLOTS];
+            for (i, name) in loadout.iter().enumerate() {
+                resolved[i] = spells
+                    .id_by_name(name)
+                    .ok_or_else(|| format!("SpawnCreature.loadout 引用不存在的法术 '{name}'"))?;
+            }
+            Op::SpawnCreature { x: *x, y: *y, template: *template, team: *team, controller: *controller, loadout: resolved }
+        }
     })
 }
 
@@ -1048,7 +1226,7 @@ fn fold_fx_fields<'a>(ops: impl Iterator<Item = &'a Op>) -> u64 {
     h.digest()
 }
 
-pub fn load_scenario(path: &str, table: &MaterialTable) -> Result<Scenario, String> {
+pub fn load_scenario(path: &str, table: &MaterialTable, spells: &SpellTable) -> Result<Scenario, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("读 {path} 失败：{e}"))?;
     let source_fp = xxh3_64(&normalize_for_fingerprint(&bytes));
     let text = String::from_utf8(bytes).map_err(|e| format!("{path} 不是 UTF-8：{e}"))?;
@@ -1065,7 +1243,7 @@ pub fn load_scenario(path: &str, table: &MaterialTable) -> Result<Scenario, Stri
     setup.extend(
         file.setup
             .iter()
-            .map(|s| resolve_op(s, table))
+            .map(|s| resolve_op(s, table, spells))
             .collect::<Result<Vec<_>, _>>()?,
     );
     let script = file
@@ -1073,10 +1251,10 @@ pub fn load_scenario(path: &str, table: &MaterialTable) -> Result<Scenario, Stri
         .iter()
         .map(|e| {
             Ok(match e {
-                ScriptEntry::At { tick, op } => (ScheduleKind::At(*tick), resolve_op(op, table)?),
+                ScriptEntry::At { tick, op } => (ScheduleKind::At(*tick), resolve_op(op, table, spells)?),
                 ScriptEntry::Every { from, until, step, op } => (
                     ScheduleKind::Every { from: *from, until: *until, step: (*step).max(1) },
-                    resolve_op(op, table)?,
+                    resolve_op(op, table, spells)?,
                 ),
             })
         })
@@ -1211,7 +1389,7 @@ mod tests {
     fn resolve_op_explode_passes_integers_through_unquantized() {
         let t = table_with_water();
         let spec = OpSpec::Explode { x: 100, y: 50, r: 12, power: 40, max_durability: 10 };
-        let op = resolve_op(&spec, &t).unwrap();
+        let op = resolve_op(&spec, &t, &SpellTable::empty()).unwrap();
         match op {
             Op::Explode { x, y, r, power, max_durability } => {
                 assert_eq!((x, y, r, power, max_durability), (100, 50, 12, 40, 10));
@@ -1226,11 +1404,11 @@ mod tests {
     fn resolve_op_rejects_explode_radius_out_of_range() {
         let t = table_with_water();
         assert!(
-            resolve_op(&OpSpec::Explode { x: 0, y: 0, r: 0, power: 10, max_durability: 10 }, &t).is_err(),
+            resolve_op(&OpSpec::Explode { x: 0, y: 0, r: 0, power: 10, max_durability: 10 }, &t, &SpellTable::empty()).is_err(),
             "r=0（低于下限 1）必须被拒绝"
         );
         assert!(
-            resolve_op(&OpSpec::Explode { x: 0, y: 0, r: 32768, power: 10, max_durability: 10 }, &t).is_err(),
+            resolve_op(&OpSpec::Explode { x: 0, y: 0, r: 32768, power: 10, max_durability: 10 }, &t, &SpellTable::empty()).is_err(),
             "r=32768（超出上限 32767）必须被拒绝"
         );
     }
@@ -1239,13 +1417,14 @@ mod tests {
     fn resolve_op_rejects_explode_power_out_of_range() {
         let t = table_with_water();
         assert!(
-            resolve_op(&OpSpec::Explode { x: 0, y: 0, r: 1, power: 0, max_durability: 10 }, &t).is_err(),
+            resolve_op(&OpSpec::Explode { x: 0, y: 0, r: 1, power: 0, max_durability: 10 }, &t, &SpellTable::empty()).is_err(),
             "power=0（低于下限 1）必须被拒绝"
         );
         assert!(
             resolve_op(
                 &OpSpec::Explode { x: 0, y: 0, r: 1, power: i32::MAX as u32 + 1, max_durability: 10 },
-                &t
+                &t,
+                &SpellTable::empty()
             )
             .is_err(),
             "power > i32::MAX（`power as i32` 会静默翻号）必须被拒绝"
@@ -1361,8 +1540,8 @@ mod tests {
             p
         };
         let (pa, pb) = (write("lf", lf), write("crlf", &crlf));
-        let a = load_scenario(pa.to_str().unwrap(), &t).unwrap();
-        let b = load_scenario(pb.to_str().unwrap(), &t).unwrap();
+        let a = load_scenario(pa.to_str().unwrap(), &t, &SpellTable::empty()).unwrap();
+        let b = load_scenario(pb.to_str().unwrap(), &t, &SpellTable::empty()).unwrap();
         std::fs::remove_file(&pa).ok();
         std::fs::remove_file(&pb).ok();
         assert_eq!(a.fingerprint, b.fingerprint, "scenario_fp 必须与行尾无关");
@@ -1540,7 +1719,7 @@ mod tests {
     fn resolve_op_emit_quantizes_all_fx_fields() {
         let t = table_with_water();
         let spec = OpSpec::Emit { material: "water".into(), x: 120.0, y: 8.0, vx: 0.5, vy: 2.0, count: 3, jitter: 0.8 };
-        let op = resolve_op(&spec, &t).unwrap();
+        let op = resolve_op(&spec, &t, &SpellTable::empty()).unwrap();
         match op {
             Op::Emit { material, x, y, vx, vy, count, jitter } => {
                 assert_eq!(material, 2);
@@ -1560,7 +1739,7 @@ mod tests {
         let t = table_with_water();
         let spec =
             OpSpec::Emit { material: "water".into(), x: 0.0, y: 0.0, vx: 0.0, vy: 0.0, count: 1, jitter: -0.1 };
-        assert!(resolve_op(&spec, &t).is_err(), "负 jitter 必须被拒绝");
+        assert!(resolve_op(&spec, &t, &SpellTable::empty()).is_err(), "负 jitter 必须被拒绝");
     }
 
     #[test]
@@ -1568,7 +1747,7 @@ mod tests {
         let t = table_with_water();
         let spec =
             OpSpec::Emit { material: "lava".into(), x: 0.0, y: 0.0, vx: 0.0, vy: 0.0, count: 1, jitter: 0.0 };
-        assert!(resolve_op(&spec, &t).is_err());
+        assert!(resolve_op(&spec, &t, &SpellTable::empty()).is_err());
     }
 
     #[test]
@@ -1578,7 +1757,7 @@ mod tests {
         let over = (MAX_EMIT_JITTER_RAW as f64 + 1.0) / 65536.0;
         let spec =
             OpSpec::Emit { material: "water".into(), x: 0.0, y: 0.0, vx: 0.0, vy: 0.0, count: 1, jitter: over };
-        assert!(resolve_op(&spec, &t).is_err(), "超过 MAX_EMIT_JITTER_RAW 的 jitter 必须被拒绝");
+        assert!(resolve_op(&spec, &t, &SpellTable::empty()).is_err(), "超过 MAX_EMIT_JITTER_RAW 的 jitter 必须被拒绝");
     }
 
     #[test]
@@ -1587,7 +1766,7 @@ mod tests {
         let at_bound = MAX_EMIT_JITTER_RAW as f64 / 65536.0;
         let spec =
             OpSpec::Emit { material: "water".into(), x: 0.0, y: 0.0, vx: 0.0, vy: 0.0, count: 1, jitter: at_bound };
-        let op = resolve_op(&spec, &t).unwrap();
+        let op = resolve_op(&spec, &t, &SpellTable::empty()).unwrap();
         match op {
             Op::Emit { jitter, .. } => assert_eq!(jitter.0, MAX_EMIT_JITTER_RAW),
             other => panic!("期望 Op::Emit，实际 {other:?}"),
@@ -1649,8 +1828,8 @@ mod tests {
         let path_a = write_temp_scenario("a", 0.5);
         let path_b = write_temp_scenario("b", 0.6);
 
-        let sc_a = load_scenario(path_a.to_str().unwrap(), &t).unwrap();
-        let sc_b = load_scenario(path_b.to_str().unwrap(), &t).unwrap();
+        let sc_a = load_scenario(path_a.to_str().unwrap(), &t, &SpellTable::empty()).unwrap();
+        let sc_b = load_scenario(path_b.to_str().unwrap(), &t, &SpellTable::empty()).unwrap();
 
         std::fs::remove_file(&path_a).ok();
         std::fs::remove_file(&path_b).ok();
@@ -1672,14 +1851,14 @@ mod tests {
     #[test]
     fn resolve_op_spawn_body_requires_static_and_min_area() {
         let t = table_with_water();
-        let ok = resolve_op(&OpSpec::SpawnBody { material: "wall".into(), x: 10, y: 20, w: 8, h: 4, angle_deg: 30 }, &t).unwrap();
+        let ok = resolve_op(&OpSpec::SpawnBody { material: "wall".into(), x: 10, y: 20, w: 8, h: 4, angle_deg: 30 }, &t, &SpellTable::empty()).unwrap();
         assert!(matches!(ok, Op::SpawnBody { material: 1, x: 10, y: 20, w: 8, h: 4, angle_deg: 30 }));
         assert!(
-            resolve_op(&OpSpec::SpawnBody { material: "water".into(), x: 0, y: 0, w: 8, h: 4, angle_deg: 0 }, &t).is_err(),
+            resolve_op(&OpSpec::SpawnBody { material: "water".into(), x: 0, y: 0, w: 8, h: 4, angle_deg: 0 }, &t, &SpellTable::empty()).is_err(),
             "液体不能当刚体材质"
         );
         assert!(
-            resolve_op(&OpSpec::SpawnBody { material: "wall".into(), x: 0, y: 0, w: 3, h: 3, angle_deg: 0 }, &t).is_err(),
+            resolve_op(&OpSpec::SpawnBody { material: "wall".into(), x: 0, y: 0, w: 3, h: 3, angle_deg: 0 }, &t, &SpellTable::empty()).is_err(),
             "面积 9 < MIN_BODY_PIXELS 必须拒绝"
         );
     }
@@ -1758,7 +1937,7 @@ mod tests {
              setup:[Brush(material:\"water\",x:5,y:5,r:0)])"
         );
         let path = write_temp_scenario_text("prefix", &ron);
-        let sc = load_scenario(path.to_str().unwrap(), &t).unwrap();
+        let sc = load_scenario(path.to_str().unwrap(), &t, &SpellTable::empty()).unwrap();
         std::fs::remove_file(&path).ok();
         assert_eq!(sc.setup.len(), 3, "两条 grid Fill 段 + 一条 setup Brush");
         assert!(matches!(sc.setup[0], Op::Fill { material: 1, x0: 0, y0: 1, x1: 1, y1: 1 }), "{:?}", sc.setup[0]);
@@ -1779,7 +1958,7 @@ mod tests {
             ("rows", mk("'.':\"air\"", 63), "行数 ≠ 高度必须报错"),
         ] {
             let path = write_temp_scenario_text(tag, &body);
-            let r = load_scenario(path.to_str().unwrap(), &t);
+            let r = load_scenario(path.to_str().unwrap(), &t, &SpellTable::empty());
             std::fs::remove_file(&path).ok();
             assert!(r.is_err(), "{why}");
         }
@@ -1844,7 +2023,7 @@ mod tests {
         let ron = "Scenario(name:\"i\",world:(1,1),seed:0,ticks:10,\
              inputs:[(tick:5,frames:[(left:true)]),(tick:5,frames:[(right:true)])])";
         let path = write_temp_scenario_text("inputs-order", ron);
-        let r = load_scenario(path.to_str().unwrap(), &t);
+        let r = load_scenario(path.to_str().unwrap(), &t, &SpellTable::empty());
         std::fs::remove_file(&path).ok();
         assert!(r.is_err(), "tick 非严格递增必须报错");
     }
@@ -1855,7 +2034,7 @@ mod tests {
         let ron = "Scenario(name:\"i\",world:(1,1),seed:0,ticks:10,\
              inputs:[(tick:0,frames:[(right:true,aim_deg:90.0,slot:1)])])";
         let path = write_temp_scenario_text("inputs-parse", ron);
-        let sc = load_scenario(path.to_str().unwrap(), &t).unwrap();
+        let sc = load_scenario(path.to_str().unwrap(), &t, &SpellTable::empty()).unwrap();
         std::fs::remove_file(&path).ok();
         let f = sc.inputs_for_tick(0)[0];
         assert_eq!(f.buttons, BTN_RIGHT);
@@ -1972,5 +2151,254 @@ mod tests {
         assert_eq!(quantize_milli_per_tick(3.0).unwrap(), 50, "round(3.0*1000/60)");
         assert!(quantize_milli_per_tick(-1.0).is_err());
         assert!(quantize_milli_per_tick(f64::INFINITY).is_err());
+    }
+
+    // ==================== load_spells（M4 Task 5，spec §3.4）====================
+
+    fn table_with_oil() -> MaterialTable {
+        MaterialTable::new(vec![
+            MaterialDef::base(0, "air", Category::Static, 0),
+            MaterialDef::base(1, "wall", Category::Static, 100),
+            MaterialDef::base(2, "oil", Category::Liquid, 12),
+        ])
+        .unwrap()
+    }
+
+    fn write_temp_spells(tag: &str, body: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("sand_harness_test_spells_{}_{tag}.ron", std::process::id()));
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    /// 与 `data/spells.ron` 同形状的最小样本：一个 `Bolt`、一个 `Blast`、
+    /// 一个 `Spray`（材质名 "oil"，须配 [`table_with_oil`]）。
+    const SPELLS_RON: &str = r#"(
+        spells: [
+            (
+                name: "spark_bolt",
+                kind: Bolt( damage: 5.0, knockback: 2.0 ),
+                mana: 10.0, cooldown: 12,
+                speed: 8.0, life: 120, gravity: 0.0, spread_deg: 2.0, grace: 4,
+                dig_power: 0, max_durability: 10,
+                air_friction: 1.0, liquid_drag: 0.9, pass_through: ["gas"],
+                displace_liquid: false,
+                bounces: 0, bounce_energy: 0.5,
+                physics_impulse: 0.0,
+                on_lifetime_out_explode: false,
+            ),
+            (
+                name: "bomb",
+                kind: Blast( power: 1200, radius: 12, max_durability: 10 ),
+                mana: 35.0, cooldown: 60,
+                speed: 5.0, life: 180, gravity: 0.25, spread_deg: 0.0, grace: 20,
+                dig_power: 0, max_durability: 10,
+                air_friction: 1.0, liquid_drag: 0.8, pass_through: ["gas", "liquid"],
+                displace_liquid: true,
+                bounces: 2, bounce_energy: 0.4,
+                physics_impulse: 0.0,
+                on_lifetime_out_explode: true,
+            ),
+            (
+                name: "oil_spray",
+                kind: Spray( material: "oil", count: 12, speed: 4.0, jitter: 0.6 ),
+                mana: 8.0, cooldown: 6,
+                speed: 0.0, life: 0, gravity: 0.0, spread_deg: 0.0, grace: 0,
+                dig_power: 0, max_durability: 10,
+                air_friction: 1.0, liquid_drag: 1.0, pass_through: [],
+                displace_liquid: false,
+                bounces: 0, bounce_energy: 0.0,
+                physics_impulse: 0.0,
+                on_lifetime_out_explode: false,
+            ),
+        ],
+    )"#;
+
+    #[test]
+    fn load_spells_parses_data_spells_ron_shape_and_quantizes() {
+        let t = table_with_oil();
+        let path = write_temp_spells("shape", SPELLS_RON);
+        let (table, fp) = load_spells(path.to_str().unwrap(), &t).unwrap();
+        std::fs::remove_file(&path).ok();
+        assert_ne!(fp, 0, "非空文件指纹不应为 0");
+
+        let bolt = table.get(table.id_by_name("spark_bolt").unwrap());
+        assert_eq!(bolt.mana, 10_000, "mana 千分位量化");
+        assert_eq!(bolt.cooldown, 12);
+        assert_eq!(bolt.speed, quantize_fx(8.0).unwrap());
+        assert_eq!(bolt.spread_bam, quantize_bam(2.0).unwrap());
+        match bolt.kind {
+            SpellKind::Bolt { damage_milli, knockback } => {
+                assert_eq!(damage_milli, 5_000, "damage 千分位量化");
+                assert_eq!(knockback, quantize_fx(2.0).unwrap(), "knockback 走 quantize_fx（Fx 速度量纲）");
+            }
+            _ => panic!("spark_bolt 必须解析成 Bolt"),
+        }
+        assert_eq!(bolt.pass_through, Category::Gas.bit(), "pass_through 只声明了 gas");
+
+        let bomb = table.get(table.id_by_name("bomb").unwrap());
+        match bomb.kind {
+            SpellKind::Blast { power, radius, max_durability } => {
+                assert_eq!(power, 1200);
+                assert_eq!(radius, 12);
+                assert_eq!(max_durability, 10);
+            }
+            _ => panic!("bomb 必须解析成 Blast"),
+        }
+        assert_eq!(
+            bomb.pass_through,
+            Category::Gas.bit() | Category::Liquid.bit(),
+            "pass_through 声明了 gas 与 liquid 两项，掩码应是两位或"
+        );
+
+        let spray = table.get(table.id_by_name("oil_spray").unwrap());
+        let oil = t.id_by_name("oil").unwrap();
+        match spray.kind {
+            SpellKind::Spray { material, count, speed, jitter } => {
+                assert_eq!(material, oil, "Spray.material 须解析成材质 id");
+                assert_eq!(count, 12);
+                assert_eq!(speed, quantize_fx(4.0).unwrap());
+                assert_eq!(jitter, quantize_fx(0.6).unwrap());
+            }
+            _ => panic!("oil_spray 必须解析成 Spray"),
+        }
+    }
+
+    #[test]
+    fn load_spells_rejects_duplicate_names() {
+        let t = table_with_oil();
+        let body = r#"(spells: [
+            (name: "dup", kind: Bolt(damage: 1.0, knockback: 0.0), mana: 1.0, cooldown: 1,
+             speed: 1.0, life: 1, gravity: 0.0, spread_deg: 0.0, grace: 0,
+             dig_power: 0, max_durability: 0, air_friction: 1.0, liquid_drag: 1.0,
+             pass_through: [], displace_liquid: false, bounces: 0, bounce_energy: 0.0,
+             physics_impulse: 0.0, on_lifetime_out_explode: false),
+            (name: "dup", kind: Bolt(damage: 2.0, knockback: 0.0), mana: 1.0, cooldown: 1,
+             speed: 1.0, life: 1, gravity: 0.0, spread_deg: 0.0, grace: 0,
+             dig_power: 0, max_durability: 0, air_friction: 1.0, liquid_drag: 1.0,
+             pass_through: [], displace_liquid: false, bounces: 0, bounce_energy: 0.0,
+             physics_impulse: 0.0, on_lifetime_out_explode: false),
+        ])"#;
+        let path = write_temp_spells("dup_name", body);
+        let r = load_spells(path.to_str().unwrap(), &t);
+        std::fs::remove_file(&path).ok();
+        assert!(r.is_err(), "重复法术名必须在加载期报错");
+    }
+
+    #[test]
+    fn load_spells_rejects_spread_deg_out_of_range() {
+        let t = table_with_oil();
+        let body = r#"(spells: [
+            (name: "wide", kind: Bolt(damage: 1.0, knockback: 0.0), mana: 1.0, cooldown: 1,
+             speed: 1.0, life: 1, gravity: 0.0, spread_deg: 181.0, grace: 0,
+             dig_power: 0, max_durability: 0, air_friction: 1.0, liquid_drag: 1.0,
+             pass_through: [], displace_liquid: false, bounces: 0, bounce_energy: 0.0,
+             physics_impulse: 0.0, on_lifetime_out_explode: false),
+        ])"#;
+        let path = write_temp_spells("spread_oob", body);
+        let r = load_spells(path.to_str().unwrap(), &t);
+        std::fs::remove_file(&path).ok();
+        assert!(r.is_err(), "spread_deg > 180 必须在加载期报错");
+    }
+
+    #[test]
+    fn load_spells_rejects_unknown_pass_through_category() {
+        let t = table_with_oil();
+        let body = r#"(spells: [
+            (name: "bad_cat", kind: Bolt(damage: 1.0, knockback: 0.0), mana: 1.0, cooldown: 1,
+             speed: 1.0, life: 1, gravity: 0.0, spread_deg: 0.0, grace: 0,
+             dig_power: 0, max_durability: 0, air_friction: 1.0, liquid_drag: 1.0,
+             pass_through: ["plasma"], displace_liquid: false, bounces: 0, bounce_energy: 0.0,
+             physics_impulse: 0.0, on_lifetime_out_explode: false),
+        ])"#;
+        let path = write_temp_spells("bad_cat", body);
+        let r = load_spells(path.to_str().unwrap(), &t);
+        std::fs::remove_file(&path).ok();
+        assert!(r.is_err(), "未知 Category 名必须在加载期报错");
+    }
+
+    #[test]
+    fn load_spells_rejects_unknown_spray_material() {
+        let t = table_with_oil();
+        let body = r#"(spells: [
+            (name: "bad_mat", kind: Spray(material: "lava", count: 1, speed: 1.0, jitter: 0.0),
+             mana: 1.0, cooldown: 1, speed: 0.0, life: 0, gravity: 0.0, spread_deg: 0.0, grace: 0,
+             dig_power: 0, max_durability: 0, air_friction: 1.0, liquid_drag: 1.0,
+             pass_through: [], displace_liquid: false, bounces: 0, bounce_energy: 0.0,
+             physics_impulse: 0.0, on_lifetime_out_explode: false),
+        ])"#;
+        let path = write_temp_spells("bad_mat", body);
+        let r = load_spells(path.to_str().unwrap(), &t);
+        std::fs::remove_file(&path).ok();
+        assert!(r.is_err(), "Spray 引用不存在的材质必须在加载期报错");
+    }
+
+    // ==================== OpSpec::SpawnCreature（M4 Task 5）====================
+
+    fn spells_with_one() -> SpellTable {
+        SpellTable::from_defs(vec![SpellDef::test_bolt(
+            "spark_bolt",
+            5_000,
+            Fx::from_int(2),
+            Fx::from_int(8),
+            120,
+            4,
+        )])
+    }
+
+    #[test]
+    fn resolve_op_spawn_creature_rejects_team_255() {
+        let t = table_with_water();
+        let spec = OpSpec::SpawnCreature { x: 0, y: 0, template: 0, team: 255, controller: 0, loadout: vec![] };
+        assert!(resolve_op(&spec, &t, &spells_with_one()).is_err(), "team=255 撞哨兵必须在加载期报错");
+    }
+
+    #[test]
+    fn resolve_op_spawn_creature_resolves_loadout_names_to_spell_ids() {
+        let t = table_with_water();
+        let spells = spells_with_one();
+        let spec = OpSpec::SpawnCreature {
+            x: 5,
+            y: 5,
+            template: 0,
+            team: 0,
+            controller: 0,
+            loadout: vec!["spark_bolt".to_string()],
+        };
+        let op = resolve_op(&spec, &t, &spells).unwrap();
+        match op {
+            Op::SpawnCreature { loadout, .. } => {
+                assert_eq!(loadout[0], spells.id_by_name("spark_bolt").unwrap());
+                assert_eq!(loadout[1], SPELL_NONE, "未填的槽位补 SPELL_NONE");
+            }
+            _ => panic!("必须解析成 Op::SpawnCreature"),
+        }
+    }
+
+    #[test]
+    fn resolve_op_spawn_creature_rejects_unknown_spell_in_loadout() {
+        let t = table_with_water();
+        let spec = OpSpec::SpawnCreature {
+            x: 0,
+            y: 0,
+            template: 0,
+            team: 0,
+            controller: 0,
+            loadout: vec!["no_such_spell".to_string()],
+        };
+        assert!(resolve_op(&spec, &t, &spells_with_one()).is_err(), "loadout 引用不存在的法术必须报错");
+    }
+
+    #[test]
+    fn resolve_op_spawn_creature_rejects_loadout_longer_than_max_slots() {
+        let t = table_with_water();
+        let spec = OpSpec::SpawnCreature {
+            x: 0,
+            y: 0,
+            template: 0,
+            team: 0,
+            controller: 0,
+            loadout: vec!["spark_bolt".to_string(); MAX_SLOTS + 1],
+        };
+        assert!(resolve_op(&spec, &t, &spells_with_one()).is_err(), "loadout 超过 MAX_SLOTS 必须报错");
     }
 }

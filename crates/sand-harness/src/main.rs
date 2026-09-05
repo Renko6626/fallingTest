@@ -9,18 +9,26 @@
 //!
 //! `--grid-only`：哈希流用网格哈希树根（跳过粒子层折叠），M1 golden 重录取证专用
 //! （spec §9）——证明粒子层并入前后 Layer G 逐 tick 哈希位级一致。
+//!
+//! `--creatures PATH` / `--spells PATH`：生物模板表 / 法术表路径，缺省
+//! `data/creatures.ron` / `data/spells.ron`（M4 Task 5 起接线，与
+//! `--materials`/`--reactions` 同体例）。
 
 use std::process::ExitCode;
 
 use sand_harness::render::{render_gif, RenderOpts};
 use sand_harness::runner;
-use sand_harness::scenario::{default_legend, load_materials, load_reactions, load_scenario, rle_encode_row};
+use sand_harness::scenario::{
+    default_legend, load_creatures, load_materials, load_reactions, load_scenario, load_spells, rle_encode_row,
+};
 
 struct Args {
     cmd: String,
     scenario: String,
     materials: String,
     reactions: String,
+    creatures: String,
+    spells: String,
     ticks: Option<u64>,
     threads: usize,
     golden: Option<String>,
@@ -45,6 +53,8 @@ fn parse_args() -> Result<Args, String> {
         scenario,
         materials: "data/materials.ron".into(),
         reactions: "data/reactions.ron".into(),
+        creatures: "data/creatures.ron".into(),
+        spells: "data/spells.ron".into(),
         ticks: None,
         threads: std::thread::available_parallelism().map(|n| n.get().min(8)).unwrap_or(4),
         golden: None,
@@ -63,6 +73,8 @@ fn parse_args() -> Result<Args, String> {
         match flag.as_str() {
             "--materials" => a.materials = val()?,
             "--reactions" => a.reactions = val()?,
+            "--creatures" => a.creatures = val()?,
+            "--spells" => a.spells = val()?,
             "--ticks" => a.ticks = Some(val()?.parse().map_err(|e| format!("--ticks: {e}"))?),
             "--threads" => a.threads = val()?.parse().map_err(|e| format!("--threads: {e}"))?,
             "--golden" => a.golden = Some(val()?),
@@ -124,13 +136,14 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
     let (reactions, reactions_fp) = load_reactions(&a.reactions, &table)?;
-    let sc = load_scenario(&a.scenario, &table)?;
+    // M4 起生物/法术表真实加载（Task 5 接线，见 runner::Tables/Fingerprints
+    // 文档："Task 1–4 期间恒空、指纹恒 0，Task 5 起两者随 data/creatures.ron
+    // /data/spells.ron 真实加载"）。`load_scenario` 需要 `spell_table`——
+    // `OpSpec::SpawnCreature.loadout` 按名解析法术 id——故必须先于它加载。
+    let (creature_table, creatures_fp) = load_creatures(&a.creatures, &table)?;
+    let (spell_table, spells_fp) = load_spells(&a.spells, &table)?;
+    let sc = load_scenario(&a.scenario, &table, &spell_table)?;
     let ticks = a.ticks.unwrap_or(sc.ticks);
-    // M4 起生物/法术表随 Tables 同行——Task 5 之前恒空、指纹恒 0（sand-harness
-    // 还不读 creatures.ron/spells.ron，Task 5 起改为真加载，见 runner::Tables
-    // 文档）。
-    let creature_table = sand_core::CreatureTable::empty();
-    let spell_table = sand_core::SpellTable::empty();
     let tables = runner::Tables {
         materials: &table,
         reactions: &reactions,
@@ -155,14 +168,11 @@ fn run() -> Result<(), String> {
                 runner::run(
                     &sc,
                     &tables,
-                    // creatures/spells 恒 0：Task 1 起两张表恒空，指纹不进
-                    // golden 输出行（Task 5 接真表时才连指纹一起打印，见
-                    // `runner::Fingerprints` 文档）。
                     runner::Fingerprints {
                         materials: materials_fp,
                         reactions: reactions_fp,
-                        creatures: 0,
-                        spells: 0,
+                        creatures: creatures_fp,
+                        spells: spells_fp,
                     },
                     a.threads,
                     a.scan,

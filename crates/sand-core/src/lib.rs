@@ -161,9 +161,11 @@ impl Sim {
 
     /// 压入一个弹体生成请求，直接落地（不像 `queue_spawn` 那样过队列——弹体
     /// 没有粒子池那种"本 tick 统一 drain"的语义要求，`Projectiles::spawn`
-    /// 本身就是幂等的确定性写入）。`pub`，文档标注供测试与未来的诊断工具；
-    /// 生产路径是 Task 5 的施法结算，届时会调用同一个 `Projectiles::spawn`
-    /// ——测试注入与产品代码走同一入口，不是另开一条平行通路。
+    /// 本身就是幂等的确定性写入）。`pub`，文档标注供测试与诊断工具；生产
+    /// 路径是 `spell::cast_all`（M4 Task 5 起），它直接调用同一个
+    /// `Projectiles::spawn`（不经本方法，因为它已经持有 `&mut Creatures`/
+    /// `&mut Projectiles`，没有理由再绕一层 `Sim`）——测试注入与产品代码
+    /// 走同一底层入口，不是另开一条平行通路。
     ///
     /// `life`/`energy`/`grace`/`bounces` 四个字段从 `spell_table` 取（法术
     /// 定义了一颗弹该活多久、能打穿多硬的东西、防自伤宽限多长、能弹几次），
@@ -206,7 +208,7 @@ impl Sim {
 
     /// `inputs`：本 tick 生效的玩家意图，按 controller 序号索引（spec §3.1）。
     /// Task 2 起接线其中的 2a+2b（输入应用 + 生物运动学）；Task 4 起接线 2c
-    /// （弹体积分）；2d 施法结算留 Task 5。
+    /// （弹体积分）；Task 5 起接线 2d（施法结算）。
     pub fn step(&mut self, ops: &[Op], inputs: &[InputFrame]) {
         let tick = self.world.tick;
         let stamp = (tick % 256) as u8;
@@ -222,7 +224,7 @@ impl Sim {
         //    游泳、材质接触伤害与 HP 墓碑（spec §4.3–§4.5），复用 ops 阶段同一个
         //    `spawn_queue`，本 tick 粒子相（第 5 步）按追加序统一 drain。
         //    2c 弹体积分（Task 4 起接线）：读本 tick 已移动的生物位置（spec §1.1
-        //    "弹体命中的是生物本 tick 移动后的位置"）。2d 施法结算留 Task 5。
+        //    "弹体命中的是生物本 tick 移动后的位置"）。
         self.creatures.step_kinematics(&self.world, &self.table, &self.creature_table, inputs);
         self.creatures.step_world_interaction(
             &mut self.world,
@@ -232,7 +234,30 @@ impl Sim {
             stamp,
             &mut self.spawn_queue,
         );
-        self.projectiles.advance(&self.world, &self.table, &self.spell_table, &mut self.creatures);
+        self.projectiles.advance(
+            &mut self.world,
+            &self.table,
+            &self.spell_table,
+            &mut self.creatures,
+            &mut self.bodies,
+            stamp,
+            fseed,
+            &mut self.spawn_queue,
+        );
+        // 2d 施法结算（Task 5 起接线，spec §6）：读本 tick 已积分完的弹体池
+        // （新弹体本 tick 不积分，下 tick 起飞——与 2c 的时序天然一致，不需要
+        // 额外规则）。不碰 world/table/bodies（spell::cast_all 文档：`Bolt`/
+        // `Blast` 只落弹体，命中结算留在 2c 的 `Projectiles::advance` 里；
+        // `Spray` 只读发射点、写 spawn_queue）。
+        spell::cast_all(
+            &mut self.creatures,
+            &mut self.projectiles,
+            &self.spell_table,
+            &self.creature_table,
+            inputs,
+            fseed,
+            &mut self.spawn_queue,
+        );
         // 3. 刚体相（M3 spec §2）：物理步进 → 变换变化者反盖章/盖章（被盖液体/粉末
         //    脱格进 spawn_queue，与 ops 的生成请求同队列、追加序即入队序）。
         //    地形（B′ 按 chunk 缓存）与浮力（水面线阿基米德）在步进前施加。
@@ -339,9 +364,19 @@ impl Sim {
         &self.creature_table
     }
 
-    /// 法术表只读视图（加载期构造，Task 5 前恒空）。
+    /// 法术表只读视图（加载期构造，Task 5 起可非空）。
     pub fn spell_table(&self) -> &spell::SpellTable {
         &self.spell_table
+    }
+
+    /// 测试专用：按名字查法术 id（`SpellTable::id_by_name` 的便捷包装，
+    /// brief Interfaces 一节点名）。查不到即测试自身配置错误，直接 panic
+    /// ——与 `CreatureTable::get`/`SpellTable::get` 越界即 panic 同一体例，
+    /// 生产路径不该依赖名字查找。
+    pub fn spell_id(&self, name: &str) -> u8 {
+        self.spell_table
+            .id_by_name(name)
+            .unwrap_or_else(|| panic!("测试法术表没有名为 '{name}' 的法术"))
     }
 
     /// 生物表只读视图（M4 Task 2）：行为测试经此读运动学结果。

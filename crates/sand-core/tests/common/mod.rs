@@ -1,8 +1,10 @@
 //! 测试公用：内联材料表（core 测试不读 data/，保持 crate 自包含）。
 
 use sand_core::{
-    input::MAX_SLOTS, Category, CreatureTable, InitConfig, MaterialDef, MaterialTable, Op, ReactionTable, ScanMode,
-    Sim, SpellTable,
+    input::MAX_SLOTS,
+    spell::{SpellDef, SpellKind, SPELL_NONE},
+    Category, CreatureTable, Fx, InitConfig, MaterialDef, MaterialTable, Op, ReactionTable, ScanMode, Sim,
+    SpellTable,
 };
 
 pub const SAND: u8 = 2;
@@ -143,6 +145,23 @@ pub fn sim(width_chunks: usize, height_chunks: usize, seed: u64, threads: usize,
 /// `rng_u32(..) % 255 >= 0` 恒真、`gas_step` 直接原地不动（`rules.rs::gas_step`
 /// 文档），把"接触格数"钉死成 `Op::Fill` 显式填的那几格，测试因此是结构性
 /// 确定的，不是"多数情况下大概率不撞"。
+/// M4 Task 5 追加 `oil`（id 6，Liquid）、`stone`（id 7，Static，durability
+/// 8）、`stone_debris`（id 8，Powder）——**追加在表尾**，不挪动既有 id
+/// （`FIRE = 5` 的硬编码耦合、`CreatureTable::default_player()` 的
+/// `damage_from` 都锚定在旧 id 上，插进中间会全部错位）。`oil` 供
+/// `oil_spray` 测试法术（`test_spell_table`）的 `Spray::material` 用；
+/// `stone` 供 `blast_spell_explodes_on_impact_and_carves_terrain` 当
+/// "炸得动的墙"用（`durability: 8` 与 `data/materials.ron` 的生产值同
+/// 口径，`bomb` 测试法术的 `max_durability: 10` 能打穿它）。
+///
+/// **`stone.debris_to` 必须显式指向 `stone_debris`，不能吃 `MaterialDef::
+/// base` 的缺省（缺省 = 自身）**：这条是 TDD 阶段实测撞见的——`stone`
+/// 若缺省"碎屑即自身"，`apply_explode` 摧毁的格子会以材质 `stone` 的粒子
+/// 形态脱格，重力落回原地/邻近格后照样重新凝固成 `stone`，90 tick 后
+/// `world.count_material(stone)` 净变化几乎为零，把"确实炸穿了"的断言
+/// 蒙混过去（第一版实现正是这样悄悄失败：中心格瞬间被炸空，但整体计数
+/// 未变）。生产表 `data/materials.ron` 本就把 `stone` 的碎屑指到独立的
+/// `stone_debris`（Powder），这里对齐同一约定，而不是走缺省值。
 #[allow(dead_code)]
 pub fn materials() -> MaterialTable {
     let def = |id: u8, name: &str, category: Category, density: u16, hp: u32| MaterialDef {
@@ -161,6 +180,14 @@ pub fn materials() -> MaterialTable {
             rise_chance: 0,
             ..MaterialDef::base(FIRE, "fire", Category::Gas, 1)
         },
+        def(6, "oil", Category::Liquid, 12, 1),
+        MaterialDef {
+            hp: 6,
+            durability: 8,
+            debris_to: 8, // 显式指向 stone_debris（见函数文档"必须显式指向"那段）。
+            ..MaterialDef::base(7, "stone", Category::Static, 40)
+        },
+        def(8, "stone_debris", Category::Powder, 40, 2),
     ])
     .unwrap()
 }
@@ -243,4 +270,153 @@ pub fn arena_with_two_creatures(spells: SpellTable) -> Sim {
 #[allow(dead_code)]
 pub fn arena_with_two_creatures_same_team(spells: SpellTable) -> Sim {
     two_creature_arena(spells, 0, 0)
+}
+
+// ==================== M4 Task 5：施法测试专用地与法术表（R11） ====================
+
+/// 施法测试专用法术表——**本 Task 自建，不依赖 `data/spells.ron`**（core
+/// 测试不读 `data/`，文件头注）。四条与 `data/spells.ron` 同名，但两处
+/// **刻意偏离**生产数值：
+///
+/// 1. **全部 `spread_bam = 0`**（`spark_bolt` 生产值 `spread_deg: 2.0`）：
+///    `aim_determines_launch_direction` 要求出射方向对瞄准角**精确**相等
+///    （断言 `vx == Fx::ZERO`），非零散布骰会偶发引入偏转，与"测试必须
+///    结构性确定、不是多数情况下大概率成立"的红线矛盾——同
+///    `common::materials()` 里 `fire.rise_chance` 特意取 0 而非生产的 0.5
+///    同一先例（该函数文档已有说明）。
+/// 2. 其余字段仅取"够测"的量级（`max_durability`/`air_friction`/
+///    `liquid_drag` 等 Task 6 才消费的字段随手给个合理默认），不追求与
+///    `data/spells.ron` 逐位一致。
+#[allow(dead_code)]
+fn test_spell_table(table: &MaterialTable) -> SpellTable {
+    let oil = table.id_by_name("oil").unwrap();
+    SpellTable::from_defs(vec![
+        SpellDef {
+            name: "spark_bolt".to_string(),
+            kind: SpellKind::Bolt { damage_milli: 5_000, knockback: Fx::from_int(2) },
+            mana: 10_000,
+            cooldown: 12,
+            speed: Fx::from_int(8),
+            life: 120,
+            gravity: Fx::ZERO,
+            spread_bam: 0, // 见函数文档第 1 条——刻意不同于生产值 2.0°。
+            grace: 4,
+            dig_power: 0,
+            max_durability: 10,
+            air_friction: Fx::from_int(1),
+            liquid_drag: Fx::from_ratio(9, 10),
+            pass_through: 0,
+            displace_liquid: false,
+            bounces: 0,
+            bounce_energy: Fx::from_ratio(5, 10),
+            physics_impulse: 0,
+            on_lifetime_out_explode: false,
+        },
+        SpellDef {
+            name: "bomb".to_string(),
+            kind: SpellKind::Blast { power: 1200, radius: 12, max_durability: 10 },
+            mana: 35_000,
+            cooldown: 60,
+            speed: Fx::from_int(5),
+            life: 180,
+            gravity: Fx::from_ratio(1, 4),
+            spread_bam: 0,
+            grace: 20,
+            dig_power: 0,
+            max_durability: 10,
+            air_friction: Fx::from_int(1),
+            liquid_drag: Fx::from_ratio(8, 10),
+            pass_through: 0,
+            displace_liquid: true,
+            bounces: 2,
+            bounce_energy: Fx::from_ratio(4, 10),
+            physics_impulse: 0,
+            on_lifetime_out_explode: true,
+        },
+        SpellDef {
+            name: "oil_spray".to_string(),
+            kind: SpellKind::Spray { material: oil, count: 12, speed: Fx::from_int(4), jitter: Fx::from_ratio(6, 10) },
+            mana: 8_000,
+            cooldown: 6,
+            speed: Fx::ZERO, // 顶层 speed：Spray 分支不读它（用 kind 内的 speed）。
+            life: 0,
+            gravity: Fx::ZERO,
+            spread_bam: 0,
+            grace: 0,
+            dig_power: 0,
+            max_durability: 10,
+            air_friction: Fx::from_int(1),
+            liquid_drag: Fx::from_int(1),
+            pass_through: 0,
+            displace_liquid: false,
+            bounces: 0,
+            bounce_energy: Fx::ZERO,
+            physics_impulse: 0,
+            on_lifetime_out_explode: false,
+        },
+        SpellDef {
+            name: "expensive_bolt".to_string(),
+            kind: SpellKind::Bolt { damage_milli: 30_000, knockback: Fx::from_int(6) },
+            mana: 90_000,
+            cooldown: 90,
+            speed: Fx::from_int(10),
+            life: 120,
+            gravity: Fx::ZERO,
+            spread_bam: 0,
+            grace: 4,
+            dig_power: 0,
+            max_durability: 10,
+            air_friction: Fx::from_int(1),
+            liquid_drag: Fx::from_ratio(9, 10),
+            pass_through: 0,
+            displace_liquid: false,
+            bounces: 0,
+            bounce_energy: Fx::ZERO,
+            physics_impulse: 20_000,
+            on_lifetime_out_explode: false,
+        },
+    ])
+}
+
+/// 四周围墙的空场 + 一个 controller 0 的射手生物在 `(20, 65)`（`materials()`
+/// 表下没有额外地板——射手不需要站得住：本文件的施法测试全部只跑一两个
+/// tick 就完成断言，或者（`blast_spell_explodes_...`）压根不关心射手自身
+/// 后续落到哪；弹体独立于射手飞行，不受射手掉落影响）。瞄准角默认 0
+/// （`Creatures::spawn` 令 `aim = 0`；`dir_of(0) == (+1, 0)`，正右方），
+/// `InputFrame` 不显式给 `aim_deg` 时天然继承这个默认方向。
+///
+/// R11：本函数与 `arena_wide_open` 同体例（四周墙 + 无内部地形），额外多
+/// 放一个生物；`arena_with_loadout` 建在它之上。
+#[allow(dead_code)]
+pub fn arena_wide_open_with_shooter(spells: SpellTable, loadout: [u8; MAX_SLOTS]) -> Sim {
+    let table = materials();
+    let wall = table.id_by_name("wall").unwrap();
+    let cfg = InitConfig { width_chunks: 4, height_chunks: 2, seed: 42, threads: 1, scan: ScanMode::LiveRect };
+    let reactions = ReactionTable::empty(&table);
+    let tpl = CreatureTable::default_player();
+    let mut sim = Sim::new(&cfg, table, reactions, tpl, spells).unwrap();
+    sim.apply_setup(&[
+        Op::Fill { material: wall, x0: 0, y0: 0, x1: 255, y1: 0 },
+        Op::Fill { material: wall, x0: 0, y0: 127, x1: 255, y1: 127 },
+        Op::Fill { material: wall, x0: 0, y0: 0, x1: 0, y1: 127 },
+        Op::Fill { material: wall, x0: 255, y0: 0, x1: 255, y1: 127 },
+        Op::SpawnCreature { x: 20, y: 65, template: 0, team: 0, controller: 0, loadout },
+    ]);
+    sim
+}
+
+/// `arena_wide_open_with_shooter` 的便捷包装（R11）：`names` 是要装进
+/// loadout 0..N 槽的法术名（经内建 `test_spell_table` 解析），其余槽位
+/// `SPELL_NONE`（空槽）。`names` 为空即"全空槽"（`empty_slot_is_a_no_op`
+/// 用）。
+#[allow(dead_code)]
+pub fn arena_with_loadout(names: &[&str]) -> Sim {
+    let table = materials();
+    let spells = test_spell_table(&table);
+    assert!(names.len() <= MAX_SLOTS, "测试 loadout（{} 项）超出 MAX_SLOTS（{MAX_SLOTS}）", names.len());
+    let mut loadout = [SPELL_NONE; MAX_SLOTS];
+    for (i, name) in names.iter().enumerate() {
+        loadout[i] = spells.id_by_name(name).unwrap_or_else(|| panic!("测试法术表没有名为 '{name}' 的法术"));
+    }
+    arena_wide_open_with_shooter(spells, loadout)
 }

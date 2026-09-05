@@ -5,6 +5,61 @@
 
 ## [Unreleased]
 
+## 2026-09-06
+
+### Added
+- **M4 Task 5：法术表与施法**（`crates/sand-core/src/spell.rs` 补齐 `SpellKind::{Blast, Spray}`
+  两变体 + `SpellDef` 全字段集（`mana`/`cooldown`/`spread_bam`/`max_durability`/`liquid_drag`/
+  `pass_through`/`displace_liquid`/`bounce_energy`/`physics_impulse`/`on_lifetime_out_explode`，
+  多数字段 Task 6 才消费，本 Task 一次建齐避免结构再变）+ `SPELL_NONE=255` 空槽哨兵 +
+  `SpellTable::id_by_name` + `cast_all`（`pub(crate)`，架构 §4 第 2d 步：cooldown 饱和递减 +
+  mana 回蓝无条件先做，随后 fire 键 → 双闸门（cooldown/mana 任一不满足零副作用）→
+  `spread_bam>0` 才掷 `STREAM_SPREAD` 骰 → `Bolt`/`Blast` 落 `Projectiles::spawn`、`Spray` 直接
+  `emit::apply_emit`）。新增 `rng::STREAM_SPREAD=9`（key=creature id 编码进 x、salt=槽位、
+  attempt 恒 0 预留未来多连发）、`bam_in_range`（乘法-右移映射 `[-half,+half]`，无取模偏置）、
+  `BLAST_OP_IDX_BASE=1<<20`（`apply_explode` 的 op_idx 无位宽约束，基址随便取）、
+  `SPRAY_OP_IDX_BASE=u16::MAX+1-MAX_CREATURES=65520`（**不能照抄 Blast 的量级**——
+  `emit::emit_salt` 把 op_idx 折进 32 位里的**高 16 位**，`1<<21` 起步直接把它的
+  `debug_assert!(op_idx <= u16::MAX)` 打爆，TDD 阶段实测撞见，改用 16 位空间顶端的
+  `MAX_CREATURES` 大小保留区）。`material.rs` 新增 `Category::bit()` canonical 位编码
+  （`pass_through` 掩码用）。`projectile.rs::advance` 签名放宽（`world: &World`→`&mut World`，
+  新增 `bodies`/`stamp`/`fseed`/`spawns`）接住 `Blast` 命中结算——统一 `resolve_hit`（命中生物
+  与命中硬格对 `Blast` 走**完全相同**一支：`(gx,gy)` 触发 `explode::apply_explode` +
+  `bodies.pending_blasts.push`；`Bolt` 只在命中生物时扣血+击退，命中硬格无侵彻直接消失）；
+  击退方向从"各轴取符号"改真正 `isqrt` 定点归一（`fire_ray` 同款数学），修复 Task 4 遗留的
+  斜向命中击退偏大 √2 倍。`creature.rs` 新增 `Creatures::get_mut`（`pub(crate)`，`cast_all`
+  读写单生物用）；`spawn` 的 `mana` 初值从 `0` 改 `t.mana_max`（对称 `hp: t.hp_max`——出生即
+  满蓝，Task 3 遗留的占位值，Task 5 真正消费 mana 后必须修）。`sand-harness/src/scenario.rs`
+  新增 `load_spells`（`SpellsFile`/`SpellSpec`/`SpellKindSpec` DTO，同 `load_reactions`/
+  `load_creatures` 体例：`name` 去重、法术数 ≤255、`spread_deg∈[0,180]`、`Spray.material`/
+  `pass_through` 名解析未知即报错）+ `OpSpec::SpawnCreature`（`template` 用原始下标不用名字
+  ——`CreatureTpl` 本无 `name` 字段，加一层名字索引是范围外翻案；`loadout: Vec<String>` 解析成
+  `[u8; MAX_SLOTS]`，`team==255` 显式拒绝——255 是 `first_hit_at` 的 owner_team 查询失败哨兵，
+  真实 team 撞上会让无归属弹体对该 team 误判同队，Task 4 评审遗留项）；`resolve_op`/
+  `load_scenario` 签名各加 `spells: &SpellTable` 形参。`data/spells.ron` 新建（5 条：
+  `spark_bolt`/`bomb`/`oil_spray`/`digger`/`expensive_bolt`）；`data/creatures.ron` 的
+  `damage_from` 从 `[fire, lava, acid]` 裁剪至 `[fire]`（Task 3 遗留缺口——`lava`/`acid` 不在
+  `materials.ron` 里，本 Task 一旦接线 `load_creatures` 进 `main.rs` 就会加载失败；裁决：裁剪
+  引用而非添材质，添材质会改 `materials_fp` 强制全部 6 个 golden 因内容哈希改变而重录，
+  与本 Task"只因指纹行加入才重录一次"的边界矛盾）。`main.rs`/`runner.rs`/`golden.rs`/
+  `synctest.rs` 全部接线真实 `load_creatures`/`load_spells`（`runner::Fingerprints.creatures/
+  spells` 不再恒 0；`run()` 输出新增 `creatures_fp`/`spells_fp` 两行）。
+  行为测试 +10（`projectile_behavior.rs` 9→19）+ 单测多条（`spell.rs`/`scenario.rs`）。
+  **golden 重录**（本 Task 唯一合法理由：Task 1 刻意把 `creatures_fp`/`spells_fp` 推迟到此才入
+  输出行，避免录两次）：`diff <(grep -v '_fp' *.golden) <(grep -v '_fp' *.new)` 六场景全部
+  "no diff"，仅两行指纹新增，6 个既有 golden 已按此重录，`cargo test -p sand-harness --test
+  golden` 全绿。**对 brief 字面测试的两处修正**（TDD 阶段发现的真实设计冲突，非随意改测试）：
+  ① `mana_gate_blocks_when_insufficient_and_costs_nothing` 原断言步后 `mana==0`，但 spec
+  §6.1 的被动回蓝无条件发生（`default_player.mana_regen_per_tick=333>0`），与"不出不扣费"
+  不是同一件事——改断言"步后蓝量恰好等于回蓝增量"；② 同一问题反证了 `Creatures::spawn` 必须
+  出生满蓝（见上）。
+  `cargo test --workspace` 全绿、`cargo clippy --workspace --all-targets -- -D warnings` 零警告。
+  影响文件：`crates/sand-core/src/{spell,projectile,creature,material,rng,lib}.rs`、
+  `crates/sand-core/tests/{common/mod,projectile_behavior}.rs`、
+  `crates/sand-harness/src/{scenario,runner,main}.rs`、
+  `crates/sand-harness/tests/{golden,synctest}.rs`、`data/spells.ron`（新建）、
+  `data/creatures.ron`、`crates/sand-harness/tests/golden/*.golden`（6 个，重录）。
+
 ## 2026-09-05
 
 ### Added

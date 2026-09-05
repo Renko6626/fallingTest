@@ -212,6 +212,18 @@ impl Creatures {
         }
     }
 
+    /// 按 id 取可变引用（M4 Task 5：`spell::cast_all` 结算冷却/蓝量需要写
+    /// 单个生物的字段）。`Creature` 全字段 `pub`，不必像 `set_hp`/`set_mana`
+    /// 那样为每个字段各开一个 setter——施法结算要读写的字段（`cooldowns`/
+    /// `mana`/`loadout`/`aim`/`x`/`y`/`template`/`alive`）本就属于同一个
+    /// 调用点内的一次性事务，拆成多个零散 setter 反而掩盖"这些字段一起
+    /// 变"的事实。`pub(crate)`——生产写路径仍只有 `step_kinematics`/
+    /// `step_world_interaction`/`apply_hit`/本方法，都在 core 内部；`Sim`
+    /// 不代理转发它，外部仍只能经 `set_hp`/`set_mana`（测试/诊断用）。
+    pub(crate) fn get_mut(&mut self, id: u8) -> Option<&mut Creature> {
+        self.list.get_mut(id as usize)
+    }
+
     /// 生成一个生物（`Op::SpawnCreature` 的落点，与 `Bodies::spawn_rect` 同
     /// 体例）。`x`/`y` 是 AABB 中心的整格坐标（与 `Op::Fill` 等一致，不做
     /// 半格居中——生物半宽高本就是整数格，中心落在格线上是自然的）。
@@ -240,7 +252,12 @@ impl Creatures {
             half_w: t.half_w,
             half_h: t.half_h,
             hp: t.hp_max,
-            mana: 0,
+            // 出生即满蓝，与 hp 对称（M4 Task 5 修正：此前恒为 0——Task 3
+            // 提交时施法结算尚不存在，`mana` 只是占位哈希字段，取什么初值
+            // 都无所谓；Task 5 起 `spell::cast_all` 真正消费它，"生物一出生
+            // 就打不出任何法术、要先干等几百 tick 回蓝"不是预期行为，也没有
+            // 任何 spec 条文要求出生蓝量为零）。
+            mana: t.mana_max,
             cooldowns: [0; MAX_SLOTS],
             loadout,
             aim: 0,

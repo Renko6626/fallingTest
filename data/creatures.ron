@@ -8,12 +8,17 @@
 // damage_from 的材质名经 table.id_by_name 解析，未知名报错；解析后按材质 id
 // 升序排序（定序遍历红线，Noita mDamageMaterials 注释 "NOTE! Sorted!" 同款）。
 //
-// **已知缺口**（M4 Task 3 提交时的状态，留给后续 Task）：本表引用的 "lava" /
-// "acid" 两种材质目前不在 data/materials.ron 里——main.rs 尚未接线加载本文件
-// （Task 5 起才接，见 load_creatures 文档），此刻不会触发加载失败；一旦 Task 5
-// 把 load_creatures("data/creatures.ron", ..) 接进 main.rs，必须先给
-// data/materials.ron 补上这两种材质，否则会在加载期报错（这正是"未知材质
-// 报错、不静默丢弃"契约的预期行为，不是 bug）。
+// **damage_from 已裁剪至 "fire" 一项**（M4 Task 5 修正，取代 Task 3 提交时
+// 的 "lava"/"acid" 两项）：那两种材质当时、此刻都不在 data/materials.ron 里
+// ——Task 3 提交时 main.rs 尚未接线本文件，不会触发加载失败；本 Task 一旦把
+// `load_creatures("data/creatures.ron", ..)` 接进 main.rs，"未知材质报错、
+// 不静默丢弃"这条契约会立刻让加载失败。裁决：**裁剪引用，不给 materials.ron
+// 添材质**——添两种新材质会改变 `materials_fp`，逼迫本无变更理由的全部六个
+// golden 因材质表内容哈希改变而再录一次（本 Task 唯一的合法重录理由是
+// `creatures_fp`/`spells_fp` 两行的加入，§CHANGELOG/commit 已言明"只此一次"）；
+// 而"生物怕熔岩/强酸"在 M4 阶段没有任何可玩内容依赖它（没有熔岩/强酸材质、
+// 没有场景铺设它们），纯属提前占位。等 `lava`/`acid` 真正落地 materials.ron
+// 那天，把这两项加回来即可，不是缺陷、是范围裁剪。
 //
 // swim_buoyancy_up = 1.4（评审 Important #2，2026-09-05，**故意偏离 Noita 原值
 // 0.9**）：Noita 玩家在水里还有一份独立的喷射推力在做上升，那三个系数在 Noita
@@ -32,7 +37,7 @@
       climb_over_y: 3,
       swim_buoyancy_idle: 1.2, swim_buoyancy_up: 1.4, swim_buoyancy_down: 0.7,
       swim_drag: 0.95,
-      damage_from: [ ("fire", 3.0), ("lava", 30.0), ("acid", 8.0) ],
+      damage_from: [ ("fire", 3.0) ], // lava/acid 缺口说明见文件头注
       min_cell_count: 4,
       max_displace_per_tick: 24,
       muzzle_offset: 3,
