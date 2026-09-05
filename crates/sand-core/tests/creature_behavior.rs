@@ -347,3 +347,49 @@ fn dead_creature_keeps_its_id_and_stops_moving() {
     let c = sim.creatures().get(id).unwrap();
     assert!(!c.alive && c.x == x && c.y == y, "墓碑不动，且 id 仍在原位");
 }
+
+// ==================== 评审修复：游泳 up/down 方向语义（Important #2）====================
+// spec 原样抄 Noita 的 idle 1.2 / up 0.9 / down 0.7，但漏了 Noita 玩家水里还有一份独立
+// 喷射推力（那三个系数只调被动浮力）；我们没有那份推力，直接照抄会让"按住上"反而比
+// 什么都不按沉得更快。裁决：`swim_buoyancy_up` 提到 1.4（> idle 的 1.2），方向语义
+// up > idle > down 成立。这两条测试要能真正卡住方向——分别独立验证"按上净上浮、
+// 且比 idle 快"与"按下净下沉"，不能只测"不沉底"（那条 idle 早就测过）。
+
+/// 深水中持续按住 `BTN_JUMP`：净上浮，且比什么都不按（idle）浮得更快。
+/// 用两个独立 `Sim` 各跑 `ticks`，比较终态 `y`（`y` 越小 = 越靠水面）。
+#[test]
+fn holding_swim_up_floats_faster_than_idle() {
+    let ticks = 30;
+
+    let (mut sim_idle, id_idle) = floor_world();
+    let water = sim_idle.table().id_by_name("water").unwrap();
+    sim_idle.apply_setup(&[Op::Fill { material: water, x0: 0, y0: 0, x1: 255, y1: 126 }]);
+    for _ in 0..ticks {
+        sim_idle.step(&[], &[]);
+    }
+    let y_idle = sim_idle.creatures().get(id_idle).unwrap().y.to_cell();
+
+    let (mut sim_up, id_up) = floor_world();
+    let water = sim_up.table().id_by_name("water").unwrap();
+    sim_up.apply_setup(&[Op::Fill { material: water, x0: 0, y0: 0, x1: 255, y1: 126 }]);
+    for _ in 0..ticks {
+        sim_up.step(&[], &[InputFrame::new(BTN_JUMP, 0, 0)]);
+    }
+    let y_up = sim_up.creatures().get(id_up).unwrap().y.to_cell();
+
+    assert!(y_up < y_idle, "按住上应比 idle 浮得更快（y 更小）：idle={y_idle} up={y_up}");
+}
+
+/// 深水中持续按住 `BTN_DOWN`：净下沉（`y` 增大），不应该反而浮起来。
+#[test]
+fn holding_swim_down_sinks_instead_of_floating() {
+    let (mut sim, id) = floor_world();
+    let water = sim.table().id_by_name("water").unwrap();
+    sim.apply_setup(&[Op::Fill { material: water, x0: 0, y0: 0, x1: 255, y1: 126 }]);
+    let y0 = sim.creatures().get(id).unwrap().y.to_cell();
+    for _ in 0..30 {
+        sim.step(&[], &[InputFrame::new(BTN_DOWN, 0, 0)]);
+    }
+    let y1 = sim.creatures().get(id).unwrap().y.to_cell();
+    assert!(y1 > y0, "按住下应该下沉（y 增大）：{y0} → {y1}");
+}

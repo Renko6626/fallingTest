@@ -30,9 +30,18 @@
   仍固定 0），刻意留给 Task 5（该 Task 的既定交付物，见
   `docs/superpowers/plans/2026-09-05-m4-player-and-spells-plan-task5.md` Step 8）——若现在接入，
   CLI 会在缺失材质处直接加载失败；提前补材质又会改 `materials_fp` 强制重录全部 golden
-  （本 Task 明确禁止）。行为测试 +6（14→17，一条断言改用 `.is_empty()` 避开 clippy `len_zero`）；
+  （本 Task 明确禁止）。行为测试 +8（11→19，一条断言改用 `.is_empty()` 避开 clippy `len_zero`）；
   6 个既有 golden 未重录（无场景生成生物，实体层哈希早退值不变）；SyncTest 六配置零分叉；
   `cargo test --workspace` 全绿、`cargo clippy --workspace --all-targets -- -D warnings` 零警告。
+  **评审两处 Important 修复**：① 接触伤害结算 `c.hp -= n * dmg` 改
+  `c.hp.wrapping_sub((n as i32).wrapping_mul(dmg))`（数据驱动的 `n`/`dmg` 未做域校验，裸算术
+  在 debug 下可 panic、release 下静默环绕，违反「一切算术走 `wrapping_*`」红线）；② `spec` 原样
+  抄 Noita 的 `swim_buoyancy_up=0.9`（< idle 的 1.2）导致"按住上"反而比 idle 沉得更快——Noita
+  玩家水里另有独立喷射推力做主动上升，那三个系数在 Noita 那边只调被动浮力，我们没有该推力，
+  裁决把 `swim_buoyancy_up` 提到 **1.4**（> idle，`data/creatures.ron` 与
+  `CreatureTable::default_player()` 同步，字段文档写明偏离理由防日后被"修正"回 0.9）；新增
+  `holding_swim_up_floats_faster_than_idle`/`holding_swim_down_sinks_instead_of_floating`
+  两条测试（改值前 RED 复现错误方向，改值后 GREEN）。
   详见 `.superpowers/sdd/2026-09-05-m4-player-and-spells-plan/task-3-report.md`。
 - **M4 Task 2：生物本体与运动学**（`crates/sand-core/src/creature.rs` 从 Task 1 空壳填实，437
   行；`material.rs` 抽出共用硬格谓词 `is_solid(cell, table, include_bodies)`，`body.rs::is_hard`

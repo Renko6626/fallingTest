@@ -57,9 +57,17 @@ pub struct CreatureTpl {
     pub mana_regen_per_tick: i32,
     /// 静止（无竖直意图）时的浮力系数（spec §4.4，Noita `swim_idle_buoyancy_coeff`）。
     pub swim_buoyancy_idle: Fx,
-    /// 竖直意图向上时的浮力系数（Noita `swim_up_buoyancy_coeff`）。
+    /// 竖直意图向上时的浮力系数（评审 Important #2，**故意偏离 Noita 原值 0.9**）：
+    /// Noita 玩家在水里还有一份独立的喷射推力（jetpack/fly）在做上升，`swim_*_coeff`
+    /// 三个系数在 Noita 那边只调**被动**浮力，主动上升力另有出处；我们没有那份
+    /// 独立推力，若照抄 0.9（< idle 的 1.2）就会净下沉——"按住上"反而比什么都
+    /// 不按沉得更快（`holding_swim_up_floats_faster_than_idle` 钉死，2026-09-05
+    /// 评审 Important #2 实测复现）。故本字段必须 **> `swim_buoyancy_idle`**
+    /// 才能让 up > idle > down 的方向语义成立——1.4 是起步值，日后目检再调
+    /// （spec 明列的 A 类手感旋钮）。**不要对着 Noita 数值表把它"修正"回 0.9**：
+    /// 那是给"有独立喷射推力"的角色用的系数，我们没有那份推力。
     pub swim_buoyancy_up: Fx,
-    /// 竖直意图向下时的浮力系数（Noita `swim_down_buoyancy_coeff`）。
+    /// 竖直意图向下时的浮力系数（Noita `swim_down_buoyancy_coeff`，未偏离原值）。
     pub swim_buoyancy_down: Fx,
     /// 游泳中对 `(vx, vy)` 的统一阻力乘子（每 tick，spec §4.4）。
     pub swim_drag: Fx,
@@ -127,7 +135,8 @@ impl CreatureTable {
             mana_max: 100_000,
             mana_regen_per_tick: 333, // round(20.0 * 1000.0 / 60.0)
             swim_buoyancy_idle: Fx::from_ratio(12, 10),
-            swim_buoyancy_up: Fx::from_ratio(9, 10),
+            // 评审 Important #2：14/10 而非 Noita 原值 9/10——见 CreatureTpl::swim_buoyancy_up 文档。
+            swim_buoyancy_up: Fx::from_ratio(14, 10),
             swim_buoyancy_down: Fx::from_ratio(7, 10),
             swim_drag: Fx::from_ratio(95, 100),
             damage_from: vec![(5, 50)], // fire(id 5) dps 3.0 → round(3000/60)=50
@@ -434,11 +443,20 @@ impl Creatures {
             // 本身就是定序遍历（红线 4），不需要运行期再排。当帧接触格数
             // `< min_cell_count` 该材质整项忽略（不是"伤害算出来是 0"，是
             // "这项伤害源本身当帧不生效"，Noita `material_damage_min_cell_count`
-            // 原意）。伤害值加载期已折成每 tick 千分位，这里是纯整数乘加。
+            // 原意）。伤害值加载期已折成每 tick 千分位，这里是纯整数乘加——
+            // 显式走 `wrapping_*`（评审 Important #1）：`n`（AABB 格数）与
+            // `dmg_per_tick_milli` 都来自数据驱动配置，加载器对 `half_w`/
+            // `half_h` 未做域校验（brief 未要求），较大 AABB 或较高 dps 会让
+            // 裸 `*`/`-=` 在 debug 下 panic、release 下静默环绕——正是 Global
+            // Constraints「一切算术走 wrapping_*」要防的 dev/release 位级
+            // 不一致（`fixed.rs` 的 `Fx::Add`/`Sub`/`mul` 全部内部 wrapping，
+            // 是现成先例）。`counts[m as usize].saturating_add(1)`（①）不用
+            // 改：`saturating_add` 本身在 debug/release 下行为一致，不违背
+            // 这条红线的立意。
             for &(m, dmg_per_tick_milli) in &t.damage_from {
                 let n = counts[m as usize];
                 if n >= t.min_cell_count {
-                    c.hp -= n as i32 * dmg_per_tick_milli;
+                    c.hp = c.hp.wrapping_sub((n as i32).wrapping_mul(dmg_per_tick_milli));
                 }
             }
 

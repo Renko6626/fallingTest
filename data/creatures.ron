@@ -14,6 +14,13 @@
 // 把 load_creatures("data/creatures.ron", ..) 接进 main.rs，必须先给
 // data/materials.ron 补上这两种材质，否则会在加载期报错（这正是"未知材质
 // 报错、不静默丢弃"契约的预期行为，不是 bug）。
+//
+// swim_buoyancy_up = 1.4（评审 Important #2，2026-09-05，**故意偏离 Noita 原值
+// 0.9**）：Noita 玩家在水里还有一份独立的喷射推力在做上升，那三个系数在 Noita
+// 那边只调被动浮力；我们没有该推力，若照抄 0.9（< idle 的 1.2）会让"按住上"反而
+// 比什么都不按沉得更快。必须 > swim_buoyancy_idle 才能让 up > idle > down 的方向
+// 语义成立——1.4 是起步值，日后目检再调（A 类手感旋钮）。**不要照着 Noita 数值
+// 表把它"修正"回 0.9**：详见 CreatureTpl::swim_buoyancy_up 字段文档。
 (
   templates: [
     (
@@ -23,7 +30,7 @@
       run_speed: 0.67, jump_speed: 2.9,
       accel_ground: 0.05, accel_air: 0.005,
       climb_over_y: 3,
-      swim_buoyancy_idle: 1.2, swim_buoyancy_up: 0.9, swim_buoyancy_down: 0.7,
+      swim_buoyancy_idle: 1.2, swim_buoyancy_up: 1.4, swim_buoyancy_down: 0.7,
       swim_drag: 0.95,
       damage_from: [ ("fire", 3.0), ("lava", 30.0), ("acid", 8.0) ],
       min_cell_count: 4,
