@@ -24,6 +24,12 @@
   （补上 M3 缺口：箱子能被炸飞却不能被射中）/ `bounces`+`bounce_energy`；**侵彻**
   （`ground_penetration_*`）确认为"能量射线三兄弟"的第四个同构用例，复用 `explode::fire_ray`。
   明确不做清单 20 余条同记。
+- **M4 实施计划**（`docs/superpowers/plans/2026-09-05-m4-player-and-spells-plan.md` 总纲
+  + `-plan-task1..7.md` 七份分册，Status: Proposed）。Task 1 管线与签名骨架（**零行为变化**：
+  一次做完 `Sim::new`/`step`/`runner` 全部签名 churn 与 `combine3 → combine4`，
+  `--grid-only` 取证后 golden 重录一次）→ 2 生物运动学 → 3 世界互动 → 4 弹体载体 →
+  5 法术与施法 → 6 弹体七项扩展 → 7 收口。每步含可直接跑的测试代码与验证命令；
+  执行顺序不可打乱（依赖链写在总纲 Task 索引）。
 - **两条宪法级开关保持关闭**：不触发总纲 §11 翻案第 6 条复议（M4 法术无连续温度量，Layer F 维持删除）；
   stain 状态效果顺延（M4 范围收窄，非翻案）。**已知限制**：水流推人做不了（网格无水平速度场，
   `tuning-knobs.md` §6 缺口 #2），M4 的水只做阻力 + 浮力。
