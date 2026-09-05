@@ -64,6 +64,31 @@ fn projectile_knockback_pushes_the_target() {
     assert!(sim.creatures().get(1).unwrap().x > x0, "击退应把目标推开");
 }
 
+/// 评审 Important（2026-09-06）：`projectile_does_not_hit_its_owner_during_grace`
+/// 只跑 3 tick（grace=4），三次 `first_hit_at` 调用全部落在 `grace > 0` 分支，
+/// 从未触达"grace 耗尽后允许自伤"这条 else 分支——那条分支恰恰是
+/// `Creatures::first_hit_at` 里"owner 与同队拆成两条独立规则"这个设计点唯一
+/// 有歧义的地方（`creature.rs::first_hit_at` 文档），必须单独钉死。
+///
+/// 构造：弹体从 owner 左侧 10 格外以 1 格/tick **缓慢**逼近（不复用
+/// `bolt_table()` 0 号的 8 格/tick——那个速度一步就跨完 grace 窗口，撞上的
+/// 瞬间 grace 可能还没耗尽，无法把"命中时刻"精确摆在 grace 耗尽之后）。
+/// 抵达 owner AABB（半宽 2、中心 x=20，左边缘格 x=18）至少要 8 tick——
+/// grace=4 在第 4 tick 结束时就已经饱和归零（`saturating_sub`），命中发生时
+/// grace 已经归零至少 4 个 tick，不存在"卡在边界、到底是不是真的过期"的歧义。
+/// 路径上（x=10..18，y=64）既无墙也无世界边界，不会在 grace 耗尽前提前销毁。
+#[test]
+fn projectile_can_hit_its_owner_after_grace_expires() {
+    let mut sim = common::arena_with_two_creatures(bolt_table());
+    let hp0 = sim.creatures().get(0).unwrap().hp;
+    shoot(&mut sim, 0, 10, 64, Fx::from_int(1), Fx::ZERO, 0);
+    for _ in 0..15 {
+        sim.step(&[], &[]);
+    }
+    assert!(sim.creatures().get(0).unwrap().hp < hp0, "grace 耗尽后必须允许命中 owner 自身");
+    assert_eq!(sim.projectiles().len(), 0, "命中 owner 后弹体同样销毁");
+}
+
 #[test]
 fn projectile_does_not_hit_its_owner_during_grace() {
     let mut sim = common::arena_with_two_creatures(bolt_table());
