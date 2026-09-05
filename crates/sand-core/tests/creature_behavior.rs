@@ -24,6 +24,29 @@ fn creature_falls_and_lands_on_floor() {
     assert!(c.vy == Fx::ZERO, "落地后竖直速度清零");
 }
 
+/// 回归测试（评审 Important #1）：落地后 `on_ground` 不得再抖回 `false`。
+/// `step_kinematics` 每 tick 无条件加重力，`sweep_y` 在"本 tick 位移不足一格、
+/// 未跨越格边界"时会跳过 `aabb_blocked` 检测——这本身没问题，但若这种情况下
+/// 仍无条件把 `on_ground` 置 `false`，就是在没有任何新证据的前提下推翻上一
+/// tick 的落地判定，静止在地面上的生物会瞬时误报"悬空"，起跳判定（仅
+/// `on_ground` 时生效）会在这个窗口内静默吃掉跳跃输入。逐 tick 检查：一旦
+/// 观察到 `on_ground == true`，后续任何一 tick 都不得再变回 `false`。
+#[test]
+fn on_ground_does_not_flicker_after_landing() {
+    let (mut sim, id) = floor_world();
+    let mut landed = false;
+    for tick in 0..150 {
+        sim.step(&[], &[]);
+        let on_ground = sim.creatures().get(id).unwrap().on_ground;
+        if on_ground {
+            landed = true;
+        } else if landed {
+            panic!("tick {tick}: on_ground 落地后又抖回 false");
+        }
+    }
+    assert!(landed, "150 tick 内应该已经落地");
+}
+
 #[test]
 fn creature_walks_right_when_right_is_held() {
     let (mut sim, id) = floor_world();

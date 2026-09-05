@@ -364,8 +364,14 @@ fn sweep_x(c: &mut Creature, world: &World, table: &MaterialTable, t: &CreatureT
 }
 
 /// 沿 y 轴扫掠，同 `sweep_x` 但无跨台阶分支。撞到即 `vy = 0`；**向下**撞停
-/// （`dir > 0`）时 `on_ground = true`，其余情况（含向上撞顶、未撞）置
-/// `false`（spec §4.2）。
+/// （`dir > 0`）时 `on_ground = true`；确认跑过检测且未撞（本 tick 真的跨越
+/// 过至少一个格边界、逐格测过 `aabb_blocked` 全部畅通）时置 `false`；
+/// **本 tick 未跨越任何格边界**（`crossing == 0`，典型情形：重力刚把 `vy`
+/// 从 0 推到一个还不足一格的小正值）则完全跳过检测——不产生任何新证据，
+/// `on_ground` 原样保留上一 tick 的判定（评审 Important #1：这里若无条件置
+/// `false`，静止在地面上的生物会在这类 tick 里凭空"悬空"一瞬，起跳判定
+/// 仅 `on_ground` 时生效，会把这个窗口内的跳跃输入静默吃掉——已用
+/// `on_ground_does_not_flicker_after_landing` 钉死）。
 fn sweep_y(c: &mut Creature, world: &World, table: &MaterialTable) {
     let (hw, hh) = (c.half_w, c.half_h);
     let dir: i32 = if c.vy.0 > 0 {
@@ -379,6 +385,12 @@ fn sweep_y(c: &mut Creature, world: &World, table: &MaterialTable) {
     let crossing =
         if dir > 0 { target.to_cell() - c.y.to_cell() } else { c.y.to_cell() - target.to_cell() }.max(0);
     let steps = crossing.min(CREATURE_MAX_STEP);
+    if steps == 0 {
+        // 未跨格：footprint 与上 tick 完全相同（`aabb_blocked` 只依赖
+        // `to_cell()`），亚格位移原样应用，`on_ground` 不动——见函数头注。
+        c.y = target;
+        return;
+    }
     for _ in 0..steps {
         let ny = c.y + Fx::from_int(dir);
         if aabb_blocked(world, table, c.x, ny, hw, hh) {
