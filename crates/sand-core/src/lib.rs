@@ -172,6 +172,20 @@ impl Sim {
     /// 调用方只给出射点与初速——与 brief Interfaces 一节"其余字段从法术表
     /// 取"一致。`spell` 越界即调用方漏配置，与 `SpellTable::get` 同一体例，
     /// 不做脏值防御。
+    ///
+    /// **`SpellKind::Spray` 显式拒绝、返回 `false`**（M4 Task 5 评审
+    /// Important，2026-09-06）：`Spray` 语义上不产生弹体（`cast_all` 直接
+    /// 走 `emit::apply_emit`），若在此仍把它塞进 `Projectiles`，下一 tick
+    /// `Projectiles::advance` 命中判定会走到 `resolve_hit` 的
+    /// `SpellKind::Spray => unreachable!()` 分支直接 panic——而且
+    /// `unreachable!()` 在 release 构建同样触发，不像 `debug_assert!` 只在
+    /// debug 生效。本方法是 `pub` 且不校验 `kind` 的外部入口（与
+    /// `world.rs::apply_op` 内部用 `unreachable!()` 处理
+    /// `Op::SpawnBody`/`Op::SpawnCreature` 不同——那两个变体被 `apply_one`
+    /// 的私有路由截走，外部根本无法直接触发，风险类别不一样）；不变量必须
+    /// 守在这个入口，不能指望结算远端兜底。复用已有的 `bool` 返回值
+    /// （容量拒绝同一个信号通道）表达"没有产出弹体"，调用方不需要区分
+    /// 原因、不需要改签名——语义上与"这个法术类型压根不产生弹体"完全自洽。
     pub fn queue_projectile(
         &mut self,
         spell: u8,
@@ -182,6 +196,9 @@ impl Sim {
         owner: u8,
     ) -> bool {
         let s = self.spell_table.get(spell);
+        if matches!(s.kind, SpellKind::Spray { .. }) {
+            return false;
+        }
         self.projectiles.spawn(spell, x, y, vx, vy, s.life, s.dig_power, owner, s.grace, s.bounces)
     }
 

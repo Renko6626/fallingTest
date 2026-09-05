@@ -327,7 +327,11 @@ fn resolve_hit(
             bodies.pending_blasts.push((gx, gy, radius));
         }
         SpellKind::Spray { .. } => {
-            unreachable!("Spray 不产生弹体：cast_all 直接走 emit 通路，advance() 里不会出现 Spray 弹体")
+            // 真正不可达：`cast_all` 直接走 emit 通路从不 spawn 弹体，唯一
+            // 的外部入口 `Sim::queue_projectile` 也在**入口**显式拒绝
+            // `SpellKind::Spray`（M4 Task 5 评审 Important，2026-09-06——
+            // 不变量守在入口而非在此远端兜底，理由见该方法文档）。
+            unreachable!("Spray 不产生弹体：queue_projectile 入口已拒绝、cast_all 直接走 emit 通路")
         }
     }
 }

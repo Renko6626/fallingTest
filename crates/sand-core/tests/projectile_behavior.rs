@@ -259,6 +259,20 @@ fn spray_spell_emits_particles_without_creating_a_projectile() {
     assert!(!sim.particles().is_empty(), "Spray 当帧就应产出粒子");
 }
 
+/// 评审 Important（2026-09-06）：不变量必须守在 `queue_projectile` 这个 `pub`
+/// 入口，不能指望 `Projectiles::advance` 命中判定里的 `resolve_hit` 远端兜底
+/// （那条路径原本是 `unreachable!()`，release 下同样 panic）。直接对
+/// `Sim::queue_projectile` 喂一个 `Spray` 法术 id：必须确定性拒绝（返回
+/// `false`、弹体池长度不变），不能 panic、不能真产出一颗"Spray 弹体"。
+#[test]
+fn queue_projectile_rejects_spray_spell_at_the_entry() {
+    let mut sim = arena_with_loadout(&["oil_spray"]);
+    let spray_id = sim.spell_id("oil_spray");
+    let ok = sim.queue_projectile(spray_id, Fx::from_int(50), Fx::from_int(64), Fx::ZERO, Fx::ZERO, 255);
+    assert!(!ok, "Spray 法术必须在 queue_projectile 入口就被拒绝，不能进弹体池");
+    assert_eq!(sim.projectiles().len(), 0, "拒绝必须是零副作用——弹体池不得多出一条");
+}
+
 #[test]
 fn projectile_spawns_outside_the_shooter_hitbox() {
     // muzzle_offset 保证不在自己身体里出生（否则第一帧就自撞）
