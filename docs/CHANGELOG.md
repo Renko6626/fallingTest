@@ -7,6 +7,36 @@
 
 ## 2026-09-06
 
+### Fixed
+- **M4 全分支评审最终修复波（合并前最后一批）**（`data/scenarios/duel.ron`、
+  `data/creatures.ron`、`crates/sand-core/src/{lib.rs,creature.rs,explode.rs}`、
+  `crates/sand-core/tests/{creature_behavior.rs,projectile_behavior.rs}`、
+  `crates/sand-harness/src/scenario.rs`、
+  `crates/sand-harness/tests/{golden.rs,duel_acceptance.rs}`、七份 `*.golden`、
+  `docs/overview/program-architecture.md`、`docs/tuning-knobs.md`；完整证据见
+  `.superpowers/sdd/2026-09-05-m4-player-and-spells-plan/final-fix-report.md`）。
+  I1：`duel` SyncTest tick 数从 3000 补齐到 20000（spec §0.2 第 1 项要求，此前
+  未经决策日志被悄悄收窄）。I2：架构 §5 白名单措辞澄清"持有"的定义（只转手
+  引用不算持有），点名 `Projectiles::advance` 为实例并说明拒绝
+  `pending_point_impulses` 队列方案的理由。I3：`muzzle_offset` 域校验
+  （`> max(half_w, half_h)`）+ 数值订正（3→6，修竖直出射自身 AABB 内出生的
+  缺口）。I4：架构 §4 步骤 2b 改写为如实描述——`step_kinematics`/
+  `step_world_interaction` 是两趟独立全表遍历，非单条按生物 id 的链，并给出
+  多生物场景下两种读法的可观测差异。I5/Minor #4：分别给 `creature_behavior.rs`
+  两条测试补齐判别性断言（`removed > 0`；起跳守卫的下一 tick 不重触发），
+  RED/GREEN 证据见报告。I6：`duel_acceptance.rs` 加中途检查点（tick 1700 时
+  1 号必须存活），区分"被点射打死"与"被烧死"。两条 cheap hardening
+  debug_assert（`destroy_cell` 的 `budget != 0`、ops 循环的 `op_idx < 1<<16`）。
+  三处文档漂移订正（`entity_hash` 非零常量、`sweep_axis`→`sweep_x`/`sweep_y`、
+  架构 §4 步骤 1 改名"ops 应用"）。`load_creatures` 补域校验（half_w/half_h
+  为正、climb_over_y 非负、damage_from 材质名不重复）。
+  Golden 门禁：六个既有场景 `grep -v '_fp'` 双边 diff 证实仿真哈希行逐位不变
+  （只有 `creatures_fp` 移动）；`duel.golden` 全量重录——实测发现 I3 的
+  `muzzle_offset` 改动本身就会移动 `duel.ron` 从 tick 280（首次施法）起的
+  仿真结果（两个生物共用被 I3 改动的同一模板），任务书"前 3000 tick 哈希
+  不变"的假设与 I3 本身矛盾；核实分叉起点精确对应首次施法之后（tick 256
+  施法前逐位不变），判定为预期结果，非回归。
+
 ### Added
 - **M4 收口完成（Task 7）**（`data/scenarios/duel.ron`、`crates/sand-harness/tests/
   {golden,synctest,duel_acceptance}.rs`、`crates/sand-core/tests/projectile_behavior.rs`、

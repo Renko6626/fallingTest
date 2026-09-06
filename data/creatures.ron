@@ -40,7 +40,12 @@
       damage_from: [ ("fire", 3.0) ], // lava/acid 缺口说明见文件头注
       min_cell_count: 4,
       max_displace_per_tick: 24,
-      muzzle_offset: 3,
+      // muzzle_offset 必须严格大于 max(half_w, half_h)（评审 I3，
+      // load_creatures 加载期强制校验，见 crates/sand-harness/src/scenario.rs
+      // ::load_creatures）：half_w=2 < half_h=5，旧值 3 只清了 half_w、没清
+      // half_h——竖直方向（aim=90°/270°）出射时弹体会生在自身 AABB 内部，
+      // 全靠 grace 帧兜底防自伤。6 > half_h=5，任意方向都出生在自身 AABB 外。
+      muzzle_offset: 6,
     ),
   ],
 )

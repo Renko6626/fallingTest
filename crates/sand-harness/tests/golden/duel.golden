@@ -1,19 +1,86 @@
 scenario duel
-scenario_fp f40920cdfcde12a9
+scenario_fp ae436c2752e0ec72
 materials_fp fee3946a481b1c4e
 reactions_fp 91ee5c6afd906fb0
-creatures_fp 32c6352cf98bd291
+creatures_fp dc274f30b195cf41
 spells_fp 7a9bd8e2a092a150
-world 256x128 seed 20260906 ticks 3000
+world 256x128 seed 20260906 ticks 20000
 tick      256 hash 6031617a94922ba1
-tick      512 hash cb3d74c9a7204589
-tick      768 hash bfe576cd3a32da07
-tick     1024 hash 1aecd3b501cb0f6c
-tick     1280 hash 2a4844fe5ce53bb1
-tick     1536 hash db4f518115dfb934
-tick     1792 hash 4ad457213970b4fe
-tick     2048 hash 0af8fd70237aacd4
-tick     2304 hash f87e97432a5796ce
-tick     2560 hash 28fa1951bfe5d8aa
-tick     2816 hash c7bfa1c33af7c747
-final 0a84dd9ae11ba78f
+tick      512 hash 43a3a9e1ba5e400e
+tick      768 hash 55221adfbf8f7151
+tick     1024 hash 210489c8305b777d
+tick     1280 hash d6b474b1b09b5125
+tick     1536 hash 712f09c0fe994980
+tick     1792 hash ede4a9fc2407024d
+tick     2048 hash d3e388e15636260d
+tick     2304 hash 701d48df2d0db213
+tick     2560 hash 9e657873b9603c84
+tick     2816 hash 08bb24c36674bc2f
+tick     3072 hash a19ee1190d19858d
+tick     3328 hash 7f394c0676909474
+tick     3584 hash 823c8cab5e882026
+tick     3840 hash 1f5f961ecd56f803
+tick     4096 hash 081f3dbdcb747173
+tick     4352 hash 5d8efc9c47b33971
+tick     4608 hash 67804189e2bed413
+tick     4864 hash aa8f479ed8868ea9
+tick     5120 hash a4c38c2d5d051ee5
+tick     5376 hash 7574501b33871307
+tick     5632 hash f0a887d651cb2331
+tick     5888 hash c037bd2bde21cbb6
+tick     6144 hash dcdbad727f7c23f1
+tick     6400 hash fcf49a1b79f4a11c
+tick     6656 hash 4678f159c8b0b592
+tick     6912 hash b680a1fc0976a640
+tick     7168 hash a5cbcc300142e157
+tick     7424 hash fec14bf1625eb1b1
+tick     7680 hash 43f49ae3a6b89c84
+tick     7936 hash ea321c01a2cbeea2
+tick     8192 hash 59fe0e1ada8a2d4a
+tick     8448 hash 4bf4abd8cf8871a5
+tick     8704 hash 612550823a902e5a
+tick     8960 hash 542b222c7aff9dab
+tick     9216 hash 1f80aea049bd7a4f
+tick     9472 hash 9d1c8249b1b47edd
+tick     9728 hash 0abcb39ef96dd82d
+tick     9984 hash 9aae977448899ede
+tick    10240 hash ef5e38acf68e692a
+tick    10496 hash ced6be43fef36d96
+tick    10752 hash 14abe63354a9f7ac
+tick    11008 hash c1926f02b98e34c9
+tick    11264 hash 53e969ab37a44353
+tick    11520 hash e26d48f72443b13b
+tick    11776 hash 49716ae49bbeb782
+tick    12032 hash 5f050740f5444314
+tick    12288 hash 43b7438c3e075261
+tick    12544 hash c7e3ff96192d70ef
+tick    12800 hash 5706fe5baee71fa8
+tick    13056 hash a9c0d5b860d2c70a
+tick    13312 hash 4c087d69ee05b594
+tick    13568 hash 8d57e6a4327586d8
+tick    13824 hash 18bf0fd3b7f3d6dc
+tick    14080 hash b114a4d0b044cfac
+tick    14336 hash 723b44d49b6c92ad
+tick    14592 hash 9b8c718afa418bab
+tick    14848 hash 8eeca1999b84e310
+tick    15104 hash 0bb0fc4478ce377f
+tick    15360 hash dee069c731e895ae
+tick    15616 hash e9c673332468ff5e
+tick    15872 hash 92b7d315052154e9
+tick    16128 hash 9dd17841b0cfbf82
+tick    16384 hash 4eddea362a6fd616
+tick    16640 hash 5d5036155b07c10a
+tick    16896 hash 8c82f2b360cafbc0
+tick    17152 hash b4a089c0f1a040bd
+tick    17408 hash d0d8ec3a9c824dff
+tick    17664 hash 72cb0f3afe556e06
+tick    17920 hash 5826eaf01520c73a
+tick    18176 hash 9208aa07c1332b85
+tick    18432 hash d671f0642d4cc196
+tick    18688 hash 3d400773e19adff7
+tick    18944 hash 128310e4f5df7c7b
+tick    19200 hash 3c60c881d2ca2863
+tick    19456 hash db67544d84fdb6b9
+tick    19712 hash 988a0bd8be7e730f
+tick    19968 hash 45fe322205ac77b4
+final 769f5a2aa083de43

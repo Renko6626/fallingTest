@@ -326,6 +326,22 @@ fn projectile_spawns_outside_the_shooter_hitbox() {
     assert!(dx > c.half_w, "出生点必须在自身 AABB 之外");
 }
 
+/// 评审 I3：水平分支只清了 `half_w`，`half_h`（5）比 `half_w`（2）大——
+/// `aim = 16384`（BAM 90°，正上/正下方向，`Bam` 满量程 65536 = 360°）沿竖轴
+/// 出射时若 `muzzle_offset` 只大于 `half_w` 不大于 `half_h`，出生点仍落在
+/// 自身 AABB 内部。`load_creatures` 现在在加载期就拒绝这种模板（域校验
+/// `muzzle_offset > max(half_w, half_h)`），这里额外钉住运行时结果：
+/// 用当前默认模板（`half_w=2, half_h=5, muzzle_offset=6`）实测竖直出射同样
+/// 落在 AABB 外。
+#[test]
+fn projectile_spawns_outside_the_shooter_hitbox_vertical_aim() {
+    let mut sim = arena_with_loadout(&["spark_bolt"]);
+    sim.step(&[], &[InputFrame::new(BTN_FIRE, 16384, 0)]);
+    let c = sim.creatures().get(0).unwrap();
+    let dy = (sim.projectiles().y(0).to_cell() - c.y.to_cell()).abs();
+    assert!(dy > c.half_h, "竖直出射时出生点也必须在自身 AABB 之外（half_h 分支）");
+}
+
 // ==================== M4 Task 6：弹体七项扩展（spec §5.1/§5.2/§5.4/§5.5） ====================
 //
 // 逐条 TDD，brief 排序（cheapest-first）：排开 → 穿透 → 阻力 → 定时爆 →

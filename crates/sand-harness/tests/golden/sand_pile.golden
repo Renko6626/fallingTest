@@ -2,7 +2,7 @@ scenario sand_pile
 scenario_fp 6c269e62add21153
 materials_fp fee3946a481b1c4e
 reactions_fp 91ee5c6afd906fb0
-creatures_fp 32c6352cf98bd291
+creatures_fp dc274f30b195cf41
 spells_fp 7a9bd8e2a092a150
 world 128x128 seed 20260830 ticks 600
 tick      256 hash 592934ff48403dbc

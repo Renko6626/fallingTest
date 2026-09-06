@@ -272,6 +272,15 @@ pub(crate) fn destroy_cell(
     attempt_vy: u32,
     spawns: &mut Vec<SpawnRequest>,
 ) {
+    // 评审 Cheap hardening：`budget == 0` 会让下面 `Fx::from_ratio(remaining,
+    // budget)` 除零。`fire_ray` 那侧的调用点已有 `debug_assert!(power != 0)`
+    // 兜底（本文件 `fire_ray` 头注），但 `destroy_cell` 现在还有第二个调用方
+    // ——`projectile.rs` 侵彻分支传弹体的剩余能量预算——这条不变量因此变成
+    // 由两个独立调用方各自小心维持，而不是本函数自身强制。两处都不会传 0
+    // （`fire_ray` 判过零才调用；弹体侵彻分支同理只在 `energy > 0` 时才走
+    // 这条路），当前不可达，但把假设从"两个调用方都记得"收紧成"函数自己
+    // 断言"，防未来第三个调用方漏掉这条隐含契约。
+    debug_assert!(budget != 0, "destroy_cell 要求 budget != 0（用于 remaining/budget 定速度比与汽化判定的除数）");
     // 近心汽化（vaporize_threshold，spec §6 汽化小节，用户裁决
     // 2026-08-30）：口径与原 `fire_ray` 内联版本逐字相同，见本函数文档
     // "remaining/budget" 一段。

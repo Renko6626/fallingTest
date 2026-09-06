@@ -6,8 +6,8 @@ mod common;
 
 use common::floor_world_with_creature;
 use sand_core::{
-    input::*, world::Op, CreatureTable, Fx, InitConfig, ReactionTable, ScanMode, Sim, SpellTable, MAX_CREATURES,
-    MAT_WALL,
+    input::*, world::Op, CreatureTable, CreatureTpl, Fx, InitConfig, ReactionTable, ScanMode, Sim, SpellTable,
+    MAX_CREATURES, MAT_WALL,
 };
 
 /// 4×2 chunk 的世界，底行 wall；(32, 100) 一个 controller 0 的生物，模板走
@@ -150,6 +150,91 @@ fn holding_jump_launches_only_once_not_every_tick() {
     }
 }
 
+/// `jump_speed = 0.5`（< 1 格/tick）变体，专供
+/// `holding_jump_with_a_sub_one_cell_jump_speed_launches_only_once` 使用。
+/// 其余字段照抄 `CreatureTable::default_player()`（R5 同源值）——本模板存在
+/// 的唯一理由是把 `jump_speed` 压到 1 格/tick 以下，`creature.rs::
+/// step_kinematics` 头注点名的那个"起跳后无条件 `c.on_ground = false`"守卫
+/// （总纲 §11 决策 18 ⑥(b)）只在这个区间才真正被行使：`jump_speed = 2.9`
+/// 时哪怕删掉守卫，footprint 查询一 tick 内也会自然离地，测试测不出守卫
+/// 缺不缺（评审 Minor #4）。
+fn slow_jump_player() -> CreatureTable {
+    CreatureTable::from_tpls(vec![CreatureTpl {
+        half_w: 2,
+        half_h: 5,
+        run_speed: Fx::from_ratio(67, 100),
+        jump_speed: Fx::from_ratio(1, 2),
+        accel_ground: Fx::from_ratio(5, 100),
+        accel_air: Fx::from_ratio(5, 1000),
+        climb_over_y: 3,
+        hp_max: 100_000,
+        mana_max: 100_000,
+        mana_regen_per_tick: 333,
+        swim_buoyancy_idle: Fx::from_ratio(12, 10),
+        swim_buoyancy_up: Fx::from_ratio(14, 10),
+        swim_buoyancy_down: Fx::from_ratio(7, 10),
+        swim_drag: Fx::from_ratio(95, 100),
+        damage_from: vec![(5, 50)],
+        min_cell_count: 4,
+        max_displace_per_tick: 24,
+        muzzle_offset: 6,
+    }])
+}
+
+/// Minor #4（评审）：`jump_speed < 1` 时，起跳当帧一 tick 内位移不足 1 整格，
+/// `sweep_y` 的 footprint 查询在起跳后的**下一 tick**理论上仍可能读到"脚下
+/// 还是硬格"——`step_kinematics` 头注点名的"起跳闸门触发就无条件收口
+/// `on_ground = false`"守卫（宪法 §11 决策 18 ⑥(b)）正是为堵这一 tick
+/// 而存在。`holding_jump_launches_only_once_not_every_tick` 用的
+/// `jump_speed = 2.9` 覆盖不到这个区间（footprint 一 tick 内自然离地，删掉
+/// 守卫那条测试也是绿的）。
+///
+/// **实测排查记录**（TDD 阶段，见 `final-fix-report.md` 完整 RED/GREEN 证据）：
+/// 起初按 brief 字面意思写的断言是"持续按住 40 tick，全程只起跳一次"——
+/// 实测发现在 `jump_speed = 0.5`（配 `GRAVITY = 0.25`、`half_h = 5`）这组
+/// 具体数值下，**无论守卫在不在**，footprint 查询都会在若干 tick 后再次
+/// 判定"贴地"（生物这几 tick 净位移始终 < 1 格，一直没有真正脱离查询格），
+/// 电平触发的 `BTN_JUMP` 会再次满足闸门条件——这不是"守卫失效"，而是
+/// **粗粒度整格 footprint 查询在极慢起跳速度下的已知局限**（`sweep_y` 头注
+/// 早已言明"查询是粗粒度整格判定"），守卫从未承诺、也做不到消除它；这条
+/// 更宏观的"多 tick 后仍可能二次触发"现象与守卫是否存在无关，不是本条
+/// 要钉的东西，故断言收窄到守卫**实际、可验证承担**的那一件事。
+///
+/// 守卫的真实、狭义契约是**只压住起跳那一 tick 之后紧邻的下一 tick**：
+/// `jumped` 在 tick N 触发时把 `on_ground` 收口为 `false`，tick N+1 开局读到
+/// 的就是这个收口值，`jumped` 在 tick N+1 不成立、`vy` 只受重力自然衰减——
+/// 没有守卫时 tick N 结束 `on_ground` 会被 footprint 查询原样判真，tick N+1
+/// 立刻重新满足闸门、`vy` 被覆盖式拍回 `-jump_speed`，与自然衰减值明显不同
+/// （实测衰减值 `-0.25`，被拍回值 `-0.5`，见下方断言）。这一步是确定性的、
+/// 不受后续 tick 混沌演化影响，能干净地把"删守卫"crash 成 RED、"守卫在"
+/// crash 成 GREEN。
+#[test]
+fn holding_jump_with_a_sub_one_cell_jump_speed_does_not_relaunch_on_the_very_next_tick() {
+    let (mut sim, id) = floor_world_with_creature(slow_jump_player(), SpellTable::empty());
+    for _ in 0..120 {
+        sim.step(&[], &[]);
+    } // 先落地站稳
+
+    // tick N：起跳触发，vy 应精确落在 -jump_speed（-0.5）。
+    sim.step(&[], &[InputFrame::new(BTN_JUMP, 0, 0)]);
+    let vy_launch = sim.creatures().get(id).unwrap().vy;
+    assert_eq!(vy_launch, -Fx::from_ratio(1, 2), "起跳当帧 vy 应精确等于 -jump_speed");
+
+    // tick N+1：持续按住。守卫在场时 footprint 查询已被 tick N 收口为
+    // false，`jumped` 本 tick 不成立，`vy` 只受重力自然衰减一次
+    // （-0.5 + 0.25 = -0.25）；守卫若被移除，`sweep_y` 的 footprint 查询会
+    // 在 tick N 结束时原样判真（生物净位移仅 0.5 格，远不足 1 格），
+    // `jumped` 在 tick N+1 立刻重新成立，`vy` 会被覆盖式拍回 -0.5——与自然
+    // 衰减值 -0.25 可判别区分（RED/GREEN 证据见 `final-fix-report.md`）。
+    sim.step(&[], &[InputFrame::new(BTN_JUMP, 0, 0)]);
+    let vy_next = sim.creatures().get(id).unwrap().vy;
+    assert_eq!(
+        vy_next,
+        -Fx::from_ratio(1, 4),
+        "起跳后紧邻的下一 tick，vy 应只受重力衰减一次（-0.25），不得被跳跃键在 footprint 仍判贴地的窗口内重新拍回 -jump_speed（-0.5）——on_ground=false 收口守卫缺失的典型症状"
+    );
+}
+
 #[test]
 fn creature_walks_right_when_right_is_held() {
     let (mut sim, id) = floor_world();
@@ -280,6 +365,12 @@ fn displacement_is_capped_per_tick() {
     // CreatureTable::default_player() 的 max_displace_per_tick = 24（与
     // data/creatures.ron 的 player 条目同源，R5）。
     assert!(removed <= 24, "单 tick 排开 {removed} 超过模板上限 24");
+    // 评审 I5：`removed <= 24` 单独存在时 `removed == 0`（排开功能被整段删掉）
+    // 同样满足断言——这条测试当年只钉住了"上限"，没钉住"下限"，是一条
+    // "删了也不会红"的假覆盖。整个身子泡在水里向右走一 tick，扫掠路径上
+    // 必然有液体格，`removed > 0` 是本场景下的真实下限；RED/GREEN 证据见
+    // `final-fix-report.md`。
+    assert!(removed > 0, "整个身子泡在水里走一 tick，排开数不应为 0（排开功能可能被整段删掉）");
 }
 
 #[test]

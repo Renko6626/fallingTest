@@ -59,6 +59,17 @@ fn duel_scenario_actually_exercises_all_five_acceptance_behaviours() {
     // 逐 tick 跑完，途中记录三个只能在中途观测到的量。
     let mut max_x0 = i32::MIN; // ① 0 号向右走到过的最远处
     let mut oil_peak = 0usize; // ④ 浇油摊开后的峰值（点火前）
+    // 评审 I6：中途检查点——① 火烧完、② 点射还没开始这段窗口里 1 号必须
+    // 还活着。取值依据（实测，见 `final-fix-report.md` 完整逐 50-tick 记录）：
+    // `duel.ron` script 在 tick 1300 点火，1 号 hp 从 tick 1300 的 100000 一路
+    // 掉到 tick 1350 的 54150 后**不再变化**（fire 材质有 lifetime，油烧完后
+    // fire 格随之熄灭，接触伤害的 `min_cell_count` 闸门不再满足）——tick 1400
+    // 起 hp 已稳定在 54150，一直稳定到 tick 2000（`inputs` 里 0 号点射
+    // `spark_bolt` 的起始 tick）。1700 留了 300 tick 的双边余量（远离火焰
+    // 熄灭点、远离开枪点），是这段"确定安全"窗口里的一个不敏感于手感旋钮
+    // 微调的检查点。
+    const MID_RUN_CHECKPOINT: u64 = 1700;
+    let mut c1_alive_mid_run: Option<bool> = None;
     for t in 0..sc.ticks {
         sim.step(&sc.ops_for_tick(t), sc.inputs_for_tick(t));
         if let Some(c) = sim.creatures().get(0) {
@@ -66,6 +77,9 @@ fn duel_scenario_actually_exercises_all_five_acceptance_behaviours() {
         }
         if t < 1300 {
             oil_peak = oil_peak.max(sim.world().count_material(oil));
+        }
+        if t + 1 == MID_RUN_CHECKPOINT {
+            c1_alive_mid_run = sim.creatures().get(1).map(|c| c.alive);
         }
     }
 
@@ -99,6 +113,18 @@ fn duel_scenario_actually_exercises_all_five_acceptance_behaviours() {
     assert!(
         oil_after * 2 < oil_peak,
         "④ 点火后油应当被连锁烧掉大半：峰值 {oil_peak} → 终态 {oil_after}"
+    );
+
+    // 评审 I6：区分"被点射打死"与"被烧死"——若只在终局断言 `!c1.alive`，
+    // 一次改坏 burn 参数、把 1 号在 tick 1400 前就烧死的回归照样能让终局断言
+    // 通过（① 段的射击对射从此形同虚设，`spark_bolt` 那条因果链完全没被
+    // 验证到，"注释声称、无人验证"这条 duel_acceptance.rs 存在的理由本身
+    // 就会在这里重演）。中途检查点钉住"火烧完但还没开枪"这段窗口内 1 号
+    // 必须还活着，逼着 ⑤ 的死亡确实来自 tick 2000 起的 `spark_bolt` 点射。
+    assert_eq!(
+        c1_alive_mid_run,
+        Some(true),
+        "tick {MID_RUN_CHECKPOINT}（火已烧完、点射还没开始）1 号应当还活着——否则终局的 alive==false 可能来自烧死而非被点射打死"
     );
 
     // ⑤ 一方被打死：0 号持续点射 spark_bolt，1 号 hp 归零走墓碑（id 保留、

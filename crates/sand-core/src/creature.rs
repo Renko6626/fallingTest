@@ -142,7 +142,10 @@ impl CreatureTable {
             damage_from: vec![(5, 50)], // fire(id 5) dps 3.0 → round(3000/60)=50
             min_cell_count: 4,
             max_displace_per_tick: 24,
-            muzzle_offset: 3,
+            // muzzle_offset 必须严格大于 max(half_w, half_h)（评审 I3，
+            // `load_creatures` 加载期强制校验同一契约）：half_h=5 是较大的
+            // 半轴，旧值 3 只清了 half_w=2，竖直出射时弹体生在自身 AABB 内。
+            muzzle_offset: 6,
         }])
     }
 }

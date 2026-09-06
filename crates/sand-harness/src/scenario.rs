@@ -567,11 +567,46 @@ pub fn load_creatures(path: &str, table: &MaterialTable) -> Result<(CreatureTabl
         .enumerate()
         .map(|(idx, spec)| -> Result<CreatureTpl, String> {
             let ctx = |e: String| format!("生物模板 #{idx}（'{}'）：{e}", spec.name);
+            // 域校验（评审 Minor M5）：half_w/half_h 非正会让 `aabb_blocked`
+            // 的扫描范围变空区间，生物直接穿透世界；climb_over_y 为负同理
+            // 会让自动跨台阶的 `1..=climb_over_y` 变空区间（不算错，但读起来
+            // 像配置手滑，显式拒绝更安全）。
+            if spec.half_w <= 0 || spec.half_h <= 0 {
+                return Err(ctx(format!(
+                    "half_w/half_h 必须为正数（实际 half_w={}, half_h={}）——非正值会让 aabb_blocked 的范围判定变空区间，生物直接穿透世界",
+                    spec.half_w, spec.half_h
+                )));
+            }
+            if spec.climb_over_y < 0 {
+                return Err(ctx(format!("climb_over_y 不能为负（实际 {}）", spec.climb_over_y)));
+            }
+            // muzzle_offset 必须严格大于 max(half_w, half_h)（评审 I3）：出生点
+            // = 生物中心沿出射方向偏移 muzzle_offset，若不超过两个半轴中较大的
+            // 那个，垂直/水平方向仍会有一侧把弹体生在自身 AABB 内部，只靠
+            // `grace` 帧兜底防自伤——见 `projectile_spawns_outside_the_shooter_hitbox`
+            // 测试的竖直分支。
+            let half_max = spec.half_w.max(spec.half_h);
+            if spec.muzzle_offset <= half_max {
+                return Err(ctx(format!(
+                    "muzzle_offset（{}）必须大于 max(half_w, half_h)（{half_max}），否则弹体可能在自身 AABB 内出生",
+                    spec.muzzle_offset
+                )));
+            }
             // damage_from：材质名解析成 id（未知名报错，同反应表契约——加载
             // 期显式拒绝，不静默丢弃），dps 折成每 tick 千分位，随后**按
             // 材质 id 升序排序**——定序遍历红线（CLAUDE.md §5 第 4 条），且
             // 与 Noita `mDamageMaterials` 注释 "NOTE! Sorted!" 一致
             // （`CreatureTpl::damage_from` 文档）。
+            // 重复材质名（评审 Minor M5）：与 `load_spells` 的重复法术名同一
+            // 体例——两条同材质的 damage_from 会让后一条静默覆盖排序结果里
+            // 相邻的另一条，看起来"两条都生效"实则只有一条读得到，属于隐藏
+            // 配置错误，显式拒绝。
+            for i in 1..spec.damage_from.len() {
+                let (name, _) = &spec.damage_from[i];
+                if spec.damage_from[..i].iter().any(|(n, _)| n == name) {
+                    return Err(ctx(format!("damage_from 材质名重复：'{name}'（加载期显式拒绝）")));
+                }
+            }
             let mut damage_from = spec
                 .damage_from
                 .iter()
@@ -2071,7 +2106,7 @@ mod tests {
         run_speed:0.67,jump_speed:2.9,accel_ground:0.05,accel_air:0.005,climb_over_y:3,\
         swim_buoyancy_idle:1.2,swim_buoyancy_up:0.9,swim_buoyancy_down:0.7,swim_drag:0.95,\
         damage_from:[(\"lava\",30.0),(\"fire\",3.0),(\"acid\",8.0)],\
-        min_cell_count:4,max_displace_per_tick:24,muzzle_offset:3,\
+        min_cell_count:4,max_displace_per_tick:24,muzzle_offset:6,\
     )])";
 
     #[test]
@@ -2090,7 +2125,7 @@ mod tests {
         assert_eq!(p.climb_over_y, 3);
         assert_eq!(p.min_cell_count, 4);
         assert_eq!(p.max_displace_per_tick, 24);
-        assert_eq!(p.muzzle_offset, 3);
+        assert_eq!(p.muzzle_offset, 6);
         assert_eq!(p.run_speed, quantize_fx(0.67).unwrap());
         assert_eq!(p.swim_drag, quantize_fx(0.95).unwrap());
     }
@@ -2134,6 +2169,79 @@ mod tests {
         let r = load_creatures(path.to_str().unwrap(), &t);
         std::fs::remove_file(&path).ok();
         assert!(r.is_err(), "damage_from 引用不存在材质必须在加载期报错");
+    }
+
+    /// 域校验（评审 Minor M5）：`half_w`/`half_h` 非正会让 `aabb_blocked` 的
+    /// 扫描范围变空区间，生物直接穿透世界——加载期必须显式拒绝，不能留到
+    /// 运行期才暴露成一个"能穿墙的生物"。
+    #[test]
+    fn load_creatures_rejects_non_positive_half_extents() {
+        let t = table_with_damage_materials();
+        let bad = "(templates:[(\
+            name:\"p\",half_w:0,half_h:5,hp_max:1.0,mana_max:1.0,mana_regen:1.0,\
+            run_speed:0.1,jump_speed:0.1,accel_ground:0.1,accel_air:0.1,climb_over_y:1,\
+            swim_buoyancy_idle:1.0,swim_buoyancy_up:1.0,swim_buoyancy_down:1.0,swim_drag:1.0,\
+            damage_from:[],min_cell_count:1,max_displace_per_tick:1,muzzle_offset:6,\
+        )])";
+        let path = write_temp_creatures("half_w_zero", bad);
+        let r = load_creatures(path.to_str().unwrap(), &t);
+        std::fs::remove_file(&path).ok();
+        assert!(r.is_err(), "half_w<=0 必须在加载期报错");
+        assert!(r.unwrap_err().contains("half_w"), "错误信息应指名 half_w");
+    }
+
+    /// climb_over_y 为负同理会让自动跨台阶的 `1..=climb_over_y` 变空区间，
+    /// 属于配置手滑，显式拒绝。
+    #[test]
+    fn load_creatures_rejects_negative_climb_over_y() {
+        let t = table_with_damage_materials();
+        let bad = "(templates:[(\
+            name:\"p\",half_w:2,half_h:5,hp_max:1.0,mana_max:1.0,mana_regen:1.0,\
+            run_speed:0.1,jump_speed:0.1,accel_ground:0.1,accel_air:0.1,climb_over_y:-1,\
+            swim_buoyancy_idle:1.0,swim_buoyancy_up:1.0,swim_buoyancy_down:1.0,swim_drag:1.0,\
+            damage_from:[],min_cell_count:1,max_displace_per_tick:1,muzzle_offset:6,\
+        )])";
+        let path = write_temp_creatures("climb_neg", bad);
+        let r = load_creatures(path.to_str().unwrap(), &t);
+        std::fs::remove_file(&path).ok();
+        assert!(r.is_err(), "climb_over_y<0 必须在加载期报错");
+    }
+
+    /// I3：`muzzle_offset` 必须严格大于 `max(half_w, half_h)`，否则弹体可能
+    /// 在自身 AABB 内出生（竖直方向只被 half_h 挡住时尤其明显）。
+    #[test]
+    fn load_creatures_rejects_muzzle_offset_not_exceeding_half_extents() {
+        let t = table_with_damage_materials();
+        // half_h=5 是较大的半轴；muzzle_offset=5（等于而非大于）必须拒绝。
+        let bad = "(templates:[(\
+            name:\"p\",half_w:2,half_h:5,hp_max:1.0,mana_max:1.0,mana_regen:1.0,\
+            run_speed:0.1,jump_speed:0.1,accel_ground:0.1,accel_air:0.1,climb_over_y:1,\
+            swim_buoyancy_idle:1.0,swim_buoyancy_up:1.0,swim_buoyancy_down:1.0,swim_drag:1.0,\
+            damage_from:[],min_cell_count:1,max_displace_per_tick:1,muzzle_offset:5,\
+        )])";
+        let path = write_temp_creatures("muzzle_too_small", bad);
+        let r = load_creatures(path.to_str().unwrap(), &t);
+        std::fs::remove_file(&path).ok();
+        assert!(r.is_err(), "muzzle_offset<=max(half_w,half_h) 必须在加载期报错");
+        assert!(r.unwrap_err().contains("muzzle_offset"), "错误信息应指名 muzzle_offset");
+    }
+
+    /// 重复材质名（评审 Minor M5）：与 `load_spells_rejects_duplicate_names`
+    /// 同一体例——两条同材质的 `damage_from` 让排序后相邻的一条静默覆盖
+    /// 另一条的查找语义，属隐藏配置错误，显式拒绝。
+    #[test]
+    fn load_creatures_rejects_duplicate_damage_from_material() {
+        let t = table_with_damage_materials();
+        let bad = "(templates:[(\
+            name:\"p\",half_w:2,half_h:5,hp_max:1.0,mana_max:1.0,mana_regen:1.0,\
+            run_speed:0.1,jump_speed:0.1,accel_ground:0.1,accel_air:0.1,climb_over_y:1,\
+            swim_buoyancy_idle:1.0,swim_buoyancy_up:1.0,swim_buoyancy_down:1.0,swim_drag:1.0,\
+            damage_from:[(\"fire\",1.0),(\"fire\",2.0)],min_cell_count:1,max_displace_per_tick:1,muzzle_offset:6,\
+        )])";
+        let path = write_temp_creatures("dup_damage_from", bad);
+        let r = load_creatures(path.to_str().unwrap(), &t);
+        std::fs::remove_file(&path).ok();
+        assert!(r.is_err(), "damage_from 材质名重复必须在加载期报错");
     }
 
     #[test]

@@ -233,6 +233,15 @@ impl Sim {
         // 1. 输入应用（M3 起从 scheduler::step 纯搬移到此；enumerate 下标 = op 序号，
         //    折进 Op::Emit/Explode 的抖动 salt，区分同 tick 内多个同类 op）。
         for (op_idx, op) in ops.iter().enumerate() {
+            // 评审 Cheap hardening：`*_OP_IDX_BASE`（`spell.rs::BLAST_OP_IDX_BASE`/
+            // `SPRAY_OP_IDX_BASE`、`projectile.rs::DIG_OP_IDX_BASE`）与 ops 阶段
+            // `op_idx` 不碰撞，全部建立在"一个 tick 的 ops 数远低于 `1 << 16`"
+            // 这条未被强制的假设上（`spell.rs::BLAST_OP_IDX_BASE` 文档："任何
+            // 合理场景远不到 1<<16"）。把假设收紧成断言：真出现单 tick 上万条
+            // ops 的场景（配置失控或未来某种批量生成器），这里立刻在 debug/
+            // test 构建报错，而不是悄悄产出一次可能与 `Op::Emit`/`Op::Explode`
+            // 的抖动 salt 撞车的哈希分叉。
+            debug_assert!(op_idx < 1 << 16, "单 tick ops 数 {op_idx} 超过 1<<16，可能与 *_OP_IDX_BASE 预留区间碰撞");
             self.apply_one(op, stamp, fseed, op_idx);
         }
         // 2. 实体与法术（架构 §4，M4 起生效）：2a+2b 生物相——输入应用 + 运动学，
@@ -346,11 +355,18 @@ impl Sim {
     }
 
     /// 总哈希 = `combine4(网格哈希树根, 粒子层, 刚体层, 实体层)`（M1 spec §9 +
-    /// M3 spec §7 + M4 spec §1.3）。无生物/弹体的场景实体层仍恒 0
-    /// （`Creatures`/`Projectiles::hash_into` 空表早退），与 M4 之前的
-    /// `combine3` 输出**不**逐位相同——这是 Task 1 golden 重录一次的唯一
-    /// 刻意哈希结构变更（`--grid-only` 取证网格哈希流本身不受影响）；
-    /// Task 2 起生物表可非空，实体层随之变化，但既有（无生物）场景不受影响。
+    /// M3 spec §7 + M4 spec §1.3）。**订正（评审文档漂移，2026-09-06）**：
+    /// 无生物/弹体的场景实体层**不是恒 0**，而是一个非零常量——
+    /// `Creatures`/`Projectiles::hash_into` 空表早退各自返回 `0`
+    /// （`empty_creatures_hash_into_is_zero`/`empty_projectiles_hash_into_is_zero`
+    /// 钉死这一步），但 `entity_hash()` 接着把这两个 `0` 各自的 8 字节
+    /// little-endian 表示喂进**另一个** `Xxh3` 求 digest——16 个零字节的
+    /// `Xxh3` 摘要不是 0（实测 `15034821391391295848`），这是可复现的固定值，
+    /// 不代表"没有实体层"或"可跳过"；与 M4 之前的 `combine3` 输出**不**逐位
+    /// 相同——这是 Task 1 golden 重录一次的唯一刻意哈希结构变更
+    /// （`--grid-only` 取证网格哈希流本身不受影响）；Task 2 起生物表可非空，
+    /// 实体层随之变化，但既有（无生物）场景不受影响（该常量在这些场景里
+    /// 逐 tick 保持不变，golden 比对能通过靠的是这一点，不是它等于 0）。
     pub fn state_hash(&self) -> u64 {
         hash::combine4(
             self.grid_hash(),
@@ -360,7 +376,9 @@ impl Sim {
         )
     }
 
-    /// 实体层哈希 = 生物 + 弹体（两者都为空时恒 0）。
+    /// 实体层哈希 = 生物 + 弹体。**两者都为空时返回的是一个非零常量**
+    /// （16 个零字节的 `Xxh3` 摘要），不是 0——完整论证见 `state_hash` 的
+    /// 文档。别依赖"空 ⇒ 0"这个直觉写任何跳过逻辑。
     fn entity_hash(&self) -> u64 {
         let mut h = xxhash_rust::xxh3::Xxh3::new();
         h.update(&self.creatures.hash_into().to_le_bytes());

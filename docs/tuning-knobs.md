@@ -170,7 +170,7 @@ SyncTest 六配置 + golden 重录（预期先落后验）+ bench 对照。这�
 
 | 常量 | 现值 | 管什么 | 类别 |
 |---|---|---|---|
-| `CREATURE_MAX_STEP` | 8 格 | 生物逐轴扫掠碰撞单 tick 最多检查/跨越的整格边界数（`creature.rs::sweep_axis`） | **B**：与 `MAX_SPEED`/DDA 步数上界同一纪律——生物单 tick 速度理论上不该超过这个格数，调大只是放宽安全网，调小会让高速生物"穿墙"（扫掠提前截断） |
+| `CREATURE_MAX_STEP` | 8 格 | 生物逐轴扫掠碰撞单 tick 最多检查/跨越的整格边界数（`creature.rs::sweep_x`/`sweep_y`，评审订正：不存在名为 `sweep_axis` 的函数，逐轴分离扫掠是两个独立函数） | **B**：与 `MAX_SPEED`/DDA 步数上界同一纪律——生物单 tick 速度理论上不该超过这个格数，调大只是放宽安全网，调小会让高速生物"穿墙"（扫掠提前截断） |
 | `MAX_CREATURES` | 16 | 生物池上限（超限 `SpawnCreature` 确定性拒绝，粒子池同口径） | A（容量）：改了要同步 `spell.rs::SPRAY_OP_IDX_BASE` 的推导（`u16::MAX + 1 - MAX_CREATURES`），否则 Spray 的 RNG 盐值区间会跟着挪 |
 | `MAX_PROJECTILES` | 4096 | 弹体池上限（超限 `Projectiles::spawn` 确定性拒绝、不排队） | A（容量） |
 | `MAX_BOUNCE_RESTARTS` | 4（`projectile.rs`） | 弹跳（`bounces`）单 tick 最多重开几次 `dda::CellWalk`——安全网，不是常规路径（`bounces` 字段全部 ≤ 2） | **B**：太小会让高 `bounces` 法术在角落里提前"罢弹"（还有预算却不弹了）；太大是纯粹的最坏情形计算量上界，正常游戏数值下不可观测 |

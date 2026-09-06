@@ -85,7 +85,9 @@ fn golden_crate_yard() {
 #[test]
 fn golden_duel() {
     // M4 主验收场景（spec §0.2 第 1 项）：两生物 + 输入时间线 + 水/油/石头，
-    // 五项行为（走水/炸石/钻石/浇油点燃连锁/一方死亡）全在 3000 tick 内的
-    // golden 回归。
+    // 五项行为（走水/炸石/钻石/浇油点燃连锁/一方死亡）在脚本时间线结束前
+    // （约 tick 2900）全部覆盖；`ticks: 20000`（评审 I1）——spec §0.2 第 1 项
+    // 要求的"六配置 2 万 tick"覆盖整条 golden 回归，脚本结束后的静置 tick
+    // 同样纳入长期哈希稳定性回归（duel.ron 头注）。
     check("data/scenarios/duel.ron", "crates/sand-harness/tests/golden/duel.golden");
 }
