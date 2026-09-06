@@ -1,7 +1,7 @@
 > 文档路径：`docs/superpowers/specs/2026-09-05-m4-player-and-spells-design.md`
 > 运行时版本：Rust（内核）+ Godot 4 + gdext（表现层）
 > 最近更新：2026-09-05 (UTC+8)
-> **Status**: Proposed
+> **Status**: Implemented
 
 # M4 玩家与法术 · 实现级设计
 

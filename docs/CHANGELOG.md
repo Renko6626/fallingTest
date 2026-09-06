@@ -8,6 +8,33 @@
 ## 2026-09-06
 
 ### Added
+- **M4 收口完成（Task 7）**（`data/scenarios/duel.ron`、`crates/sand-harness/tests/
+  {golden,synctest,duel_acceptance}.rs`、`crates/sand-core/tests/projectile_behavior.rs`、
+  `data/spells.ron` 追加 `scatter_bolt`、`docs/perf/2026-09-05-m4-player-and-spells.md`）。
+  `duel` 场景：256×128、两生物（team 0/1，四槽 loadout 相同）、水池 + 矮台阶 + 悬空石柱，
+  3000 tick 覆盖五项行为（趟水 / 炸台阶 / 挖掘弹钻石柱 / 浇油点燃连锁 / 一方被打死）。
+  新增两条行为测试：`oil_spray_then_bolt_ignites_a_chain`（"环境连锁"卖点的第一个可测形态，
+  **法术驱动**的完整链路）、`spread_angle_is_uniform_within_the_declared_cone`（10 腔 4σ
+  分布回归——RNG 维度缺失类 bug 两端一样地错、SyncTest 抓不到，这是唯一防线）。
+  执法：`cargo test --workspace` 377 项全绿；clippy 零告警；`duel` 六配置 SyncTest 零分叉；
+  线程 1/8/16 哈希流逐字相同；六个既有 golden 重录**仅指纹行变化**（双边 `grep -v '_fp'`
+  取证，仿真哈希行逐位不变）。
+- **`duel_acceptance.rs`：场景内容自检**（控制器补）。发现 `golden_duel` 与
+  `duel_six_configs_zero_divergence` 钉的只是**确定性**、对场景内容一无所知——把 `duel.ron`
+  的 `inputs` 整段删掉两者照样绿（重录一次 golden 即可）。而"五项行为都真的发生"此前**只由
+  场景注释声称、无人验证**。现把五条声称变成方向性断言（趟水越过 x=75 / 台阶石头减少 /
+  石柱减少但未打光 / 油峰值 >20 且终态 < 峰值一半 / 1 号 alive=false 且 0 号仍活）。
+
+- **文档同步：M4 落地**（`docs/overview/kernel-charter.md` §11 实施期决策**第 18 条**、
+  `docs/overview/program-architecture.md` §3 子系统清单 + §4 管线第 2 步、`docs/README.md`
+  优先队列第 5 条、spec 与七份 plan 分册 Status → Implemented）。第 18 条落档八项：
+  管线第 2 步展开 2a–2d（协议版本变更）、`combine3 → combine4`、M4 范围收窄（施法状态机与
+  stain 顺延，**非翻案**）、总纲 §4"挂 payload 的粒子"措辞澄清、待决项"法术 VM"本轮判定
+  **不升级**、未触发翻案 6 复议、玩家非物理 body 经实施验证、以及**四条实测教训**（扫掠步数
+  不能取速度整数部分；`on_ground` 必须是对当前 footprint 的查询而非扫掠副作用；Noita 三档
+  浮力系数不能直接抄——它另有喷射推力；弹体侵彻是能量射线三兄弟的第四个同构用例）。
+  另记裸字节指纹的实测后果：纯注释改动也会移动指纹（设计意图，非缺陷），故 golden 重录口径
+  固定为"只允许指纹行变、仿真哈希行逐位不变"。
 - **M4 Task 6：弹体七项扩展**（`crates/sand-core/src/projectile.rs::advance` 逐条 TDD 补齐
   spec §5.1/§5.2/§5.4/§5.5 全部七项：①`displace_liquid` 排开液体/粉末（复用 §4.3 生物排开
   同一脱格通路）②`pass_through` 掩码（`Category::bit()` 位或，判定顺序**优先于**

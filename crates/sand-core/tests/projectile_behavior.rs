@@ -11,9 +11,13 @@
 
 mod common;
 
-use sand_core::{input::BTN_FIRE, spell::*, Fx, InputFrame, Op, Sim, MAT_WALL, MAX_PROJECTILES};
+use sand_core::{
+    input::{BTN_FIRE, MAX_SLOTS},
+    spell::*,
+    Fx, InputFrame, Op, Sim, MAT_WALL, MAX_PROJECTILES,
+};
 
-use common::{arena_with_loadout, spell_table, WATER};
+use common::{arena_with_loadout, arena_wide_open_with_shooter, spell_table, WATER};
 
 /// 本 Task 的测试法术表：0 号 = 普通直射弹（life 长），1 号 = 短命弹（life 5）。
 fn bolt_table() -> SpellTable {
@@ -532,4 +536,125 @@ fn projectile_pushes_a_rigid_body_it_hits() {
         sim.step(&[], &[]);
     }
     assert!(sim.body_state(0).unwrap().0 .0 > x0, "射中的箱子应当被推走");
+}
+
+// ==================== M4 Task 7 Step 2：油→火端到端连锁（spec §7.2 第 7 条） ====================
+//
+// "环境连锁"卖点的第一个可测形态——跨 M2 反应表（`fire`/`oil` 的
+// `ignition_temp`/`fire_temp` 接触判定）+ M4 弹体子系统（`Spray` 落地）
+// 的端到端行为：`oil_spray` 铺油、`fire_bolt` 点燃、CA 燃烧规则把火焰
+// 沿油面蔓延吃掉大半油量——三层机制没有一层是本测试自己模拟的，全部
+// 走产品代码路径。
+//
+// `fire_bolt` 只服务本测试（`common::test_spell_table` 头注已加说明）：
+// 字面上叫"弹"，`kind` 却是 `Spray(material: fire, ..)`——`Bolt` 只扣血、
+// `Blast` 只把命中格摧毁成 air，核心里没有任何路径能把命中格换成
+// `fire`（决策记录第 9 条：`create_cell_material` 缺口不在 M4 补），
+// `Spray` 是唯一能把 `fire` 材质真正放进世界的原语。
+#[test]
+fn oil_spray_then_bolt_ignites_a_chain() {
+    let mut sim = arena_with_loadout(&["oil_spray", "fire_bolt"]);
+    // `arena_wide_open_with_shooter` 射手脚下没有地板（只有世界边界墙在
+    // y=127）——补一条贴近射手的地板（y=90，离出生 y=65 只有 25 格），让
+    // 喷出的油/火迅速落定成一滩**静止**液体/气体，而不是在 25 格外的远
+    // 世界边界上落地前一路被重力拖着穿过大段开阔空间、横向漂移到无法预
+    // 测的位置。TDD 阶段实测撞见：油/火分两次单独施放，各自的横向漂移
+    // 幅度不保证重叠，落在远端地板上时二者常常擦肩而过，点燃骰再怎么摇
+    // 也够不到油——不是概率不够，是压根没挨上（诊断用例
+    // `try_ignite` 逐 tick 打印验证过：目标格材质是 air，不是 oil）。
+    let wall = sim.table().id_by_name("wall").unwrap();
+    sim.apply_setup(&[Op::Fill { material: wall, x0: 0, y0: 90, x1: 255, y1: 90 }]);
+    // ① 往地上浇一大片油：aim 略向下（16384 = 90°，正下方），
+    // `oil_spray` cooldown 6，40 tick 内够放六七次。
+    for _ in 0..40 {
+        sim.step(&[], &[InputFrame::new(BTN_FIRE, 16384, 0)]);
+    }
+    for _ in 0..40 {
+        sim.step(&[], &[]); // 让油落地摊开（地板就在 25 格外，远用不到
+                             // 原先给"自由落体到世界边界"备的 120 tick）。
+    }
+    let oil = sim.table().id_by_name("oil").unwrap();
+    let oil_before = sim.world().count_material(oil);
+    assert!(oil_before > 50, "应当先铺出一片油（实际 {oil_before}）");
+    // ② 打一发"火弹"点燃——同一方向、同一落点，落在刚铺好的油面上。
+    sim.step(&[], &[InputFrame::new(BTN_FIRE, 16384, 1)]);
+    for _ in 0..600 {
+        sim.step(&[], &[]);
+    }
+    let oil_after = sim.world().count_material(oil);
+    assert!(
+        oil_after < oil_before / 2,
+        "油应当被连锁烧掉大半（点燃前 {oil_before}，点燃后 {oil_after}）"
+    );
+}
+
+// ==================== M4 Task 7 Step 3：散布角分布回归（spec §7.2） ====================
+
+/// RNG salt/attempt 维度缺失类 bug 两端一样地错，SyncTest 抓不到——本测试是
+/// 唯一防线（Noita 宝箱事故先例，`docs/reference/noita-grid-api-and-rng.md`
+/// §5.2：`STREAM_SPREAD` 若漏了 salt/attempt 区分同帧同源的多次掷骰，两端
+/// 会以完全相同的方式偏出正确分布，双实例哈希比对照样逐位相同）。
+///
+/// **出射角提取用 `atan2`，不用小角度线性近似**：`vy/vx` 之类的比例替代
+/// 在角度较大时会非线性失真，把"分布不均匀"的证据和"提取方法本身的
+/// 非线性"混在一起，稀释这条回归的区分力——本测试要验的是"落腔是否真的
+/// 按发射角均匀分布"，提取步骤必须先把角度精确解出来。`atan2`/`to_degrees`
+/// 是 `f64` 浮点，但这是**测试侧**的统计分析代码，不是核心模拟路径——不
+/// 违反 charter §6"核心禁系统数学库超越函数"（那条红线管的是 `sand-core`
+/// 的确定性状态转移，不管测试怎么验证输出）。
+#[test]
+fn spread_angle_is_uniform_within_the_declared_cone() {
+    const BINS: usize = 10;
+    const SHOTS: usize = 5000;
+    // `spread_bam` 字段**本身就是半张角**（`spell.rs::cast_all` 直接拿它当
+    // `bam_in_range` 的 `half` 用，`scenario.rs::load_spells` 的 `spread_deg`
+    // 同样不除二直通 `quantize_bam`）——scatter_bolt 声明的 30° 就是
+    // ±30°（60° 全锥角），不是"全锥 30°、半角 15°"（TDD 阶段实测撞见：
+    // 按半角 15° 分腔，边界腔挤进了本该落在 ±15°..±30° 之间的样本，两端
+    // 腔计数是中间腔的 5 倍多）。
+    const HALF_DEG: f64 = 30.0;
+
+    let spells = spell_table();
+    let sid = spells.id_by_name("scatter_bolt").unwrap();
+    let mut loadout = [SPELL_NONE; MAX_SLOTS];
+    loadout[0] = sid;
+    let mut sim = arena_wide_open_with_shooter(spells, loadout);
+
+    let mut hist = [0u32; BINS];
+    let mut fired = 0usize;
+    let mut t = 0u64;
+    while fired < SHOTS {
+        // scatter_bolt 的 cooldown = 1，故每 tick 出一发；aim 恒 0（+x）。
+        sim.step(&[], &[InputFrame::new(BTN_FIRE, 0, 0)]);
+        t += 1;
+        assert!(t < 200_000, "取样太慢，检查 cooldown 配置");
+        for i in 0..sim.projectiles().len() {
+            if sim.projectiles().spell(i) != sid {
+                continue;
+            }
+            // 出射角：直接对本 tick 新生弹体的速度分量取 atan2——|角| ≤ 30°
+            // 时 vx 恒 > 0（dir_of 的第一象限单调性，`fixed.rs` 金值测试已
+            // 钉死），atan2 落在 (-30°, +30°) 主值区间内，无需象限修正。
+            let vx = sim.projectiles().vx(i).0 as f64;
+            let vy = sim.projectiles().vy(i).0 as f64;
+            let angle_deg = vy.atan2(vx).to_degrees();
+            let b = (((angle_deg + HALF_DEG) / (2.0 * HALF_DEG)) * BINS as f64).floor();
+            let b = (b as i64).clamp(0, BINS as i64 - 1) as usize;
+            hist[b] += 1;
+            fired += 1;
+            // scatter_bolt 的 `life: 1`：本弹体下一 tick 自动销毁，同一发
+            // 不会在后续 tick 被重复计入（brief 设计原文档）。
+        }
+    }
+
+    let n = SHOTS as f64;
+    let p = 1.0 / BINS as f64;
+    let (mu, sigma) = (n * p, (n * p * (1.0 - p)).sqrt());
+    for (i, &c) in hist.iter().enumerate() {
+        assert!(
+            (c as f64 - mu).abs() < 4.0 * sigma,
+            "第 {i} 腔 {c} 偏离均匀分布（期望 {mu:.0} ± {:.0}）：{hist:?}",
+            4.0 * sigma
+        );
+    }
 }

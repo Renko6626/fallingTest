@@ -87,3 +87,23 @@ fn crate_yard_six_configs_zero_divergence() {
     runner::synctest(&sc, &tables, 4, sc.ticks)
         .unwrap_or_else(|e| panic!("crate_yard 六配置 SyncTest 分叉：{e}"));
 }
+
+/// M4 收口验收场景（Task 7，spec §0.2 第 1 项）：两个生物按输入时间线跑跳
+/// 互射，`inputs` 时间线 + `SpawnCreature` + `spells`/`creatures` 表全链路
+/// 在六配置下的确定性——`cast_all` 的双闸门、`STREAM_SPREAD` 掷骰、弹体
+/// SoA 结算、生物写域全部随本场景首次进入 CI 级 SyncTest。
+#[test]
+fn duel_six_configs_zero_divergence() {
+    let (table, _materials_fp) = load_materials(&repo_path("data/materials.ron")).unwrap();
+    let (reactions, _fp) = load_reactions(&repo_path("data/reactions.ron"), &table).unwrap();
+    let (creature_table, _creatures_fp) = load_creatures(&repo_path("data/creatures.ron"), &table).unwrap();
+    let (spell_table, _spells_fp) = load_spells(&repo_path("data/spells.ron"), &table).unwrap();
+    let sc = load_scenario(&repo_path("data/scenarios/duel.ron"), &table, &spell_table).unwrap();
+    let tables = runner::Tables {
+        materials: &table,
+        reactions: &reactions,
+        creatures: &creature_table,
+        spells: &spell_table,
+    };
+    runner::synctest(&sc, &tables, 4, sc.ticks).unwrap_or_else(|e| panic!("duel 六配置 SyncTest 分叉：{e}"));
+}

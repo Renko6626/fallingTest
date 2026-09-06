@@ -1,7 +1,7 @@
 # docs/ 导航
 
 > 文档路径：`docs/README.md`
-> 最近更新：2026-09-03 (UTC+8)
+> 最近更新：2026-09-06 (UTC+8)
 
 ## 现行真源（先读这两篇）
 
@@ -82,12 +82,27 @@
    bench `perf/2026-09-02-m3-rigid-body.md` 追记 1–3。**备选路线**
    `proposals/2026-09-03-noita-style-buoyancy.md`（Proposed：Noita 式逐像素反作用、水里不睡；
    触发条件与一行安全出口）。**浮力尾巴已收口**（第 16 条：顶面载荷 / 沉降闸门 / 密封支撑，ω×r 撤回）。**爆炸推刚体**（第 17 条，Noita 查证 `physics_throw_enabled` / `buoyancy = 0.7` 见 `reference/noita-deep-dive.md` §4.2）。
-   **下一步 = M4 玩家与法术（brainstorm）。**
+   （M4 已于 2026-09-06 落地，见下方第 5 条。）
 4. **M1 粒子层：已完成并经用户验收（2026-08-31）**（spec → Implemented，会话总账 `sessions/2026-08-30-m1-particle-layer.md`）：
    脱格/落格闭环、DDA、`Op::Emit`/`Op::Explode`（Noita 射线模型 + 近心汽化 + 密度冲量 + 方向涨落）、容量限流；验收 §0
    五项全过（GIF 目检经用户四轮迭代后确认）。后续爆炸手感收口 + `world.rs` 拆分 `explode.rs`/`emit.rs` 见 CHANGELOG
    2026-08-30 块（commits `66cea0a`..`33ab3da`）。
-5. M4 玩家与法术 → M5 联机（届时启用 O4 运行时周期哈希）→ M6 rollback 决策门（物理快照-重模拟 SyncTest）。
+5. **M4 玩家与法术：代码与验收已完成（2026-09-06，GIF 目检待用户）**——spec
+   `superpowers/specs/2026-09-05-m4-player-and-spells-design.md`、计划
+   `superpowers/plans/2026-09-05-m4-player-and-spells-plan.md`（总纲 + 七份分册）。
+   **范围经用户裁决收窄为"会动的生物 + 会飞的投射物"**：Noita 式施法状态机（牌堆抽取 /
+   多重 / trigger / shuffle / 法杖构筑）与 stain 状态效果整块顺延。落地内容：
+   `InputFrame`（唯一入核通道）+ BAM 角 1024 项查表；生物（自研定点 AABB 逐轴扫掠、
+   跨台阶、踩得住 M3 刚体盖章格、排开液体、游泳、材质接触伤害、HP 墓碑）；弹体
+   （独立 SoA，复用 `dda`/`fixed` 模块而非粒子池，含侵彻/弹跳/阻力/穿透/排开/刚体点冲量/
+   定时爆）；法术表扁平三原语 Bolt/Blast/Spray + cooldown·mana 双闸门。
+   管线第 2 步由占位变生效并展开 2a–2d（协议版本变更），`state_hash` 由 `combine3` 变
+   `combine4`。`duel` golden + 五场景六配置 SyncTest + 线程 1/8/16 逐位相同 + 散布角分布
+   回归；`duel_acceptance.rs` 把"五项行为真的发生"变成断言（golden/SyncTest 只钉确定性、
+   不钉内容）。总纲 §11 实施期决策第 18 条（含四条实测教训）；tuning-knobs §8；
+   bench 见 `perf/2026-09-05-m4-player-and-spells.md`。
+   **已知限制**：水流推人做不了（网格无水平速度场）；弹体对刚体的点冲量未按质量/半径归一。
+   **下一步 = M5 联机对局**（届时启用 O4 运行时周期哈希）→ M6 rollback 决策门（物理快照-重模拟 SyncTest）。
 
 ## 目录分工
 

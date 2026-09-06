@@ -1,7 +1,7 @@
 > 文档路径：`docs/superpowers/plans/2026-09-05-m4-player-and-spells-plan-task4.md`
 > 运行时版本：Rust（内核）+ Godot 4 + gdext（表现层）
 > 最近更新：2026-09-05 (UTC+8)
-> **Status**: Proposed
+> **Status**: Implemented
 > 总纲：`2026-09-05-m4-player-and-spells-plan.md`（Goal / Architecture / **Global Constraints** / File Structure / Task 索引）
 
 # M4 · Task 4：弹体载体

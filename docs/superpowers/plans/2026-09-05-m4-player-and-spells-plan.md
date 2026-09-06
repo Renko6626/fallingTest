@@ -1,7 +1,7 @@
 > 文档路径：`docs/superpowers/plans/2026-09-05-m4-player-and-spells-plan.md`
 > 运行时版本：Rust（内核）+ Godot 4 + gdext（表现层）
 > 最近更新：2026-09-05 (UTC+8)
-> **Status**: Proposed
+> **Status**: Implemented
 > 分册：每个 Task 一份 `2026-09-05-m4-player-and-spells-plan-taskN.md`（索引见文末）
 
 # M4 玩家与法术 · 实施计划（Task 1–2）

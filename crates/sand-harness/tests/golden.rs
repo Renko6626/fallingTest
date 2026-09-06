@@ -81,3 +81,11 @@ fn golden_crate_yard() {
     // M3 主验收场景（spec §0）：刚体落地/沙托/浮沉/切割/燃烧散架的 golden 回归。
     check("data/scenarios/crate_yard.ron", "crates/sand-harness/tests/golden/crate_yard.golden");
 }
+
+#[test]
+fn golden_duel() {
+    // M4 主验收场景（spec §0.2 第 1 项）：两生物 + 输入时间线 + 水/油/石头，
+    // 五项行为（走水/炸石/钻石/浇油点燃连锁/一方死亡）全在 3000 tick 内的
+    // golden 回归。
+    check("data/scenarios/duel.ron", "crates/sand-harness/tests/golden/duel.golden");
+}

@@ -180,7 +180,26 @@ pub fn materials() -> MaterialTable {
             rise_chance: 0,
             ..MaterialDef::base(FIRE, "fire", Category::Gas, 1)
         },
-        def(6, "oil", Category::Liquid, 12, 1),
+        // `oil` 可燃（M4 Task 7 Step 2 追加，`oil_spray_then_bolt_ignites_a_chain`
+        // 需要）：此前本表的 `oil` 只用 `def(..)` 走最简闭包，只带 `hp`，
+        // `fire_hp` 吃 `MaterialDef::base` 缺省 0——**不可燃**，`fire.rs::
+        // try_ignite` 的 `fuel == 0` 分支恒真、直接 `return`，火从来点不着
+        // 它（TDD 阶段实测撞见：`fire_bolt` 落地后 fire 计数如期在寿命 40
+        // tick 后归零，但 oil 计数全程纹丝不动）。数值照抄
+        // `data/materials.ron` 的生产值（`ignition_temp: 40`、
+        // `fire_temp: 100`、`fire_hp: 90`、`fire_chance` 量化自 0.6、
+        // `flame_to` 指向本表的 `FIRE`）——此前只有 `stone`/`wood_debris`
+        // 这类可燃材质在本表里显式声明过这套字段，`oil` 现在补齐同一套。
+        MaterialDef {
+            hp: 1,
+            dispersion: 2,
+            ignition_temp: 40,
+            fire_temp: 100,
+            fire_hp: 90,
+            fire_chance: 153, // ×255 round(0.6) = 153，同 data/materials.ron 口径
+            flame_to: FIRE,
+            ..MaterialDef::base(6, "oil", Category::Liquid, 12)
+        },
         MaterialDef {
             hp: 6,
             durability: 8,
@@ -290,6 +309,7 @@ pub fn arena_with_two_creatures_same_team(spells: SpellTable) -> Sim {
 #[allow(dead_code)]
 fn test_spell_table(table: &MaterialTable) -> SpellTable {
     let oil = table.id_by_name("oil").unwrap();
+    let fire = table.id_by_name("fire").unwrap();
     SpellTable::from_defs(vec![
         SpellDef {
             name: "spark_bolt".to_string(),
@@ -410,6 +430,40 @@ fn test_spell_table(table: &MaterialTable) -> SpellTable {
             air_friction: Fx::from_int(1),
             liquid_drag: Fx::from_int(1),
             pass_through: Category::Gas.bit() | Category::Liquid.bit(),
+            displace_liquid: false,
+            bounces: 0,
+            bounce_energy: Fx::ZERO,
+            physics_impulse: 0,
+            on_lifetime_out_explode: false,
+        },
+        // `fire_bolt`（M4 Task 7 Step 2，供 `oil_spray_then_bolt_ignites_a_chain`
+        // 端到端测试专用）："打一发火弹点燃"字面上得是 `Bolt`/`Blast` 才像
+        // 一发弹体，但两者都碰不到材质：`Bolt` 只对生物 `apply_hit` 扣血，
+        // `Blast` 只按 durability 把命中格摧毁成 air（`explode.rs::destroy_cell`
+        // 走的是 `set_cell_stamped(.., MAT_AIR, ..)`），核心里**没有一条路径
+        // 会把命中格换成 `fire`**——决策记录第 9 条明确"`create_cell_material`
+        // 缺口不在 M4 补"。唯一能把 `fire` 材质真正放进世界的原语是
+        // `Spray`（`cast_all` 直接 `emit::apply_emit(material, ..)`），
+        // 这条法术名字叫 `fire_bolt`（贴合测试名与 duel.ron 头注的叙事），
+        // 但 `kind` 是 `Spray(material: fire, ..)`，不是 `Bolt`——与
+        // `oil_spray` 同一原语，唯一区别是喷的材质。`count`/`speed`/`jitter`
+        // 与 `oil_spray` 同量级，保证喷出的火面积和喷油面积可比，命中率
+        // 不靠运气。
+        SpellDef {
+            name: "fire_bolt".to_string(),
+            kind: SpellKind::Spray { material: fire, count: 12, speed: Fx::from_int(4), jitter: Fx::from_ratio(6, 10) },
+            mana: 0,
+            cooldown: 0,
+            speed: Fx::ZERO,
+            life: 0,
+            gravity: Fx::ZERO,
+            spread_bam: 0,
+            grace: 0,
+            dig_power: 0,
+            max_durability: 10,
+            air_friction: Fx::from_int(1),
+            liquid_drag: Fx::from_int(1),
+            pass_through: 0,
             displace_liquid: false,
             bounces: 0,
             bounce_energy: Fx::ZERO,
@@ -582,6 +636,35 @@ pub fn spell_table() -> SpellTable {
             bounce_energy: Fx::ZERO,
             physics_impulse: 0,
             on_lifetime_out_explode: true,
+        },
+        // `scatter_bolt`（M4 Task 7 Step 3，供 `spread_angle_is_uniform_
+        // within_the_declared_cone` 散布分布回归专用）：**只服务本测试**，
+        // 不进 `duel.ron`、不进任何行为测试——`spread_bam` 是全表唯一非零
+        // 值，`cooldown: 1` + `life: 1` 让它能连续 5000 tick 每 tick 出一发、
+        // 出生即可观测、下一 tick 自动销毁，不需要手动清池防重复计数。
+        // `spread_bam = 5461`：30° 量化（`round(30/360*65536) = 5461.33 →
+        // 5461`），与 `scenario::quantize_bam` 的四舍五入口径一致，测试里
+        // 直接写这个整数常量而不复用该函数——core 测试不依赖 harness crate。
+        SpellDef {
+            name: "scatter_bolt".to_string(),
+            kind: SpellKind::Bolt { damage_milli: 0, knockback: Fx::ZERO },
+            mana: 0,
+            cooldown: 1,
+            speed: Fx::from_int(8),
+            life: 1,
+            gravity: Fx::ZERO,
+            spread_bam: 5461,
+            grace: 0,
+            dig_power: 0,
+            max_durability: 10,
+            air_friction: Fx::from_int(1),
+            liquid_drag: Fx::from_int(1),
+            pass_through: 0,
+            displace_liquid: false,
+            bounces: 0,
+            bounce_energy: Fx::ZERO,
+            physics_impulse: 0,
+            on_lifetime_out_explode: false,
         },
     ])
 }

@@ -1,0 +1,19 @@
+scenario duel
+scenario_fp f40920cdfcde12a9
+materials_fp fee3946a481b1c4e
+reactions_fp 91ee5c6afd906fb0
+creatures_fp 32c6352cf98bd291
+spells_fp 7a9bd8e2a092a150
+world 256x128 seed 20260906 ticks 3000
+tick      256 hash 6031617a94922ba1
+tick      512 hash cb3d74c9a7204589
+tick      768 hash bfe576cd3a32da07
+tick     1024 hash 1aecd3b501cb0f6c
+tick     1280 hash 2a4844fe5ce53bb1
+tick     1536 hash db4f518115dfb934
+tick     1792 hash 4ad457213970b4fe
+tick     2048 hash 0af8fd70237aacd4
+tick     2304 hash f87e97432a5796ce
+tick     2560 hash 28fa1951bfe5d8aa
+tick     2816 hash c7bfa1c33af7c747
+final 0a84dd9ae11ba78f
