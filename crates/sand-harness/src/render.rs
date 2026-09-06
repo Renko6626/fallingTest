@@ -68,6 +68,19 @@ pub fn render_gif(
         }
     }
 
+    // 实体叠加色（M4）：刻意取高饱和、与任何材质色都不撞的四色，
+    // 保证生物/弹体在任何地形背景上都一眼可辨。
+    for (slot, (r, g, b)) in [
+        (CREATURE_TEAM0_SLOT, (80u8, 220u8, 255u8)),   // team 0：青
+        (CREATURE_TEAM1_SLOT, (255u8, 120u8, 60u8)),   // team 1：橙
+        (CREATURE_DEAD_SLOT, (90u8, 90u8, 100u8)),     // 墓碑：暗灰
+        (PROJECTILE_SLOT, (255u8, 245u8, 120u8)),      // 弹体：亮黄
+    ] {
+        palette[slot * 3] = r;
+        palette[slot * 3 + 1] = g;
+        palette[slot * 3 + 2] = b;
+    }
+
     let mut file = File::create(&opts.out).map_err(|e| format!("建 {} 失败：{e}", opts.out))?;
     let mut enc = gif::Encoder::new(&mut file, ow as u16, oh as u16, &palette)
         .map_err(|e| format!("GIF 编码器：{e}"))?;
@@ -81,6 +94,8 @@ pub fn render_gif(
         if t >= opts.from && (t % opts.every == 0 || t + 1 == ticks) {
             fill_frame(sim, table, w, h, opts.scale, &mut buf);
             draw_particles(sim, w, h, opts.scale, &mut buf);
+            draw_creatures(sim, w, h, opts.scale, &mut buf);
+            draw_projectiles(sim, w, h, opts.scale, &mut buf);
             let frame = gif::Frame {
                 width: ow as u16,
                 height: oh as u16,
@@ -120,6 +135,69 @@ fn draw_particles(sim: &Sim, w: usize, h: usize, scale: usize, buf: &mut [u8]) {
 
 /// 燃烧变体色槽起点（材质 id 段用 0..=127 绰绰有余，128 起放燃烧色）。
 const BURN_SLOT: usize = 128;
+
+/// 实体叠加色槽（M4 目检，2026-09-06）。放在调色板顶端，与材质段（0..=127）
+/// 和燃烧段（128..128+n）都不相撞。
+///
+/// **为什么必须加**：M4 之前渲染器只画网格格子 + 粒子，而生物与弹体都**不是**
+/// 网格格子——它们是实体表里的定点坐标。结果是 M4 的 GIF 里两个玩家和他们打出的
+/// 每一发弹体全部隐形，目检只能看到"地形自己在变化"，验收第 6 项形同虚设。
+const CREATURE_TEAM0_SLOT: usize = 248;
+const CREATURE_TEAM1_SLOT: usize = 249;
+const CREATURE_DEAD_SLOT: usize = 250;
+const PROJECTILE_SLOT: usize = 251;
+
+/// 生物叠加：按 AABB 填色，team 0/1 分色，墓碑（`alive == false`）画成暗灰。
+/// 只读消费 `sim.creatures()`（Channel A 雏形），不影响任何哈希——纯渲染面，
+/// 与 `draw_particles` 同体例。
+fn draw_creatures(sim: &Sim, w: usize, h: usize, scale: usize, buf: &mut [u8]) {
+    let ow = w * scale;
+    let creatures = sim.creatures();
+    for id in 0..creatures.len() {
+        let Some(c) = creatures.get(id as u8) else { continue };
+        let slot = if !c.alive {
+            CREATURE_DEAD_SLOT
+        } else if c.team == 0 {
+            CREATURE_TEAM0_SLOT
+        } else {
+            CREATURE_TEAM1_SLOT
+        } as u8;
+        let (cx, cy) = (c.x.to_cell(), c.y.to_cell());
+        for gy in (cy - c.half_h)..=(cy + c.half_h) {
+            for gx in (cx - c.half_w)..=(cx + c.half_w) {
+                if gx < 0 || gy < 0 || gx as usize >= w || gy as usize >= h {
+                    continue;
+                }
+                let (gx, gy) = (gx as usize, gy as usize);
+                for sy in 0..scale {
+                    let row_start = (gy * scale + sy) * ow;
+                    for sx in 0..scale {
+                        buf[row_start + gx * scale + sx] = slot;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// 弹体叠加：每颗按当前格坐标画一个 scale×scale 块。同 `draw_creatures`，纯渲染面。
+fn draw_projectiles(sim: &Sim, w: usize, h: usize, scale: usize, buf: &mut [u8]) {
+    let ow = w * scale;
+    let p = sim.projectiles();
+    for i in 0..p.len() {
+        let (cx, cy) = (p.x(i).to_cell(), p.y(i).to_cell());
+        if cx < 0 || cy < 0 || cx as usize >= w || cy as usize >= h {
+            continue;
+        }
+        let (cx, cy) = (cx as usize, cy as usize);
+        for sy in 0..scale {
+            let row_start = (cy * scale + sy) * ow;
+            for sx in 0..scale {
+                buf[row_start + cx * scale + sx] = PROJECTILE_SLOT as u8;
+            }
+        }
+    }
+}
 
 fn fill_frame(sim: &Sim, table: &MaterialTable, w: usize, h: usize, scale: usize, buf: &mut [u8]) {
     let ow = w * scale;
