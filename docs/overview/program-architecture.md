@@ -1,6 +1,6 @@
 > 文档路径：`docs/overview/program-architecture.md`
 > 运行时版本：Rust（内核）+ Godot 4 + gdext（表现层）
-> 最近更新：2026-08-29 (UTC+8)
+> 最近更新：2026-09-06 (UTC+8)
 > **Status**: Trial（随总纲于 2026-08-29 一并采纳）
 
 # 落沙法术对战（暂名）· 程序架构文档
@@ -78,7 +78,7 @@ workspace/
 | particles（Layer P） | 弹道积分（并行）+ 落格提交（串行按 id）、法术弹体 payload | cells（DDA 碰撞查询）、生成队列、hash-RNG | cells（落格/爆炸写入）、物理冲量队列、Channel B 事件 |
 | stamp | 像素刚体管线（`sand-core::body`，2026-09-02 落地）：位图↔网格实心光栅化盖章/反盖章（counter 往返）、水面线浮力采样、破坏对账、4 连通分量重提取（滞回 + 每 tick 限额 2）；几何走行程矩形覆盖 | cells、body 变换、body 位图 | cells（盖章/反盖章、碎片脱格粒子）、物理力、collider 重建 |
 | physics-adapter | 物理引擎适配层（`sand-core::physics`，**已定 Rapier2D 0.35**，2026-09-02）：固定 dt 步进、按 body id 序建删/施力/查询、serde 快照/恢复；rapier 类型不出模块 | 浮力/阻力（整数计数 × 常量）、地形矩形 | body 变换（f32，边界唯一出口） |
-| entities & spells | 玩家运动学控制器（自研定点，采样网格碰撞，不用物理引擎 body）、法术实例与状态效果、loadout 实例化 | 确认输入、cells、法术表 | 玩家状态、粒子生成队列、物理冲量队列、Channel B 事件 |
+| entities & spells | 生物与法术（`sand-core::{creature,projectile,spell,input}`，2026-09-06 落地）：`InputFrame` 唯一入核通道；生物为自研定点 kinematic（AABB 逐轴分离扫掠、逐像素采样网格，**不用物理引擎 body**），含排开液体/游泳/材质接触伤害/HP 墓碑；弹体为独立 SoA（复用 `dda`/`fixed` 模块而非粒子池），含侵彻/弹跳/阻力/穿透/刚体点冲量；法术表扁平三原语 Bolt/Blast/Spray + cooldown·mana 双闸门。**状态效果（stain）与施法状态机顺延**（总纲 §11 第 18 条 ①） | 确认输入（InputFrame）、cells、法术表、生物模板表 | 生物与弹体状态、cells（排开/侵彻删格）、粒子生成队列、`pending_blasts`、Channel B 事件 |
 | rng | `hash(tick, x, y, salt, stream)` 纯函数族 | — | —（无状态，人人可读） |
 | events | Channel B 缓冲：事件带 (tick, 序号) 唯一 id，供桥侧去重（为 rollback 重放预留） | 各模块投递 | 每 tick 封帧，只出不回 |
 
@@ -119,7 +119,13 @@ workspace/
 `step()` 内部的执行顺序是确定性协议的一部分：**改顺序 = 改协议版本**，必须过决策日志。每一步读到的是哪个版本的数据，写死如下：
 
 1. **输入应用**——确认 InputFrame → 玩家意图。
-2. **实体与法术**（按实体 id 序）——玩家运动学（采样本 tick 起始网格）、施法结算：弹体入粒子生成队列、冲量入物理队列。
+2. **实体与法术**（按实体 id 序）——**2026-09-06 由占位变生效**（总纲 §11 实施期决策第 18 条），内部展开为四个子步骤，此展开同属协议：
+   - **2a 输入应用**——`InputFrame[controller]` → 生物意图（按 creature id 序）。
+   - **2b 生物运动学与世界互动**——AABB 逐轴分离扫掠（**先 x 后 y，顺序即协议**，采样本 tick 起始网格）→ 排开液体/粉末（脱格进粒子生成队列）→ 游泳浮力与阻力 → 材质接触伤害 → HP 墓碑。
+   - **2c 弹体积分与命中**（按弹体下标序）——沿 DDA 路径**先到者优先**判定（同一格内先生物后硬格）：侵彻删格 / 弹跳 / `Bolt` 扣血击退 / `Blast` 走既有 `apply_explode` + `pending_blasts` / 刚体点冲量。读到的是本 tick **已移动后**的生物位置。
+   - **2d 施法结算**（按 creature id 序）——cooldown + mana 双闸门 → 产弹体（本 tick 不积分，下 tick 起飞）或 `Spray` 走既有 `apply_emit` 入粒子生成队列。
+   
+   三条定序理由承重：2b 在 2c 之前（弹体命中的是本 tick 移动后的位置）；2c 在 2d 之前（新生弹体出生点在生物身上，当帧就走 DDA 会自撞）；整个第 2 步在第 3/4 步之前（生物与弹体读同一份本 tick 起始网格，弹体炸出的洞在同 tick 网格四相里就被消化）。
 3. **刚体**——反盖章上一 tick 像素 → 浮力/阻力按上一 tick 淹没重叠采样入力队列 → 物理步进（固定 dt）→ 按新变换重新盖章。
 4. **网格四相 pass**——材料运动、反应表结算、破坏与点燃；期间产生的溅射入粒子生成队列。
 5. **粒子层**——生成队列按入队序赋 id → 全体并行积分 + DDA → 串行按 id 提交落格（同格冲突 id 小者胜）。
