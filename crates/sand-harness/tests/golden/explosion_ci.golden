@@ -3,7 +3,7 @@ scenario_fp 59e964af026a14a7
 materials_fp fee3946a481b1c4e
 reactions_fp 91ee5c6afd906fb0
 creatures_fp 32c6352cf98bd291
-spells_fp 9f5c77ed384a2f05
+spells_fp 3ec236070beafc79
 world 256x192 seed 3798995166 ticks 1200
 tick      256 hash 8d4e6eca73225b11
 tick      512 hash 2fb7acf339e62380

@@ -353,15 +353,30 @@ fn displacing_projectile_pushes_liquid_out_of_its_path() {
 
 #[test]
 fn pass_through_liquid_lets_the_projectile_cross_a_pool() {
-    let mut sim = arena_with_loadout(&["digger"]); // pass_through: gas + liquid
+    // 评审 Important（2026-09-06）：不能用 `digger`——它 `dig_power: 90` 足以
+    // 把这 5 格水（`hp=1`、`durability=0`，5 格总共只耗 5 点能量）当侵彻目标
+    // 挖穿，即便 `pass_through` 判定被整段删掉或写反，`digger` 照样能靠侵彻
+    // 分支飞过池子，这条测试就失去了对 `pass_through` 本身的区分力（实测
+    // 验证见下方注释）。换成 `wet_bolt`（`spell_table()`）：`dig_power: 0`，
+    // 侵彻分支对它天然不可达（`self.energy[i] > 0` 恒假），穿过去就只能是
+    // `pass_through` 生效——额外断言水量不变，把"穿透"（世界不变）与
+    // "侵彻"（水变 air）两条分支的可观测结果彻底分开。
+    let mut sim = common::arena_wide_open(spell_table()); // wet_bolt: pass_through 含 liquid, dig_power: 0
     sim.apply_setup(&[Op::Fill { material: WATER, x0: 40, y0: 55, x1: 45, y1: 75 }]);
-    sim.step(&[], &[InputFrame::new(BTN_FIRE, 0, 0)]);
+    let before = sim.world().count_material(WATER);
+    let wet_bolt = sim.spell_id("wet_bolt");
+    shoot(&mut sim, wet_bolt, 12, 64, Fx::from_int(6), Fx::ZERO, 255);
     for _ in 0..20 {
         sim.step(&[], &[]);
     }
     assert!(
         sim.projectiles().len() == 1 && sim.projectiles().x(0).to_cell() > 45,
         "穿液体的弹体应当越过水池"
+    );
+    assert_eq!(
+        sim.world().count_material(WATER),
+        before,
+        "pass_through 是穿过去，不是侵彻——水量不该变"
     );
 }
 
